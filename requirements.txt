@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+gradio==5.9.0
+Pillow==11.1.0
+imagehash==4.3.1
+numpy==2.2.0
+faiss-cpu==1.9.0
+watchdog==6.0.0
+httpx==0.28.1
+pydantic==2.10.3
+python-multipart==0.0.18
+opencv-python-headless==4.10.0.84
+pyyaml==6.0.2

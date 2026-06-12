@@ -1,0 +1,49 @@
+media:
+  source_dir: "E:/data/originals"
+  image_max_side: 1344
+  gif_sample_frames: 8
+  gif_max_sample_frames: 12
+  video_sample_fps: 1
+
+vlm:
+  provider: "ollama"
+  model: "llava:13b"
+  base_url: "http://localhost:11434"
+  batch_size: 50
+  max_batch_size: 100
+
+llm:
+  provider: "ollama"
+  model: "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b"
+  base_url: "http://localhost:11434"
+  require_json: true
+
+embedding:
+  provider: "ollama"
+  image_model: "llava:13b"
+  text_model: "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b"
+  base_url: "http://localhost:11434"
+
+scheduler:
+  model_switch_wait: 10
+  max_retries: 3
+
+scoring:
+  visual_similarity_weight: 0.50
+  text_similarity_weight: 0.25
+  emotional_match_weight: 0.15
+  cluster_confidence_weight: 0.10
+  high_match_threshold: 0.80
+  review_threshold: 0.60
+
+dedup:
+  phash_hamming_threshold: 5
+
+database:
+  path: "data/library.db"
+
+paths:
+  frames_dir: "data/frames"
+  thumbs_dir: "data/thumbs"
+  faiss_dir: "data/faiss"
+  exports_dir: "data/exports"
