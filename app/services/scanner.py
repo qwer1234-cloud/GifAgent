@@ -4,6 +4,8 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional, List
+
 from PIL import Image
 import imagehash
 
@@ -21,7 +23,7 @@ def compute_sha256(file_path: str) -> str:
     return h.hexdigest()
 
 
-def compute_phash(image_path: str) -> str | None:
+def compute_phash(image_path: str) -> Optional[str]:
     try:
         img = Image.open(image_path)
         return str(imagehash.phash(img))
@@ -29,7 +31,7 @@ def compute_phash(image_path: str) -> str | None:
         return None
 
 
-def extract_film_name(file_path: str) -> str | None:
+def extract_film_name(file_path: str) -> Optional[str]:
     stem = Path(file_path).stem
     m = re.match(r"^(.+?)[\s_\-\.]+.*$", stem)
     if m:
@@ -70,7 +72,7 @@ def is_phash_duplicate(phash: str) -> bool:
     return False
 
 
-def scan_directory(root_dir: str) -> list[dict]:
+def scan_directory(root_dir: str) -> List[dict]:
     results = []
     for dirpath, _, filenames in os.walk(root_dir):
         for fname in filenames:
@@ -86,7 +88,7 @@ def scan_directory(root_dir: str) -> list[dict]:
     return results
 
 
-def register_media(file_path: str) -> str | None:
+def register_media(file_path: str) -> Optional[str]:
     """Register a single media file. Returns media_id or None if skipped."""
     ext = Path(file_path).suffix.lower()
     if ext not in MEDIA_EXTENSIONS:
@@ -141,13 +143,10 @@ def register_media(file_path: str) -> str | None:
 def scan_and_register(root_dir: str, progress_callback=None) -> dict:
     files = scan_directory(root_dir)
     stats = {"scanned": len(files), "registered": 0, "skipped_sha256": 0, "skipped_phash": 0, "skipped_ext": 0}
-    sha256_seen: set = set()
 
+    sha256_seen: set = set()
     for i, f in enumerate(files):
         file_path = f["file_path"]
-        ext = f["ext"]
-        media_type = f["media_type"]
-
         sha256 = compute_sha256(file_path)
         if sha256 in sha256_seen or is_sha256_duplicate(sha256):
             stats["skipped_sha256"] += 1
@@ -166,4 +165,3 @@ def scan_and_register(root_dir: str, progress_callback=None) -> dict:
             progress_callback(i, len(files), file_path, "registered" if mid else "skipped_phash")
 
     return stats
-
