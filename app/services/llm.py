@@ -16,6 +16,11 @@ LLM_MODEL = get("llm.model")
 
 def _parse_json_response(text: str) -> dict:
     text = text.strip()
+    # Strip Qwen-style think tags
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    # Strip markdown code fences
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
