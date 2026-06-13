@@ -114,8 +114,11 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_frames_status ON frames(vlm_status);
         CREATE INDEX IF NOT EXISTS idx_annotations_media ON annotations(media_id);
         CREATE INDEX IF NOT EXISTS idx_feedback_media ON feedback(media_id);
+        CREATE INDEX IF NOT EXISTS idx_frame_annotations_frame ON frame_annotations(frame_id);
+        CREATE INDEX IF NOT EXISTS idx_frame_annotations_media ON frame_annotations(media_id);
+        CREATE INDEX IF NOT EXISTS idx_video_clips_video ON video_clips(video_id);
+        CREATE INDEX IF NOT EXISTS idx_vector_refs_owner ON vector_refs(owner_type, owner_id);
     ''')
-    conn.commit()
     conn.close()
 
 if __name__ == "__main__":
