@@ -35,29 +35,27 @@ def _parse_json_response(text: str) -> dict:
 def build_synthesis_prompt(film_name: str, frame_analyses: List[dict]) -> str:
     analyses_text = "\n\n".join(
         f"Frame {i+1}:\n"
-        f"  Caption: {fa.get('caption', '')}\n"
-        f"  Emotional core: {fa.get('emotional_core', '')}\n"
-        f"  Aesthetic notes: {fa.get('aesthetic_notes', [])}\n"
-        f"  Why compelling: {fa.get('why_i_like_it', '')}"
+        f"Caption: {fa.get('caption', '')}\n"
+        f"Emotional core: {fa.get('emotional_core', '')}\n"
+        f"Aesthetic notes: {fa.get('aesthetic_notes', [])}\n"
+        f"Why compelling: {fa.get('why_i_like_it', '')}"
         for i, fa in enumerate(frame_analyses)
     )
 
-    return f"""You are an AI that synthesizes frame-by-frame analysis into a cohesive movie scene annotation.
-
-Film title hint (from filename): {film_name}
-
-Given multiple frame analyses from the same GIF, output a single JSON only, no markdown:
-{{{{
-  "summary": "one cohesive sentence describing the full moment captured in this GIF",
-  "emotional_core": "the dominant emotion carried through the scene",
-  "aesthetic_notes": ["consolidated list of the most significant cinematic qualities across all frames"],
-  "why_i_like_it": "an eloquent, personal reason this moment is worth saving - what makes it cinematically special",
-  "tags": ["film_title", "character_name", "actor_name", "scene_type", "notable_keywords"],
-  "scene_type": "close-up | dialogue | action | transition | reaction | establishing | montage | other"
-}}}}
-
-Frame analyses:
-{analyses_text}"""
+    return (
+        "You are an AI that synthesizes frame-by-frame film analyses into a cohesive annotation.\n\n"
+        f"Film: {film_name}\n\n"
+        "IMPORTANT: You MUST respond with ONLY a valid JSON object. Start with {{\"summary\". No markdown, no preamble, no other text.\n\n"
+        "{\n"
+        '  "summary": "one cohesive sentence describing the visual style across these frames",\n'
+        '  "emotional_core": "one dominant emotion",\n'
+        '  "aesthetic_notes": ["2-4 cinematographic qualities"],\n'
+        '  "why_i_like_it": "one personal, cinephile-level sentence",\n'
+        '  "tags": ["3-5 keywords"],\n'
+        '  "scene_type": "close-up | dialogue | action | transition | reaction | establishing | montage | other"\n'
+        "}\n\n"
+        "Frame analyses:\n" + analyses_text
+    )
 
 
 def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
@@ -80,16 +78,35 @@ def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
 
     prompt = build_synthesis_prompt(film_name, frame_analyses)
 
-    resp = httpx.post(
-        f"{LLM_BASE}/api/generate",
-        json={"model": LLM_MODEL, "prompt": prompt, "stream": False},
-        timeout=120,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    response_text = data.get("response", "")
+    for attempt in range(3):
+        try:
+            resp = httpx.post(
+                f"{LLM_BASE}/api/generate",
+                json={"model": LLM_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.3}},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            response_text = data.get("response", "")
+            if not response_text or not response_text.strip():
+                raise ValueError("Empty response from LLM")
 
-    parsed = _parse_json_response(response_text)
+            parsed = _parse_json_response(response_text)
+            if parsed.get("_parse_error"):
+                raw = parsed.get("_raw", "")
+                if attempt < 2 and raw:
+                    print(f"[WARN] JSON parse failed for media {media_id} (attempt {attempt+1}/3): {raw[:100]}")
+                    prompt = prompt + "\n\nCRITICAL: Your last response was not valid JSON. Output ONLY the JSON object, no other text."
+                    continue
+                print(f"[WARN] JSON parse failed for media {media_id} after 3 attempts: {raw[:200]}")
+            break
+        except Exception as e:
+            if attempt < 2:
+                print(f"[WARN] LLM call failed for media {media_id} (attempt {attempt+1}/3): {e}")
+                time.sleep(5)
+            else:
+                raise
+
     if parsed.get("_parse_error"):
         print(f"[WARN] JSON parse failed for media {media_id}: {parsed.get('_raw', '')[:200]}")
 
