@@ -1,0 +1,92 @@
+{
+  "video": "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4",
+  "frames_analyzed": 6,
+  "frame_analyses": [
+    {
+      "frame_index": 1,
+      "timestamp": 600,
+      "caption": null,
+      "emotional_core": null,
+      "aesthetic_notes": null,
+      "why_i_like_it": null
+    },
+    {
+      "frame_index": 2,
+      "timestamp": 1200,
+      "caption": "Two people in an indoor setting, one comforting the other amidst a tense atmosphere",
+      "emotional_core": "tension | sadness",
+      "aesthetic_notes": [
+        "narrow depth of field focusing on two characters, soft lighting suggesting late afternoon or early evening, neutral color palette indicating calm but uneasy mood"
+      ],
+      "why_i_like_it": "The intimate and poignant interaction between the characters captures a vulnerable moment that is both universally relatable and cinematically engaging."
+    },
+    {
+      "frame_index": 3,
+      "timestamp": 1800,
+      "caption": "A man and woman in an intimate moment",
+      "emotional_core": "intimacy | passion | vulnerability | tenderness | longing | desire | sensuality",
+      "aesthetic_notes": [
+        "color saturation, depth of field close-up on the characters",
+        "use of natural light from a window or artificial light to set mood"
+      ],
+      "why_i_like_it": "The intimate nature of the scene is captivating and reveals layers of character emotion."
+    },
+    {
+      "frame_index": 4,
+      "timestamp": 2400,
+      "caption": "A small bird perched on a windowsill with sunlight streaming in, creating dramatic contrast and shadows.",
+      "emotional_core": "sadness | admiration",
+      "aesthetic_notes": [
+        "High-contrast lighting accentuates the bird's silhouette against the bright backdrop.",
+        "The warm color palette and the sunlight filtering through the window add a sense of serenity, but also melancholy due to the absence of human presence.",
+        "The use of shallow depth of field blurs the background, focusing attention on the bird, which symbolizes vulnerability or solitude."
+      ],
+      "why_i_like_it": "I find this frame compelling because it captures a quiet moment of stillness and introspection. The juxtaposition of life represented by the bird against the inanimate backdrop evokes a sense of solitude that can resonate with viewers on an emotional level."
+    },
+    {
+      "frame_index": 5,
+      "timestamp": 3000,
+      "caption": "An intimate moment in a room with ambient lighting.",
+      "emotional_core": "intimacy | vulnerability",
+      "aesthetic_notes": [
+        "candid quality of the scene, low-key lighting that creates an atmospheric mood, close framing that focuses on the emotions and physical contact between the two characters"
+      ],
+      "why_i_like_it": "The intimate nature of the scene captures a vulnerable moment of connection between two individuals. The close framing suggests a level of trust and familiarity, while the ambient lighting gives a sense of realism to the setting."
+    },
+    {
+      "frame_index": 6,
+      "timestamp": 3600,
+      "caption": "tension in the scene and composition of the woman sitting on the bed",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "low-key lighting that highlights the woman's expression",
+        "monochromatic color palette to emphasize a mood of introspection",
+        "depth of field used to keep the focus on her face and shoulders, blurring the background and foreground",
+        "framing centered around the woman with a shallow depth of field that draws attention to her",
+        "texture in her clothing contrasted with smooth surfaces of the bedding",
+        "paused moment of stillness before or after movement, creating tension"
+      ],
+      "why_i_like_it": "the scene captures a quiet, vulnerable moment that reflects on the complexity of human emotions and situations."
+    }
+  ],
+  "synthesis": {
+    "summary": "The film employs intimate close-ups and shallow depth of field combined with soft, natural lighting to create a visually cohesive atmosphere that mirrors the characters' vulnerability and emotional turbulence.",
+    "emotional_core": "vulnerability | intimacy | melancholy",
+    "aesthetic_notes": [
+      "Shallow depth of field focusing on characters or small details like birds",
+      "Soft, natural, and low-key lighting creating atmospheric moods",
+      "Neutral to warm color palettes reflecting emotional states",
+      "Intimate close-up framing emphasizing physical proximity"
+    ],
+    "why_i_like_it": "The visual intimacy creates a raw connection between the viewer and the characters' internal states, where shallow focus isolates them in their emotions while soft lighting reveals subtle shifts without overwhelming exposition.",
+    "tags": [
+      "Drama",
+      "Intimate Cinematography",
+      "Close-up Focus",
+      "Natural Lighting",
+      "Melancholic Tone"
+    ],
+    "scene_type": "close-up"
+  },
+  "analyzed_at": "2026-06-13T08:02:11.876606+00:00"
+}

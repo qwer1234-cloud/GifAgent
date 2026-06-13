@@ -13,16 +13,22 @@ from app.config import get
 VLM_BASE = get("vlm.base_url", "http://localhost:11434")
 VLM_MODEL = get("vlm.model", "llava:13b")
 
-FRAME_PROMPT = """You are analyzing individual frames from a movie/TV show GIF.
-Focus on the CINEMATIC and AESTHETIC qualities, not just listing objects.
+FRAME_PROMPT = """You are analyzing a single frame from a movie or TV show. Focus on CINEMATIC and AESTHETIC qualities.
 
-Output JSON only, no markdown, no explanation:
+Output ONLY a valid JSON object with real, specific content. No placeholder text, no template values, no markdown fencing.
+
 {
-  "caption": "concise description of the scene, composition, and what makes it visually striking",
-  "emotional_core": "tension | melancholy | awe | joy | sadness | catharsis | serenity | excitement | dread | nostalgia | admiration | other",
-  "aesthetic_notes": ["specific cinematic qualities: lighting, color palette, depth of field, framing, texture, movement"],
-  "why_i_like_it": "a personal, subjective reason this frame is compelling - think like a cinephile"
-}"""
+  "caption": "describe what you actually see in this specific frame - composition, lighting, what makes it visually striking",
+  "emotional_core": "intimacy",
+  "aesthetic_notes": ["warm amber lighting wraps the subjects", "shallow depth of field isolates the figures from the background"],
+  "why_i_like_it": "the vulnerability in the actors' body language draws you into their private world"
+}
+
+IMPORTANT RULES:
+- emotional_core MUST be EXACTLY ONE lowercase word. Choose from: tension, melancholy, awe, joy, sadness, catharsis, serenity, excitement, dread, nostalgia, admiration, intimacy, vulnerability, longing, desire.
+- NEVER output multiple emotions joined with "|" or commas. Pick the single most dominant one.
+- aesthetic_notes MUST describe what you actually observe. 2-4 specific, concrete observations.
+- caption and why_i_like_it MUST contain real descriptions, not the instruction text itself."""
 
 
 def _parse_json_response(text: str) -> dict:
@@ -65,6 +71,22 @@ def analyze_frame(frame_id: str, image_path: str, media_id: str) -> dict:
     parsed = _parse_json_response(response_text)
     if parsed.get("_parse_error"):
         print(f"[WARN] JSON parse failed for frame {frame_id}: {parsed.get('_raw', '')[:200]}")
+
+    # Post-process: clean up emotional_core (model may return pipe-delimited list or template text)
+    VALID_EMOTIONS = {"tension", "melancholy", "awe", "joy", "sadness", "catharsis", "serenity",
+                      "excitement", "dread", "nostalgia", "admiration", "intimacy", "vulnerability",
+                      "longing", "desire", "other"}
+    raw_emotion = (parsed.get("emotional_core") or "").strip().lower()
+    if raw_emotion and raw_emotion not in VALID_EMOTIONS:
+        # Try to extract first valid emotion from pipe-delimited or comma-delimited string
+        parts = [p.strip() for p in raw_emotion.replace("|", ",").split(",")]
+        found = next((p for p in parts if p in VALID_EMOTIONS), None)
+        parsed["emotional_core"] = found if found else "other"
+
+    # Post-process: discard template/placeholder text in caption
+    raw_caption = (parsed.get("caption") or "").strip()
+    if not raw_caption or raw_caption.startswith("concise description") or raw_caption.startswith("describe what"):
+        parsed["caption"] = ""
 
     annotation_id = f"ann_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()

@@ -26,6 +26,8 @@ def init_db():
             height INTEGER,
             duration REAL,
             frame_count INTEGER,
+            cluster_id TEXT,
+            is_representative INTEGER DEFAULT 0,
             created_at TEXT NOT NULL,
             indexed_at TEXT NOT NULL
         );
@@ -107,6 +109,17 @@ def init_db():
             FOREIGN KEY(video_id) REFERENCES media(media_id)
         );
 
+        CREATE TABLE IF NOT EXISTS processing_checkpoint (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phase TEXT NOT NULL,
+            last_media_id TEXT,
+            batch_index INTEGER DEFAULT 0,
+            total_processed INTEGER DEFAULT 0,
+            total_failed INTEGER DEFAULT 0,
+            extra_json TEXT,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_media_sha256 ON media(sha256);
         CREATE INDEX IF NOT EXISTS idx_media_phash ON media(phash);
         CREATE INDEX IF NOT EXISTS idx_media_film ON media(film);
@@ -118,8 +131,52 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_frame_annotations_media ON frame_annotations(media_id);
         CREATE INDEX IF NOT EXISTS idx_video_clips_video ON video_clips(video_id);
         CREATE INDEX IF NOT EXISTS idx_vector_refs_owner ON vector_refs(owner_type, owner_id);
+        CREATE INDEX IF NOT EXISTS idx_checkpoint_phase ON processing_checkpoint(phase);
     ''')
+    # Migrate existing tables that may lack new columns
+    _migrate(conn)
     conn.close()
+
+def _migrate(conn):
+    """Add columns missing from older schema versions, then add their indexes."""
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(media)").fetchall()}
+    if "cluster_id" not in existing:
+        conn.execute("ALTER TABLE media ADD COLUMN cluster_id TEXT")
+    if "is_representative" not in existing:
+        conn.execute("ALTER TABLE media ADD COLUMN is_representative INTEGER DEFAULT 0")
+    conn.commit()
+    # Add indexes that reference migrated columns (IF NOT EXISTS safe)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_cluster ON media(cluster_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_media_representative ON media(is_representative)")
+    conn.commit()
+
+def save_checkpoint(phase: str, last_media_id: str = "", batch_index: int = 0,
+                    total_processed: int = 0, total_failed: int = 0, extra: dict | None = None):
+    import json
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    extra_json = json.dumps(extra) if extra else None
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO processing_checkpoint (phase, last_media_id, batch_index, total_processed, total_failed, extra_json, updated_at)
+           VALUES (?,?,?,?,?,?,?)""",
+        (phase, last_media_id, batch_index, total_processed, total_failed, extra_json, now),
+    )
+    conn.commit()
+
+def load_checkpoint(phase: str) -> dict | None:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM processing_checkpoint WHERE phase=? ORDER BY id DESC LIMIT 1",
+        (phase,),
+    ).fetchone()
+    if row is None:
+        return None
+    import json
+    result = dict(row)
+    if result.get("extra_json"):
+        result["extra"] = json.loads(result["extra_json"])
+    return result
 
 if __name__ == "__main__":
     init_db()
