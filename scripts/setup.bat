@@ -2,22 +2,22 @@
 setlocal enabledelayedexpansion
 echo === GifAgent Setup ===
 
-echo [1/4] Creating virtual environment...
-py -3 -m venv venv 2>NUL || python -m venv venv 2>NUL || python3 -m venv venv 2>NUL
+echo [1/3] Verifying uv...
+where uv >NUL 2>NUL
 if %errorlevel% neq 0 (
-    echo Failed to create virtual environment. Make sure Python 3.11+ is installed.
+    echo uv not found! Installing...
+    powershell -Command "irm https://astral.sh/uv/install.ps1 | iex"
+)
+echo uv found.
+
+echo [2/3] Installing Python 3.11+ and dependencies...
+uv sync
+if %errorlevel% neq 0 (
+    echo uv sync failed!
     exit /b 1
 )
-call venv\Scripts\activate.bat
 
-echo [2/4] Installing Python dependencies...
-pip install -r requirements.txt
-if %errorlevel% neq 0 (
-    echo pip install failed! Check your network connection and Python version.
-    exit /b 1
-)
-
-echo [3/4] Verifying ffmpeg...
+echo [3/3] Verifying external tools...
 where ffmpeg >NUL 2>NUL
 if %errorlevel% neq 0 (
     echo ffmpeg not found! Install from https://ffmpeg.org/download.html
@@ -26,12 +26,12 @@ if %errorlevel% neq 0 (
 )
 echo ffmpeg found.
 
-echo [4/4] Pulling llava:13b for visual understanding...
 where ollama >NUL 2>NUL
 if %errorlevel% neq 0 (
     echo Ollama not found! Install from https://ollama.com
     exit /b 1
 )
+echo Pulling llava:13b for visual understanding...
 ollama pull llava:13b
 if %errorlevel% neq 0 (
     echo Failed to pull llava:13b. Check Ollama is running and your internet connection.
@@ -39,5 +39,4 @@ if %errorlevel% neq 0 (
 )
 
 echo === Setup complete ===
-echo Run: venv\Scripts\activate
-echo Then: python app/main.py
+echo Run: uv run python app/main.py

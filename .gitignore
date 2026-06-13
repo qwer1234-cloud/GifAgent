@@ -1,4 +1,5 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -7,4 +8,9 @@ data/frames/
 data/thumbs/
 data/faiss/
 data/exports/
-.venv/
+.idea/
+.vscode/
+.env
+*.egg-info/
+dist/
+build/
