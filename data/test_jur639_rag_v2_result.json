@@ -1,0 +1,2140 @@
+{
+  "video": "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4",
+  "rag_index_size": 105,
+  "frames_analyzed": 50,
+  "vlm_emotion_distribution": {
+    "tension": 19,
+    "?": 2,
+    "sadness": 2,
+    "melancholy": 10,
+    "joy": 3,
+    "vulnerability": 1,
+    "desire": 2,
+    "awe": 2,
+    "intimacy": 5,
+    "other": 1,
+    "longing": 2,
+    "dread": 1
+  },
+  "rag_unique_emotions": [
+    "Dramatic Tension",
+    "Intimacy",
+    "Raw Intimacy",
+    "Vulnerable Intimacy",
+    "awe",
+    "intimacy",
+    "joy",
+    "melancholy",
+    "serenity",
+    "tense intimacy",
+    "tension"
+  ],
+  "synthesis": {
+    "summary": "A visually tense and emotionally intimate narrative, captured through close-up mastery, dramatic lighting, and confined domestic spaces that amplify character interactions and raw human emotion.",
+    "emotional_core": "tension",
+    "aesthetic_notes": [
+      "cinematic intimacy",
+      "dramatic lighting and contrast",
+      "confined domestic spaces",
+      "close-up mastery"
+    ],
+    "why_i_like_it": "The interplay of close-up framing, confined spaces, and dramatic lighting creates a visceral tension that immerses the viewer in the characters' emotional landscapes.",
+    "tags": [
+      "tension",
+      "domestic cinematography",
+      "intimate moments",
+      "dramatic lighting",
+      "confined spaces"
+    ]
+  },
+  "top_scenes": [
+    {
+      "rank": 1,
+      "frame_name": "scene_000053.jpg",
+      "caption": "two people in a room",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "the lighting is low and intimate, suggesting a private conversation",
+        "one person appears to be speaking passionately while the other listens attentively",
+        "the environment suggests an indoor setting with domestic furnishings"
+      ],
+      "why_i_like_it": "the scene creates a sense of anticipation or conflict, as we wonder about the nature of their conversation and the stakes involved.",
+      "rag_similar": [
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.5748695731163025,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        },
+        {
+          "media_id": "media_feea06ea8d1a",
+          "score": 0.5603729486465454,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "contrast"
+          ]
+        },
+        {
+          "media_id": "media_c2fbf3508745",
+          "score": 0.5586270093917847,
+          "emotional_core": "melancholy",
+          "tags": [
+            "cinematic intimacy",
+            "emotional authenticity",
+            "indoor atmosphere"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 2,
+      "frame_name": "scene_000080.jpg",
+      "caption": "tension",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The characters are in a confined space that seems to be increasing the tension",
+        "Low lighting adds to the dramatic effect",
+        "One character's body language suggests they are holding something back"
+      ],
+      "why_i_like_it": "I appreciate the way this scene uses these visual and emotional elements to build tension, leading the viewer to wonder what is going on and what will happen next.",
+      "rag_similar": [
+        {
+          "media_id": "media_aac8d8b41dd8",
+          "score": 0.7484674453735352,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "desire"
+          ]
+        },
+        {
+          "media_id": "media_02584818cb7f",
+          "score": 0.7469534873962402,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "generational dynamics"
+          ]
+        },
+        {
+          "media_id": "media_feea06ea8d1a",
+          "score": 0.7310229539871216,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "contrast"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 3,
+      "frame_name": "scene_000133.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "palette of muted tones",
+        "texture and detail on lingerie",
+        "body language indicating vulnerability"
+      ],
+      "why_i_like_it": "the intimate yet somber atmosphere evoked by the scene",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 4,
+      "frame_name": "scene_000145.jpg",
+      "caption": "a vulnerable moment",
+      "emotional_core": "vulnerability",
+      "aesthetic_notes": [
+        "the contrast between the characters' expressions",
+        "the warm tones of the room against the cooler lighting on their faces",
+        "the positioning of the man and woman in relation to each other"
+      ],
+      "why_i_like_it": "the nuanced portrayal of a vulnerable situation",
+      "rag_similar": [
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.7032714486122131,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_7fd359a8a7f9",
+          "score": 0.6837215423583984,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "tension",
+            "vulnerability"
+          ]
+        },
+        {
+          "media_id": "media_0cd173534d8a",
+          "score": 0.6768240332603455,
+          "emotional_core": "melancholy",
+          "tags": [
+            "intimacy",
+            "tension",
+            "melancholy"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 5,
+      "frame_name": "scene_000181.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The tension between the characters is palpable.",
+        "The lighting creates a dramatic and suspenseful atmosphere.",
+        "The composition of the scene suggests a significant moment in the story."
+      ],
+      "why_i_like_it": "The tension is effectively conveyed through the body language and expressions of the characters, drawing the viewer into their conflict and making them invested in the outcome.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 6,
+      "frame_name": "scene_000229.jpg",
+      "caption": "an intimate scene in a film",
+      "emotional_core": "intimacy",
+      "aesthetic_notes": [
+        "the lighting is low, suggesting an intimate atmosphere",
+        "the characters are close to each other, emphasizing the intimacy between them",
+        "the colors in the frame are muted and warm, contributing to a cozy ambiance"
+      ],
+      "why_i_like_it": "The scene captures an emotional moment between two characters that is both raw and relatable.",
+      "rag_similar": [
+        {
+          "media_id": "media_56322041f79b",
+          "score": 0.8420394659042358,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "emotional connection",
+            "sexual tension"
+          ]
+        },
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.7936495542526245,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        },
+        {
+          "media_id": "media_67f4aecdccc4",
+          "score": 0.785686194896698,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "connection",
+            "cinematography"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 7,
+      "frame_name": "scene_000253.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "The contrast between the woman's vulnerable expression and the starkness of the room",
+        "The tension in the man's stance, suggesting an imminent threat or confrontation",
+        "The use of a wide angle lens that distorts the space, adding to the sense of disorientation"
+      ],
+      "why_i_like_it": "I appreciate how this frame captures a moment of emotional vulnerability and conflict in a visually striking manner.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 8,
+      "frame_name": "scene_000289.jpg",
+      "caption": "A bird on a ledge of a window",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "The bird is alone",
+        "Sunlight filtering through the blinds",
+        "The bird's wings are neatly folded"
+      ],
+      "why_i_like_it": "Because it evokes a sense of quiet introspection and solitude.",
+      "rag_similar": [
+        {
+          "media_id": "media_bf8da31af69c",
+          "score": 0.5224559307098389,
+          "emotional_core": "tension",
+          "tags": [
+            "serenity",
+            "awe",
+            "tension"
+          ]
+        },
+        {
+          "media_id": "media_c2fbf3508745",
+          "score": 0.5173698663711548,
+          "emotional_core": "melancholy",
+          "tags": [
+            "cinematic intimacy",
+            "emotional authenticity",
+            "indoor atmosphere"
+          ]
+        },
+        {
+          "media_id": "media_b21d0d5fe4f9",
+          "score": 0.5153015851974487,
+          "emotional_core": "tension",
+          "tags": [
+            "vibrant colors",
+            "moody lighting",
+            "intimate moments"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 9,
+      "frame_name": "scene_000337.jpg",
+      "caption": "a revealing moment between two characters",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "the contrast of light and shadow on the woman's body",
+        "the intimate closeness between the two characters",
+        "the intensity of the situation portrayed"
+      ],
+      "why_i_like_it": "the tension is palpable as both characters engage in a vulnerable moment.",
+      "rag_similar": [
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.67405766248703,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        },
+        {
+          "media_id": "media_975f133d32cc",
+          "score": 0.6557425260543823,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "tenderness"
+          ]
+        },
+        {
+          "media_id": "media_4be87d838637",
+          "score": 0.6483685970306396,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "connection",
+            "tension"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 10,
+      "frame_name": "scene_000373.jpg",
+      "caption": "man in bed with woman",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "the tension between the characters is palpable",
+        "the setting suggests a secretive or intimate moment",
+        "the lighting adds to the somber mood of the scene"
+      ],
+      "why_i_like_it": "I like how the tension in this frame creates an atmosphere of suspense and intrigue about their relationship.",
+      "rag_similar": [
+        {
+          "media_id": "media_481965e3eb0c",
+          "score": 0.44531750679016113,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "sensuality",
+            "female sexuality"
+          ]
+        },
+        {
+          "media_id": "media_feea06ea8d1a",
+          "score": 0.43965017795562744,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "contrast"
+          ]
+        },
+        {
+          "media_id": "media_edb77a40bc91",
+          "score": 0.4382660388946533,
+          "emotional_core": "awe",
+          "tags": [
+            "human intimacy",
+            "sensual realism",
+            "graphic vulnerability"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 11,
+      "frame_name": "scene_000385.jpg",
+      "caption": "sexual intrigue",
+      "emotional_core": "intimacy",
+      "aesthetic_notes": [
+        "eroticism",
+        "moisture on the skin and bed",
+        "subdued lighting creating a sense of intimacy"
+      ],
+      "why_i_like_it": "the scene creates an air of forbidden desire and emotional vulnerability, highlighting the complexity of human relationships.",
+      "rag_similar": [
+        {
+          "media_id": "media_481965e3eb0c",
+          "score": 0.6529004573822021,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "sensuality",
+            "female sexuality"
+          ]
+        },
+        {
+          "media_id": "media_7ecb0c044f42",
+          "score": 0.6488705277442932,
+          "emotional_core": "joy",
+          "tags": [
+            "sensual intimacy",
+            "erotic tension",
+            "emotional complexity"
+          ]
+        },
+        {
+          "media_id": "media_0edbd462f11e",
+          "score": 0.6180292367935181,
+          "emotional_core": "awe",
+          "tags": [
+            "taboo",
+            "medical setting",
+            "intimacy"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 12,
+      "frame_name": "scene_000421.jpg",
+      "caption": "two people passionately kissing",
+      "emotional_core": "intimacy",
+      "aesthetic_notes": [
+        "close-up of the couple",
+        "focus on facial expressions",
+        "ambient lighting"
+      ],
+      "why_i_like_it": "the intimate expression of love and connection",
+      "rag_similar": [
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.595403254032135,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        },
+        {
+          "media_id": "media_77cf0e680d97",
+          "score": 0.592947781085968,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "nature",
+            "sensuality"
+          ]
+        },
+        {
+          "media_id": "media_edb77a40bc91",
+          "score": 0.5718364715576172,
+          "emotional_core": "awe",
+          "tags": [
+            "human intimacy",
+            "sensual realism",
+            "graphic vulnerability"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 13,
+      "frame_name": "scene_000445.jpg",
+      "caption": "A woman's close-up expression during an intense moment",
+      "emotional_core": "dread",
+      "aesthetic_notes": [
+        "Close-up of the woman's face, highlighting her expression",
+        "Contrast between light and shadow on her face",
+        "Her eyes are wide open, possibly indicating surprise or fear"
+      ],
+      "why_i_like_it": "The intensity of the moment captured in a close-up shot adds to the emotional impact of the scene.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.697425901889801,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_77cf0e680d97",
+          "score": 0.6958881616592407,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "nature",
+            "sensuality"
+          ]
+        },
+        {
+          "media_id": "media_4be87d838637",
+          "score": 0.6839389801025391,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "connection",
+            "tension"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 14,
+      "frame_name": "scene_000469.jpg",
+      "caption": "A woman reacting to a sexual encounter with tears in her eyes",
+      "emotional_core": "sadness",
+      "aesthetic_notes": [
+        "The lighting is dim and focused on the woman's face, highlighting her emotions.",
+        "The framing suggests a close-up to capture the intense emotion.",
+        "The colors are muted, emphasizing the somber tone of the scene."
+      ],
+      "why_i_like_it": "The portrayal of vulnerability and intimacy in this moment makes for an engaging and thought-provoking scene.",
+      "rag_similar": [
+        {
+          "media_id": "media_77cf0e680d97",
+          "score": 0.6365795731544495,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "nature",
+            "sensuality"
+          ]
+        },
+        {
+          "media_id": "media_edb77a40bc91",
+          "score": 0.6321362853050232,
+          "emotional_core": "awe",
+          "tags": [
+            "human intimacy",
+            "sensual realism",
+            "graphic vulnerability"
+          ]
+        },
+        {
+          "media_id": "media_eccfdf54f0eb",
+          "score": 0.6213269233703613,
+          "emotional_core": "awe",
+          "tags": [
+            "intimacy",
+            "tension",
+            "awe"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 15,
+      "frame_name": "scene_000529.jpg",
+      "caption": "Two men and a woman engaged in an intimate embrace",
+      "emotional_core": "desire",
+      "aesthetic_notes": [
+        "The close-up framing of the characters emphasizes their expressions and body language",
+        "The lighting suggests an intimate setting, possibly a bedroom or a private room",
+        "The background is minimalistic, which puts focus on the emotional interaction between the characters"
+      ],
+      "why_i_like_it": "It captures an intense moment of connection and desire among the characters.",
+      "rag_similar": [
+        {
+          "media_id": "media_1654bb7a610e",
+          "score": 0.6076204776763916,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "connection",
+            "warmth"
+          ]
+        },
+        {
+          "media_id": "media_a87fd9a4ef82",
+          "score": 0.60721755027771,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "group dynamics",
+            "suggestive scenes"
+          ]
+        },
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.6046793460845947,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 16,
+      "frame_name": "scene_000541.jpg",
+      "caption": "bedroom scene",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "muted colors",
+        "intimate setting",
+        "subdued lighting"
+      ],
+      "why_i_like_it": "the atmosphere creates a sense of melancholy and vulnerability that draws me in",
+      "rag_similar": [
+        {
+          "media_id": "media_1a42bd264c1d",
+          "score": 0.6756737232208252,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "desire",
+            "serenity"
+          ]
+        },
+        {
+          "media_id": "media_feea06ea8d1a",
+          "score": 0.651054859161377,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "contrast"
+          ]
+        },
+        {
+          "media_id": "media_b7c493e46a9d",
+          "score": 0.6475047469139099,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "domestic setting"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 17,
+      "frame_name": "scene_000553.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The tension between the two characters is palpable. One character's body language suggests resistance or unease, while the other's posture exudes assertiveness.",
+        "The dimly lit room adds to the tension by creating a sense of mystery and intrigue about the situation at hand.",
+        "The contrast between the characters' expressions and their physical proximity intensifies the emotional conflict on display."
+      ],
+      "why_i_like_it": "I appreciate this frame because it captures a moment of high tension that leaves one curious to know more about the context, the relationship dynamics at play, and how these characters will react next.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 18,
+      "frame_name": "scene_000565.jpg",
+      "caption": "A scene from a movie depicting an intimate moment",
+      "emotional_core": "joy",
+      "aesthetic_notes": [
+        "The composition of the frame captures an intense, emotional interaction between characters",
+        "The use of lighting and color in the scene highlights the emotions and creates a visually appealing environment",
+        "The setting appears to be a private bedroom, suggesting intimacy and closeness between the characters"
+      ],
+      "why_i_like_it": "I appreciate this frame because it shows a vulnerable and candid moment of human connection and emotion, which can make for compelling storytelling and evoke strong emotional responses from viewers.",
+      "rag_similar": [
+        {
+          "media_id": "media_56322041f79b",
+          "score": 0.8038711547851562,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "emotional connection",
+            "sexual tension"
+          ]
+        },
+        {
+          "media_id": "media_77cf0e680d97",
+          "score": 0.7432929277420044,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "nature",
+            "sensuality"
+          ]
+        },
+        {
+          "media_id": "media_67f4aecdccc4",
+          "score": 0.7409383058547974,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "connection",
+            "cinematography"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 19,
+      "frame_name": "scene_000004.jpg",
+      "caption": "A woman standing in a dark room",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The woman's posture is closed and defensive, indicating tension or unease.",
+        "The dim lighting creates a sense of suspense and uncertainty."
+      ],
+      "why_i_like_it": "The scene captures an intense moment that draws the viewer into the narrative to understand what is happening and why the character appears so tense.",
+      "rag_similar": [
+        {
+          "media_id": "media_feea06ea8d1a",
+          "score": 0.5121863484382629,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "contrast"
+          ]
+        },
+        {
+          "media_id": "media_b7c493e46a9d",
+          "score": 0.5018825531005859,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "domestic setting"
+          ]
+        },
+        {
+          "media_id": "media_c2fbf3508745",
+          "score": 0.5007500648498535,
+          "emotional_core": "melancholy",
+          "tags": [
+            "cinematic intimacy",
+            "emotional authenticity",
+            "indoor atmosphere"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 20,
+      "frame_name": "scene_000068.jpg",
+      "caption": "Two people in a scene from a movie or drama",
+      "emotional_core": "sadness",
+      "aesthetic_notes": [
+        "The dim lighting creates a somber atmosphere.",
+        "One person is sitting on the floor while the other stands."
+      ],
+      "why_i_like_it": "I appreciate how the characters' body language and facial expressions communicate their emotional state without the need for dialogue.",
+      "rag_similar": [
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.6784616112709045,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        },
+        {
+          "media_id": "media_56322041f79b",
+          "score": 0.647426426410675,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "emotional connection",
+            "sexual tension"
+          ]
+        },
+        {
+          "media_id": "media_51485b9ba637",
+          "score": 0.6332432627677917,
+          "emotional_core": "Dramatic Tension",
+          "tags": [
+            "drama",
+            "humanity",
+            "cinematic"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 21,
+      "frame_name": "scene_000109.jpg",
+      "caption": "A tense conversation between characters",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The room is cluttered with various items, suggesting a busy or chaotic environment.",
+        "The color palette appears to be subdued, which contributes to the overall mood of the scene."
+      ],
+      "why_i_like_it": "This frame captures a moment that seems to be filled with tension and uncertainty between the characters, making me curious about their relationship and what issues they are dealing with.",
+      "rag_similar": [
+        {
+          "media_id": "media_26b40ce2697e",
+          "score": 0.7151715755462646,
+          "emotional_core": "tense intimacy",
+          "tags": [
+            "intimate cinematography",
+            "character interaction",
+            "nonverbal communication"
+          ]
+        },
+        {
+          "media_id": "media_02584818cb7f",
+          "score": 0.7052377462387085,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "generational dynamics"
+          ]
+        },
+        {
+          "media_id": "media_feea06ea8d1a",
+          "score": 0.6960761547088623,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "contrast"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 22,
+      "frame_name": "scene_000121.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "joy",
+      "aesthetic_notes": [
+        "The image captures a moment of joy or happiness, as indicated by the smile on the person's face.",
+        "The composition and lighting contribute to a warm, inviting atmosphere."
+      ],
+      "why_i_like_it": "It brings a positive emotion that resonates with me, making it enjoyable to watch.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 23,
+      "frame_name": "scene_000205.jpg",
+      "caption": "a scene from an adult film",
+      "emotional_core": "desire",
+      "aesthetic_notes": [
+        "focus on the physical interaction",
+        "use of lighting to create intimacy"
+      ],
+      "why_i_like_it": "the intense and explicit nature of the scene challenges societal norms and conventions about sexuality, leading to a raw and unfiltered portrayal of human desire.",
+      "rag_similar": [
+        {
+          "media_id": "media_56322041f79b",
+          "score": 0.681483268737793,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "emotional connection",
+            "sexual tension"
+          ]
+        },
+        {
+          "media_id": "media_0f1b22105932",
+          "score": 0.641465961933136,
+          "emotional_core": "awe",
+          "tags": [
+            "intimacy",
+            "sensuality",
+            "cinematography"
+          ]
+        },
+        {
+          "media_id": "media_77cf0e680d97",
+          "score": 0.6380360722541809,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "nature",
+            "sensuality"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 24,
+      "frame_name": "scene_000217.jpg",
+      "caption": "What I see in this frame",
+      "emotional_core": "awe",
+      "aesthetic_notes": [
+        "The composition of the scene, focusing on the human form and the action between them.",
+        "The contrast between the characters' emotions and expressions as they engage in this intimate moment."
+      ],
+      "why_i_like_it": "The portrayal of vulnerability and connection within a human interaction, which can be both emotionally charged and visually compelling.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5961671471595764,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5868475437164307,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5868034362792969,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 25,
+      "frame_name": "scene_000265.jpg",
+      "caption": "A scene of intimacy and trust",
+      "emotional_core": "other",
+      "aesthetic_notes": [
+        "The color palette is subdued, creating an atmosphere of privacy.",
+        "The focus on the hands suggests a close relationship between the characters."
+      ],
+      "why_i_like_it": "I appreciate scenes that depict genuine human interactions and emotional connections.",
+      "rag_similar": [
+        {
+          "media_id": "media_975f133d32cc",
+          "score": 0.7706766128540039,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "tenderness"
+          ]
+        },
+        {
+          "media_id": "media_56322041f79b",
+          "score": 0.7618669271469116,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "emotional connection",
+            "sexual tension"
+          ]
+        },
+        {
+          "media_id": "media_7fd359a8a7f9",
+          "score": 0.751265287399292,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "tension",
+            "vulnerability"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 26,
+      "frame_name": "scene_000301.jpg",
+      "caption": "The man's solemn expression in the doorway",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "The color palette is subdued, with muted greens and browns.",
+        "The lighting creates a sense of calmness in contrast to the character's solemn expression."
+      ],
+      "why_i_like_it": "I appreciate how the actor conveys deep emotion through subtle facial expressions, which is often more impactful than over-the-top performances.",
+      "rag_similar": [
+        {
+          "media_id": "media_c2fbf3508745",
+          "score": 0.5577385425567627,
+          "emotional_core": "melancholy",
+          "tags": [
+            "cinematic intimacy",
+            "emotional authenticity",
+            "indoor atmosphere"
+          ]
+        },
+        {
+          "media_id": "media_0cd173534d8a",
+          "score": 0.5238347053527832,
+          "emotional_core": "melancholy",
+          "tags": [
+            "intimacy",
+            "tension",
+            "melancholy"
+          ]
+        },
+        {
+          "media_id": "media_77cf0e680d97",
+          "score": 0.5202792286872864,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "nature",
+            "sensuality"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 27,
+      "frame_name": "scene_000349.jpg",
+      "caption": "What you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The woman's tense posture and facial expression suggest she is experiencing a difficult or emotional situation.",
+        "The dimly lit room with muted colors adds to the somber atmosphere."
+      ],
+      "why_i_like_it": "I like how the scene captures a moment of high tension between characters, building suspense and engaging the viewer in their emotional journey.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 28,
+      "frame_name": "scene_000397.jpg",
+      "caption": "Bedroom scene with adult content",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "close-up intimate shot of people in a bed",
+        "focus on the characters' facial expressions and body language"
+      ],
+      "why_i_like_it": "I appreciate the emotional tension that is often found in adult content, as it delves into human desires and vulnerabilities. It can be a platform for exploring complex themes and subverting societal norms.",
+      "rag_similar": [
+        {
+          "media_id": "media_1a42bd264c1d",
+          "score": 0.6677785515785217,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "desire",
+            "serenity"
+          ]
+        },
+        {
+          "media_id": "media_b7c493e46a9d",
+          "score": 0.6388763785362244,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "domestic setting"
+          ]
+        },
+        {
+          "media_id": "media_481965e3eb0c",
+          "score": 0.6355950832366943,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "sensuality",
+            "female sexuality"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 29,
+      "frame_name": "scene_000409.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "longing",
+      "aesthetic_notes": [
+        "the lighting creates an intimate atmosphere",
+        "the characters' expressions suggest a deep emotional connection"
+      ],
+      "why_i_like_it": "The scene captures a raw, vulnerable moment between the two characters that resonates emotionally.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 30,
+      "frame_name": "scene_000457.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "intimacy",
+      "aesthetic_notes": [
+        "2-3 visual observations",
+        "lighting and contrast focusing on intimate interaction"
+      ],
+      "why_i_like_it": "the vulnerability and raw emotion captured in the scene is powerful and evocative.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 31,
+      "frame_name": "scene_000493.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "The lighting is dim and subdued, creating a somber mood.",
+        "The woman's facial expression conveys a sense of vulnerability or pain."
+      ],
+      "why_i_like_it": "This moment captures a raw and intimate emotion that draws the viewer into the story, making them more invested in the character's journey.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 32,
+      "frame_name": "scene_000517.jpg",
+      "caption": "a kiss in the dark",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "The scene is dimly lit, creating a sense of intimacy and isolation.",
+        "The characters are close to each other with their expressions hidden from view, adding a layer of mystery to the moment."
+      ],
+      "why_i_like_it": "I appreciate the emotional depth that can be explored through a single shared moment like this in storytelling. The scene allows for a wide range of interpretation and empathy towards the characters involved.",
+      "rag_similar": [
+        {
+          "media_id": "media_2515c9239baa",
+          "score": 0.5711361169815063,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "candid cinematography",
+            "warm lighting"
+          ]
+        },
+        {
+          "media_id": "media_4fd45a527355",
+          "score": 0.566328763961792,
+          "emotional_core": "joy",
+          "tags": [
+            "joy",
+            "intimacy",
+            "dynamic lighting"
+          ]
+        },
+        {
+          "media_id": "media_a0a4e8210184",
+          "score": 0.5445871353149414,
+          "emotional_core": "Intimacy",
+          "tags": [
+            "cinematic intimacy",
+            "warm color palette",
+            "vulnerable connection"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 33,
+      "frame_name": "scene_000577.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "intimacy",
+      "aesthetic_notes": [
+        "The framing of the image is intimate, capturing a private moment between two individuals.",
+        "The lighting creates an atmosphere that is both warm and cozy, suggesting closeness or affection."
+      ],
+      "why_i_like_it": "I appreciate the candid nature of this scene. It presents a raw and authentic moment, devoid of any over-the-top emotions, which can be refreshing in an era where so much media often tries to manipulate these feelings.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 34,
+      "frame_name": "scene_000589.jpg",
+      "caption": "Film scene with an emotional core of tension",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "Light and shadow contrasts indicate a source of light from one side, casting dramatic shadows across the scene.",
+        "The characters' body language suggests unease or defensiveness, adding to the tense atmosphere."
+      ],
+      "why_i_like_it": "I appreciate the way this frame creates a sense of impending conflict or high-stakes conversation by capturing the intense expressions of the actors and the ambient lighting that adds depth to the scene.",
+      "rag_similar": [
+        {
+          "media_id": "media_192459ee78c0",
+          "score": 0.8241621255874634,
+          "emotional_core": "tension",
+          "tags": [
+            "intimacy",
+            "tension",
+            "emotional depth"
+          ]
+        },
+        {
+          "media_id": "media_aac8d8b41dd8",
+          "score": 0.8133447170257568,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "desire"
+          ]
+        },
+        {
+          "media_id": "media_1fa4941ae113",
+          "score": 0.8065773248672485,
+          "emotional_core": "tension",
+          "tags": [
+            "intimacy",
+            "tension",
+            "dramatic lighting"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 35,
+      "frame_name": "scene_000601.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The tension between the need to clean and the urgency of doing so.",
+        "The reflection of a person's arms and hands on the wet surface, indicating their effort and struggle."
+      ],
+      "why_i_like_it": "I like how the scene captures an everyday situation with such intensity that it becomes almost dramatic, conveying the urgency and desperation often associated with cleaning in a domestic or public setting.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 36,
+      "frame_name": "scene_000613.jpg",
+      "caption": "a tense moment",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "the close framing highlights the emotional connection between characters",
+        "lighting emphasizes the intensity of the scene"
+      ],
+      "why_i_like_it": "I like how this frame captures a single, pivotal moment that encapsulates the suspense and tension in the story.",
+      "rag_similar": [
+        {
+          "media_id": "media_aac8d8b41dd8",
+          "score": 0.696274995803833,
+          "emotional_core": "tension",
+          "tags": [
+            "tension",
+            "intimacy",
+            "desire"
+          ]
+        },
+        {
+          "media_id": "media_bf8da31af69c",
+          "score": 0.6913480758666992,
+          "emotional_core": "tension",
+          "tags": [
+            "serenity",
+            "awe",
+            "tension"
+          ]
+        },
+        {
+          "media_id": "media_3493c9d6c91b",
+          "score": 0.6802330017089844,
+          "emotional_core": "tension",
+          "tags": [
+            "tense dialogue",
+            "emotional authenticity",
+            "dynamic cinematography"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 37,
+      "frame_name": "scene_000029.jpg",
+      "caption": "A young Asian woman in a business suit holding folders, standing on the sidewalk",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The character's posture and focus suggest anticipation or concern; the urban setting is a common backdrop for dramatic narratives"
+      ],
+      "why_i_like_it": "The frame captures an everyday scene with a strong emotional resonance, perhaps because it suggests stories of ambition, responsibility, or struggle in modern city life.",
+      "rag_similar": [
+        {
+          "media_id": "media_82a29fb0e2e0",
+          "score": 0.441448450088501,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "celebration",
+            "tension"
+          ]
+        },
+        {
+          "media_id": "media_4be87d838637",
+          "score": 0.4274841547012329,
+          "emotional_core": "joy",
+          "tags": [
+            "intimacy",
+            "connection",
+            "tension"
+          ]
+        },
+        {
+          "media_id": "media_f23b0e822cd3",
+          "score": 0.42713382840156555,
+          "emotional_core": "serenity",
+          "tags": [
+            "intimacy",
+            "serenity",
+            "contrast"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 38,
+      "frame_name": "scene_000092.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "The setting appears to be a traditional Japanese hallway with tatami flooring and sliding doors. The characters' expressions suggest a serious or contemplative atmosphere, which could align with the 'melancholy' emotional core. There might be a hint of intimacy in their interaction, but it is not overtly joyful or exciting."
+      ],
+      "why_i_like_it": "I find the stillness and introspective nature of this scene compelling, perhaps because the characters seem to be deeply engaged in a meaningful conversation. The simplicity of the surroundings puts a focus on their interaction, which could evoke a sense of melancholy or deep thought from the viewer.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 39,
+      "frame_name": "scene_000169.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "2-3 visual observations"
+      ],
+      "why_i_like_it": "the starkness and intensity of the scene",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 40,
+      "frame_name": "scene_000193.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "2-3 visual observations"
+      ],
+      "why_i_like_it": "the close-up and framing of the scene create an intimate, tense atmosphere that evokes a sense of vulnerability in the character's expression.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 41,
+      "frame_name": "scene_000241.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "The scene appears to be tense and possibly intimate, as indicated by the close contact between the characters."
+      ],
+      "why_i_like_it": "I find this frame captivating because it encapsulates a moment of high tension, which can create an emotional connection for the viewer.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 42,
+      "frame_name": "scene_000277.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "joy",
+      "aesthetic_notes": [
+        "focus on the contrast between the characters' expressions and the intimate setting"
+      ],
+      "why_i_like_it": "The contrast between the innocent expression of one character and the suggestive context creates a feeling of joyful irony, which can be entertaining to watch.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 43,
+      "frame_name": "scene_000313.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "awe",
+      "aesthetic_notes": [
+        "2-3 visual observations"
+      ],
+      "why_i_like_it": "the composition and framing that draws the viewer's eye downwards to focus on the subject's lower half.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 44,
+      "frame_name": "scene_000325.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "2-3 visual observations"
+      ],
+      "why_i_like_it": "the tension between the woman's vulnerability and the man's leering gaze creates a palpable sense of unease and power dynamics.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 45,
+      "frame_name": "scene_000361.jpg",
+      "caption": "sexual encounter in a hotel room",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "2-3 visual observations: lighting, camera angles, expressions"
+      ],
+      "why_i_like_it": "the build-up to the climax of a suspenseful or erotic scene.",
+      "rag_similar": [
+        {
+          "media_id": "media_0edbd462f11e",
+          "score": 0.5801188945770264,
+          "emotional_core": "awe",
+          "tags": [
+            "taboo",
+            "medical setting",
+            "intimacy"
+          ]
+        },
+        {
+          "media_id": "media_481965e3eb0c",
+          "score": 0.5763128995895386,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "sensuality",
+            "female sexuality"
+          ]
+        },
+        {
+          "media_id": "media_b7c493e46a9d",
+          "score": 0.5638341307640076,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "domestic setting"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 46,
+      "frame_name": "scene_000433.jpg",
+      "caption": "What I see in this frame",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "A sense of vulnerability is captured here as the woman seems to be in a moment of deep thought or concern."
+      ],
+      "why_i_like_it": "I appreciate the intimacy and emotional depth portrayed in this frame. It feels like a snapshot from real life, capturing the essence of human emotion.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5961671471595764,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5868475437164307,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5868034362792969,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 47,
+      "frame_name": "scene_000481.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "longing",
+      "aesthetic_notes": [
+        "2-3 visual observations"
+      ],
+      "why_i_like_it": "the emotional intensity conveyed by the actors' expressions and body language, highlighting a sense of yearning or desire.",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 48,
+      "frame_name": "scene_000505.jpg",
+      "caption": "what you see in this frame",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "2-3 visual observations"
+      ],
+      "why_i_like_it": "the tension between the characters and their expressions",
+      "rag_similar": [
+        {
+          "media_id": "media_e71a198e49e5",
+          "score": 0.5909879803657532,
+          "emotional_core": "awe",
+          "tags": [
+            "cinematic tension",
+            "emotional intensity",
+            "close-up mastery"
+          ]
+        },
+        {
+          "media_id": "media_e06ca1deed6a",
+          "score": 0.5889980792999268,
+          "emotional_core": "Vulnerable Intimacy",
+          "tags": [
+            "intimate",
+            "vulnerability",
+            "candid"
+          ]
+        },
+        {
+          "media_id": "media_3e2e39d3322f",
+          "score": 0.5875427722930908,
+          "emotional_core": "intimacy",
+          "tags": [
+            "intimacy",
+            "vulnerability",
+            "desire"
+          ]
+        }
+      ]
+    },
+    {
+      "rank": 49,
+      "frame_name": "scene_000041.jpg",
+      "caption": null,
+      "emotional_core": null,
+      "aesthetic_notes": null,
+      "why_i_like_it": null,
+      "rag_similar": []
+    },
+    {
+      "rank": 50,
+      "frame_name": "scene_000157.jpg",
+      "caption": null,
+      "emotional_core": null,
+      "aesthetic_notes": null,
+      "why_i_like_it": null,
+      "rag_similar": []
+    }
+  ]
+}
