@@ -4,8 +4,6 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
-
 from PIL import Image
 import imagehash
 
@@ -23,7 +21,7 @@ def compute_sha256(file_path: str) -> str:
     return h.hexdigest()
 
 
-def compute_phash(image_path: str) -> Optional[str]:
+def compute_phash(image_path: str) -> str | None:
     try:
         img = Image.open(image_path)
         return str(imagehash.phash(img))
@@ -31,9 +29,9 @@ def compute_phash(image_path: str) -> Optional[str]:
         return None
 
 
-def extract_film_name(file_path: str) -> Optional[str]:
+def extract_film_name(file_path: str) -> str | None:
     stem = Path(file_path).stem
-    m = re.match(r"^(.+)[_\-]+\d{4,}.*$", stem)
+    m = re.match(r"^(.+?)[\s_\-\.]+.*$", stem)
     if m:
         name = m.group(1).strip()
         if len(name) >= 2 and not name.isdigit():
@@ -72,7 +70,7 @@ def is_phash_duplicate(phash: str) -> bool:
     return False
 
 
-def scan_directory(root_dir: str) -> list:
+def scan_directory(root_dir: str) -> list[dict]:
     results = []
     for dirpath, _, filenames in os.walk(root_dir):
         for fname in filenames:
@@ -88,7 +86,7 @@ def scan_directory(root_dir: str) -> list:
     return results
 
 
-def register_media(file_path: str) -> Optional[str]:
+def register_media(file_path: str) -> str | None:
     """Register a single media file. Returns media_id or None if skipped."""
     ext = Path(file_path).suffix.lower()
     if ext not in MEDIA_EXTENSIONS:
