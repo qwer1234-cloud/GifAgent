@@ -21,7 +21,7 @@ llm:
 embedding:
   provider: "ollama"
   image_model: "llava:13b"
-  text_model: "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b"
+  text_model: "nomic-embed-text:latest"
   base_url: "http://localhost:11434"
 
 scheduler:

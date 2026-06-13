@@ -70,7 +70,7 @@ CRITICAL RULES:
 - caption and why_i_like_it MUST contain real descriptions, not the instruction text itself."""
 
 def ollama_generate(model, prompt, images=None, temperature=0.3):
-    payload = {"model": model, "prompt": prompt, "stream": False, "options": {"temperature": temperature}}
+    payload = {"model": model, "prompt": prompt, "stream": False, "options": {"temperature": temperature, "num_think": 0}}
     if images:
         payload["images"] = images
     resp = httpx.post(f"{OLLAMA_BASE}/api/generate", json=payload, timeout=120)

@@ -82,12 +82,15 @@ def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
         try:
             resp = httpx.post(
                 f"{LLM_BASE}/api/generate",
-                json={"model": LLM_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.3}},
+                json={"model": LLM_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.3, "num_think": 0}},
                 timeout=120,
             )
             resp.raise_for_status()
             data = resp.json()
             response_text = data.get("response", "")
+            # Fallback: deepseek-v4-flash models put content in "thinking" field
+            if not response_text or not response_text.strip():
+                response_text = data.get("thinking", "")
             if not response_text or not response_text.strip():
                 raise ValueError("Empty response from LLM")
 

@@ -73,10 +73,13 @@ def compute_image_embedding(image_path: str) -> Optional[List[float]]:
 
 
 def compute_media_embedding(media_id: str) -> Optional[List[float]]:
-    """Compute aggregated embedding for a media item via average pooling over its frames.
+    """Compute embedding for a media item. Prefers text annotation embedding."""
+    # Try text summary embedding first (works with nomic-embed-text)
+    emb = compute_text_summary_embedding(media_id)
+    if emb:
+        return emb
 
-    Returns None if no frames have usable embeddings.
-    """
+    # Fallback to image embeddings via frame descriptions
     conn = get_connection()
     frame_rows = conn.execute(
         "SELECT frame_path FROM frames WHERE media_id=? ORDER BY frame_index",
