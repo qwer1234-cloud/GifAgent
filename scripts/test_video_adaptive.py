@@ -28,15 +28,16 @@ os.makedirs(FRAMES_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
 # ── Config ────────────────────────────────────────────────────────────
-SAMPLE_INTERVAL = 60       # seconds between coarse samples
-REFINE_INTERVAL = 15       # seconds for fine sampling around high-score regions
-REFINE_RADIUS = 30         # ±seconds around high-score frame to re-sample
+SAMPLE_INTERVAL = 20       # seconds between coarse samples (dense for multi-per-minute)
+REFINE_INTERVAL = 10       # seconds for fine sampling around high-score regions
+REFINE_RADIUS = 20         # ±seconds around high-score frame to re-sample
 REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.4 # below this, skip entirely
-MERGE_GAP = 45             # max seconds between high-score frames to merge into one clip
-TOP_K = 50                 # number to return
+MERGE_GAP = 15             # max seconds between frames to merge (shorter = multiple GIFs per minute)
+OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output (0.5 = top 50%)
+MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
 
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, top {TOP_K}")
@@ -364,10 +365,17 @@ for attempt in range(3):
         time.sleep(5)
 
 # ── Phase 4: Export adaptive-duration GIFs ─────────────────────────────
-print(f"\n[4/4] Exporting top {TOP_K} GIFs (adaptive boundaries)...")
+# Determine output count: ratio of total, capped at MAX_OUTPUT
+output_count = int(len(clips) * OUTPUT_RATIO)
+if MAX_OUTPUT > 0:
+    output_count = min(output_count, MAX_OUTPUT)
+output_count = max(1, output_count)  # at least 1
 
-# Rank clips by gif_worthiness, take top K
-ranked_clips = sorted(clips, key=lambda x: x["gif_worthiness"], reverse=True)[:TOP_K]
+print(f"\n[4/4] Exporting {output_count}/{len(clips)} GIFs "
+      f"({OUTPUT_RATIO*100:.0f}% ratio, cap={MAX_OUTPUT})...")
+
+# Rank clips by gif_worthiness, take top N
+ranked_clips = sorted(clips, key=lambda x: x["gif_worthiness"], reverse=True)[:output_count]
 
 for i, clip in enumerate(ranked_clips):
     worth = clip["gif_worthiness"]
@@ -415,10 +423,14 @@ output = {
     "scored_kept": len(scored),
     "worthiness_distribution": bins,
     "synthesis": synthesis,
+    "sample_interval": SAMPLE_INTERVAL,
     "merge_gap": MERGE_GAP,
     "refine_radius": REFINE_RADIUS,
     "refine_interval": REFINE_INTERVAL,
-    "merged_clips": len(clips),
+    "output_ratio": OUTPUT_RATIO,
+    "max_output": MAX_OUTPUT,
+    "total_clips": len(clips),
+    "output_count": output_count,
     "multi_frame_clips": sum(1 for c in clips if c["frame_count"] > 1),
     "top_clips": [
         {"rank":i+1,"timestamp":clip["best_frame"]["timestamp"],
@@ -447,11 +459,13 @@ merged_count = sum(1 for c in ranked_clips if c["frame_count"]>1)
 
 print(f"\n{'='*60}")
 print(f"Two-pass adaptive extraction complete!")
-print(f"  Pass 1: {len(sample_frames)} coarse frames → {len(scored)-len(refine_ts)} scored")
+print(f"  Sampling: every {SAMPLE_INTERVAL}s, refine {REFINE_RADIUS}s radius @ {REFINE_INTERVAL}s")
+print(f"  Pass 1: {len(sample_frames)} coarse frames scored")
 print(f"  Pass 2: {len(refine_ts)} refinement frames around {len(high_ts)} high-score regions")
-print(f"  Merged into {len(clips)} clips ({multi_frame} crossing time boundaries)")
-print(f"  Top {TOP_K}: {merged_count} merged, {TOP_K-merged_count} single, dur {min(durations):.1f}s-{max(durations):.1f}s")
-print(f"  Worthiness range: {min(c['gif_worthiness'] for c in ranked_clips):.2f}-{max(c['gif_worthiness'] for c in ranked_clips):.2f}")
+print(f"  Clips: {len(clips)} total ({multi_frame} merged across boundaries, merge_gap={MERGE_GAP}s)")
+print(f"  Output: {output_count}/{len(clips)} clips (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
+print(f"  Duration: {min(durations):.1f}s - {max(durations):.1f}s")
+print(f"  Worthiness: {min(c['gif_worthiness'] for c in ranked_clips):.2f} - {max(c['gif_worthiness'] for c in ranked_clips):.2f}")
 print(f"  Emotions: {dict(sorted(emotions.items(), key=lambda x:-x[1]))}")
 print(f"  Export: {EXPORT_DIR}/")
 print(f"{'='*60}")
