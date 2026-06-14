@@ -11,7 +11,8 @@ import httpx
 from PIL import Image
 
 sys.path.insert(0, '.')
-from app.db import init_db, get_connection, load_config
+from app.db import init_db, get_connection
+from app.config import load_config
 from app.services.embedding import compute_text_embedding
 from app.services.indexer import get_index
 
@@ -40,7 +41,7 @@ OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final 
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
 
 print("=" * 60)
-print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, top {TOP_K}")
+print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
 print("=" * 60)
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -103,7 +104,7 @@ total_duration = float(probe.stdout.strip())
 print(f"  Duration: {total_duration:.0f}s ({total_duration/60:.0f} min)")
 
 # Generate sample timestamps
-timestamps = list(range(SAMPLE_INTERVAL, int(total_duration) - MAX_DURATION, SAMPLE_INTERVAL))
+timestamps = list(range(SAMPLE_INTERVAL, int(total_duration) - int(MAX_DURATION), SAMPLE_INTERVAL))
 print(f"  Sampling {len(timestamps)} timestamps")
 
 # Extract one frame per timestamp
