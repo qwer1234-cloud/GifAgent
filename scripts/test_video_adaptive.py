@@ -40,7 +40,8 @@ MERGE_GAP = 20             # max seconds between frames to merge (Plan D: scene-
 EMBED_SIM_THRESHOLD = 0.80 # cosine similarity threshold for embedding-based dedup
 OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
-GIF_WIDTH = 3840           # output GIF width (4K) — ffmpeg scale: W:-1
+GIF_WIDTH = 3840           # output GIF width
+GIF_HEIGHT = 2160          # output GIF height (4K UHD)
 
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
@@ -460,13 +461,13 @@ for i, clip in enumerate(ranked_clips):
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
-        "-vf",f"fps={fps},scale={GIF_WIDTH}:-1:flags=lanczos,palettegen",palette
+        "-vf",f"fps={fps},scale={GIF_WIDTH}:{GIF_HEIGHT}:force_original_aspect_ratio=decrease,pad={GIF_WIDTH}:{GIF_HEIGHT}:(ow-iw)/2:(oh-ih)/2,palettegen",palette
     ], capture_output=True, timeout=60)
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
         "-i",palette,
-        "-filter_complex",f"fps={fps},scale={GIF_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+        "-filter_complex",f"fps={fps},scale={GIF_WIDTH}:{GIF_HEIGHT}:force_original_aspect_ratio=decrease,pad={GIF_WIDTH}:{GIF_HEIGHT}:(ow-iw)/2:(oh-ih)/2[x];[x][1:v]paletteuse",
         out_gif
     ], capture_output=True, timeout=60)
 
