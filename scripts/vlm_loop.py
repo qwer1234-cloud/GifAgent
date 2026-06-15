@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""
+Robust VLM processing loop — auto-resume, checkpoint, log to file.
+
+Usage:
+  .venv\Scripts\python.exe -u scripts\vlm_loop.py
+
+Features:
+  - Processes 200 frames per batch with checkpoint auto-resume
+  - Logs progress to data/vlm_loop.log with timestamps
+  - Auto-restarts VLM model every 50 batches to prevent slowdown
+  - Stops on 3 consecutive batch failures
+"""
+import sys, os, time, json, re, uuid, base64, io, subprocess
+from datetime import datetime, timezone
+
+# Fix Windows GBK encoding
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+import httpx
+sys.path.insert(0, '.')
+from app.db import init_db, get_connection
+
+OLLAMA_BASE = "http://localhost:11434"
+VLM_MODEL = "llava:13b"
+LOG_FILE = "data/vlm_loop.log"
+BATCH_SIZE = 200
+MODEL_RESTART_EVERY = 50  # restart VLM every N batches to prevent slowdown
+
+FRAME_PROMPT = (
+    "Analyze this frame. Output ONLY JSON with real content:\n"
+    '{"caption":"what you see","emotional_core":"one word",'
+    '"aesthetic_notes":["2-3 observations"],"why_i_like_it":"one reason"}\n'
+    "CRITICAL: emotional_core = exactly one lowercase word from: "
+    "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|"
+    "nostalgia|admiration|intimacy|vulnerability|longing|desire|other"
+)
+VALID_EMOTIONS = {
+    "tension","melancholy","awe","joy","sadness","catharsis","serenity",
+    "excitement","dread","nostalgia","admiration","intimacy","vulnerability",
+    "longing","desire","other"
+}
+
+def log(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+
+def parse_json(text):
+    text = text.strip()
+    if "</think>" in text: text = text.split("</think>")[-1].strip()
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try: return json.loads(text)
+    except: pass
+    m = re.search(r"\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}", text, re.DOTALL)
+    if m:
+        try: return json.loads(m.group(0))
+        except: pass
+    return {"_parse_error": True, "_raw": text[:500]}
+
+def restart_model():
+    log("Restarting VLM to prevent slowdown...")
+    subprocess.run(["wsl", "ollama", "stop", "llava:13b"], capture_output=True, timeout=30)
+    time.sleep(15)
+    # Ping to reload
+    try:
+        httpx.post(f"{OLLAMA_BASE}/api/generate",
+                   json={"model": VLM_MODEL, "prompt": "ping", "stream": False}, timeout=60)
+    except Exception:
+        pass
+    time.sleep(10)
+
+def main():
+    init_db()
+    log("=" * 50)
+    log("VLM Loop started")
+
+    batch = 0
+    total = 0
+    fails = 0
+
+    while True:
+        conn = get_connection()
+        pending = conn.execute("SELECT COUNT(*) FROM frames WHERE vlm_status='pending'").fetchone()[0]
+        done = conn.execute("SELECT COUNT(*) FROM frames WHERE vlm_status='done'").fetchone()[0]
+        failed_count = conn.execute("SELECT COUNT(*) FROM frames WHERE vlm_status='failed'").fetchone()[0]
+
+        if pending == 0:
+            log(f"COMPLETE! {done} done, {failed_count} failed, {total} this session")
+            break
+
+        batch += 1
+        log(f"Batch {batch}: {pending} pending / {done} done / {failed_count} failed")
+
+        if batch > 1 and batch % MODEL_RESTART_EVERY == 0:
+            restart_model()
+
+        frames = conn.execute(
+            "SELECT f.frame_id, f.frame_path, f.media_id FROM frames f "
+            "WHERE f.vlm_status='pending' ORDER BY f.frame_id LIMIT ?",
+            (BATCH_SIZE,)
+        ).fetchall()
+
+        if not frames:
+            time.sleep(60)
+            continue
+
+        t0 = time.time()
+        done_count = 0
+        batch_failed = 0
+
+        for f in frames:
+            try:
+                with open(f["frame_path"], "rb") as fh:
+                    img_b64 = base64.b64encode(fh.read()).decode("utf-8")
+            except Exception:
+                conn.execute("UPDATE frames SET vlm_status='failed' WHERE frame_id=?", (f["frame_id"],))
+                conn.commit()
+                batch_failed += 1
+                continue
+
+            for attempt in range(3):
+                try:
+                    resp = httpx.post(
+                        f"{OLLAMA_BASE}/api/generate",
+                        json={"model": VLM_MODEL, "prompt": FRAME_PROMPT, "images": [img_b64], "stream": False},
+                        timeout=120,
+                    )
+                    resp.raise_for_status()
+                    raw = resp.json().get("response", "")
+                    parsed = parse_json(raw)
+
+                    raw_emo = (parsed.get("emotional_core") or "").strip().lower()
+                    if raw_emo and raw_emo not in VALID_EMOTIONS:
+                        parts = [p.strip() for p in raw_emo.replace("|", ",").split(",")]
+                        found = next((p for p in parts if p in VALID_EMOTIONS), None)
+                        parsed["emotional_core"] = found if found else "other"
+
+                    raw_cap = (parsed.get("caption") or "").strip()
+                    if raw_cap.startswith("describe what") or raw_cap.startswith("concise"):
+                        parsed["caption"] = ""
+
+                    fa_id = f"fa_{uuid.uuid4().hex[:12]}"
+                    now = datetime.now(timezone.utc).isoformat()
+                    conn.execute(
+                        "INSERT INTO frame_annotations (annotation_id, frame_id, media_id, model_name, "
+                        "caption, emotional_core, aesthetic_notes_json, why_i_like_it, raw_json, created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (fa_id, f["frame_id"], f["media_id"], VLM_MODEL,
+                         parsed.get("caption", ""), parsed.get("emotional_core", ""),
+                         json.dumps(parsed.get("aesthetic_notes", [])),
+                         parsed.get("why_i_like_it", ""),
+                         json.dumps(parsed, ensure_ascii=False), now),
+                    )
+                    conn.execute("UPDATE frames SET vlm_status='done' WHERE frame_id=?", (f["frame_id"],))
+                    conn.commit()
+                    done_count += 1
+                    break
+                except Exception:
+                    if attempt == 2:
+                        conn.execute("UPDATE frames SET vlm_status='failed' WHERE frame_id=?", (f["frame_id"],))
+                        conn.commit()
+                        batch_failed += 1
+                    time.sleep(2)
+
+        elapsed = time.time() - t0
+        total += done_count
+
+        if done_count == 0:
+            fails += 1
+            log(f"  {done_count}/{len(frames)} processed! Consecutive fails: {fails}/3")
+            if fails >= 3:
+                log("  3 consecutive failures, aborting.")
+                break
+        else:
+            fails = 0
+            avg = elapsed / max(done_count + batch_failed, 1)
+            eta_h = pending * avg / 3600
+            log(f"  {done_count}/{len(frames)} in {elapsed:.0f}s ({avg:.1f}s/frame) ETA {eta_h:.1f}h")
+
+        time.sleep(3)
+
+    log(f"VLM Loop finished. Session: {total}, DB: {done} done")
+
+if __name__ == "__main__":
+    main()
