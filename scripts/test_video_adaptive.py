@@ -36,9 +36,11 @@ REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.4 # below this, skip entirely
-MERGE_GAP = 8              # max seconds between frames to merge (shorter = more independent GIFs)
-OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output (0.5 = top 50%)
+MERGE_GAP = 20             # max seconds between frames to merge (Plan D: scene-level grouping)
+EMBED_SIM_THRESHOLD = 0.80 # cosine similarity threshold for embedding-based dedup
+OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
+GIF_WIDTH = 3840           # output GIF width (4K) — ffmpeg scale: W:-1
 
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
@@ -312,6 +314,62 @@ print(f"  Multi-frame clips (crossing boundaries): {multi_frame}")
 single_frame = sum(1 for c in clips if c["frame_count"] == 1)
 print(f"  Single-frame clips: {single_frame}")
 
+# ── Phase 2.7: Embedding-based dedup (Plan D) ──────────────────────────
+# After time-based merging, deduplicate by caption similarity
+print(f"\n[2.7/4] Embedding dedup (threshold={EMBED_SIM_THRESHOLD})...")
+
+# Compute text embeddings for each clip's best frame caption
+import numpy as np
+clip_texts = [c["best_frame"].get("caption", "") or f"frame_{c['start_ts']}" for c in clips]
+
+# Compute embeddings in batch (using FAISS index's embed function)
+clip_embs = []
+for i, ct in enumerate(clip_texts):
+    try:
+        emb = compute_text_embedding(ct)
+        clip_embs.append(emb)
+    except Exception:
+        clip_embs.append(None)
+    if (i + 1) % 100 == 0:
+        print(f"  [{i+1}/{len(clips)}] embeddings computed")
+
+# Greedy clustering by cosine similarity
+from collections import defaultdict
+clusters = []  # list of {"center_emb": [...], "members": [clip_index, ...]}
+
+for i, emb in enumerate(clip_embs):
+    if emb is None:
+        clusters.append({"center_emb": None, "members": [i]})
+        continue
+
+    vec = np.array(emb, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    if norm > 0:
+        vec = vec / norm  # normalize
+
+    assigned = False
+    for c in clusters:
+        if c["center_emb"] is not None:
+            sim = float(np.dot(vec, c["center_emb"]))
+            if sim >= EMBED_SIM_THRESHOLD:
+                c["members"].append(i)
+                assigned = True
+                break
+    if not assigned:
+        clusters.append({"center_emb": vec, "members": [i]})
+
+print(f"  {len(clips)} clips → {len(clusters)} clusters (dedup ratio: {1-len(clusters)/len(clips):.1%})")
+
+# Per cluster: keep top-1 by worthiness, plus top-2 if cluster > 5 members (preserve variety)
+deduped_clips = []
+for c in clusters:
+    members_sorted = sorted(c["members"], key=lambda idx: clips[idx]["gif_worthiness"], reverse=True)
+    keep_count = 2 if len(members_sorted) > 5 else 1
+    for idx in members_sorted[:keep_count]:
+        deduped_clips.append(clips[idx])
+
+print(f"  After dedup: {len(deduped_clips)} clips kept")
+
 # ── Phase 3: RAG + LLM synthesis ──────────────────────────────────────
 print(f"\n[3/4] RAG + LLM synthesis...")
 
@@ -334,12 +392,12 @@ for r in scored:
         except: r["rag_similar"] = []
     else: r["rag_similar"] = []
 
-# LLM synthesis with scored frames
-top_for_synth = sorted(scored, key=lambda x: x["gif_worthiness"], reverse=True)[:20]
+# LLM synthesis with deduped clips
+top_for_synth = sorted(deduped_clips, key=lambda x: x["gif_worthiness"], reverse=True)[:20]
 analyses = "\n\n".join(
-    f"Frame {i+1} (t={r['timestamp']}s, worth={r['gif_worthiness']:.2f}): "
-    f"caption={r.get('caption','')}, emotion={r.get('emotional_core','')}"
-    for i,r in enumerate(top_for_synth)
+    f"Frame {i+1} (t={c['best_frame']['timestamp']}s, worth={c['gif_worthiness']:.2f}): "
+    f"caption={c['best_frame'].get('caption','')}, emotion={c['best_frame'].get('emotional_core','')}"
+    for i,c in enumerate(top_for_synth)
 )
 
 synth_prompt = (
@@ -368,17 +426,17 @@ for attempt in range(3):
         time.sleep(5)
 
 # ── Phase 4: Export adaptive-duration GIFs ─────────────────────────────
-# Determine output count: ratio of total, capped at MAX_OUTPUT
-output_count = int(len(clips) * OUTPUT_RATIO)
+# Determine output count: ratio of total deduped clips, capped at MAX_OUTPUT
+output_count = int(len(deduped_clips) * OUTPUT_RATIO)
 if MAX_OUTPUT > 0:
     output_count = min(output_count, MAX_OUTPUT)
-output_count = max(1, output_count)  # at least 1
+output_count = max(1, output_count)
 
-print(f"\n[4/4] Exporting {output_count}/{len(clips)} GIFs "
+print(f"\n[4/4] Exporting {output_count}/{len(deduped_clips)} GIFs (4K) "
       f"({OUTPUT_RATIO*100:.0f}% ratio, cap={MAX_OUTPUT})...")
 
 # Rank clips by gif_worthiness, take top N
-ranked_clips = sorted(clips, key=lambda x: x["gif_worthiness"], reverse=True)[:output_count]
+ranked_clips = sorted(deduped_clips, key=lambda x: x["gif_worthiness"], reverse=True)[:output_count]
 
 for i, clip in enumerate(ranked_clips):
     worth = clip["gif_worthiness"]
@@ -398,19 +456,23 @@ for i, clip in enumerate(ranked_clips):
     out_gif = f"{EXPORT_DIR}/adapt_{i+1:03d}_w{worth:.2f}_t{int(ts)}s.gif"
     palette = f"{EXPORT_DIR}/pal_{i+1:03d}.png"
 
-    fps = 12 if worth > 0.6 else 8
+    fps = 10 if worth > 0.6 else 8  # 10fps for 4K to keep file sizes reasonable
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
-        "-vf",f"fps={fps},scale=480:-1:flags=lanczos,palettegen",palette
-    ], capture_output=True, timeout=30)
+        "-vf",f"fps={fps},scale={GIF_WIDTH}:-1:flags=lanczos,palettegen",palette
+    ], capture_output=True, timeout=60)
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
         "-i",palette,
-        "-filter_complex",f"fps={fps},scale=480:-1:flags=lanczos[x];[x][1:v]paletteuse",
+        "-filter_complex",f"fps={fps},scale={GIF_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
         out_gif
-    ], capture_output=True, timeout=30)
+    ], capture_output=True, timeout=60)
+
+    # Clean up palette PNG immediately after GIF generation
+    if os.path.exists(palette):
+        os.remove(palette)
 
     if os.path.exists(out_gif):
         sz = os.path.getsize(out_gif)
@@ -432,7 +494,10 @@ output = {
     "refine_interval": REFINE_INTERVAL,
     "output_ratio": OUTPUT_RATIO,
     "max_output": MAX_OUTPUT,
+    "embed_dedup_threshold": EMBED_SIM_THRESHOLD,
     "total_clips": len(clips),
+    "deduped_clips": len(deduped_clips),
+    "clusters_after_dedup": len(clusters),
     "output_count": output_count,
     "multi_frame_clips": sum(1 for c in clips if c["frame_count"] > 1),
     "top_clips": [
@@ -465,8 +530,9 @@ print(f"Two-pass adaptive extraction complete!")
 print(f"  Sampling: every {SAMPLE_INTERVAL}s, refine {REFINE_RADIUS}s radius @ {REFINE_INTERVAL}s")
 print(f"  Pass 1: {len(sample_frames)} coarse frames scored")
 print(f"  Pass 2: {len(refine_ts)} refinement frames around {len(high_ts)} high-score regions")
-print(f"  Clips: {len(clips)} total ({multi_frame} merged across boundaries, merge_gap={MERGE_GAP}s)")
-print(f"  Output: {output_count}/{len(clips)} clips (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
+print(f"  Clips: {len(clips)} total ({multi_frame} merged, merge_gap={MERGE_GAP}s)")
+print(f"  Plan D dedup: {len(clips)} → {len(deduped_clips)} clips ({len(clusters)} clusters)")
+print(f"  Output: {output_count} GIFs @ {GIF_WIDTH}px (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
 print(f"  Duration: {min(durations):.1f}s - {max(durations):.1f}s")
 print(f"  Worthiness: {min(c['gif_worthiness'] for c in ranked_clips):.2f} - {max(c['gif_worthiness'] for c in ranked_clips):.2f}")
 print(f"  Emotions: {dict(sorted(emotions.items(), key=lambda x:-x[1]))}")
