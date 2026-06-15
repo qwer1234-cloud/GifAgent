@@ -36,8 +36,8 @@ REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.4 # below this, skip entirely
-MERGE_GAP = 20             # max seconds between frames to merge (Plan D: scene-level grouping)
-EMBED_SIM_THRESHOLD = 0.80 # cosine similarity threshold for embedding-based dedup
+MERGE_GAP = 10             # max seconds between frames to merge (shorter = more independent GIFs)
+EMBED_SIM_THRESHOLD = 0.95 # cosine similarity threshold for embedding dedup (higher = stricter)
 OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
 GIF_MAX_WIDTH = 1920       # max output width (0 = use source resolution)
@@ -364,7 +364,7 @@ print(f"  {len(clips)} clips → {len(clusters)} clusters (dedup ratio: {1-len(c
 deduped_clips = []
 for c in clusters:
     members_sorted = sorted(c["members"], key=lambda idx: clips[idx]["gif_worthiness"], reverse=True)
-    keep_count = 2 if len(members_sorted) > 5 else 1
+    keep_count = 3 if len(members_sorted) > 10 else (2 if len(members_sorted) > 3 else 1)
     for idx in members_sorted[:keep_count]:
         deduped_clips.append(clips[idx])
 
