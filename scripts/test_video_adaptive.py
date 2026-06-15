@@ -38,7 +38,7 @@ MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.4 # below this, skip entirely
 MERGE_GAP = 10             # max seconds between frames to merge (shorter = more independent GIFs)
 EMBED_SIM_THRESHOLD = 0.95 # cosine similarity threshold for embedding dedup (higher = stricter)
-OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output
+OUTPUT_RATIO = 1.0         # fraction of total extracted clips to keep as final output
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
 GIF_MAX_WIDTH = 1920       # max output width (0 = use source resolution)
 
