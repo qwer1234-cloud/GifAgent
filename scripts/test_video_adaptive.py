@@ -40,8 +40,7 @@ MERGE_GAP = 20             # max seconds between frames to merge (Plan D: scene-
 EMBED_SIM_THRESHOLD = 0.80 # cosine similarity threshold for embedding-based dedup
 OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
-GIF_WIDTH = 3840           # output GIF width
-GIF_HEIGHT = 2160          # output GIF height (4K UHD)
+GIF_MAX_WIDTH = 1920       # max output width (0 = use source resolution)
 
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
@@ -461,13 +460,13 @@ for i, clip in enumerate(ranked_clips):
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
-        "-vf",f"fps={fps},scale={GIF_WIDTH}:{GIF_HEIGHT}:force_original_aspect_ratio=decrease,pad={GIF_WIDTH}:{GIF_HEIGHT}:(ow-iw)/2:(oh-ih)/2,palettegen",palette
+        "-vf",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",palette
     ], capture_output=True, timeout=60)
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
         "-i",palette,
-        "-filter_complex",f"fps={fps},scale={GIF_WIDTH}:{GIF_HEIGHT}:force_original_aspect_ratio=decrease,pad={GIF_WIDTH}:{GIF_HEIGHT}:(ow-iw)/2:(oh-ih)/2[x];[x][1:v]paletteuse",
+        "-filter_complex",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
         out_gif
     ], capture_output=True, timeout=60)
 
@@ -533,7 +532,7 @@ print(f"  Pass 1: {len(sample_frames)} coarse frames scored")
 print(f"  Pass 2: {len(refine_ts)} refinement frames around {len(high_ts)} high-score regions")
 print(f"  Clips: {len(clips)} total ({multi_frame} merged, merge_gap={MERGE_GAP}s)")
 print(f"  Plan D dedup: {len(clips)} → {len(deduped_clips)} clips ({len(clusters)} clusters)")
-print(f"  Output: {output_count} GIFs @ {GIF_WIDTH}px (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
+print(f"  Output: {output_count} GIFs @ max {GIF_MAX_WIDTH}px (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
 print(f"  Duration: {min(durations):.1f}s - {max(durations):.1f}s")
 print(f"  Worthiness: {min(c['gif_worthiness'] for c in ranked_clips):.2f} - {max(c['gif_worthiness'] for c in ranked_clips):.2f}")
 print(f"  Emotions: {dict(sorted(emotions.items(), key=lambda x:-x[1]))}")
