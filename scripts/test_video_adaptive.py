@@ -36,7 +36,7 @@ REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.4 # below this, skip entirely
-MERGE_GAP = 15             # max seconds between frames to merge (shorter = multiple GIFs per minute)
+MERGE_GAP = 8              # max seconds between frames to merge (shorter = more independent GIFs)
 OUTPUT_RATIO = 0.5         # fraction of total extracted clips to keep as final output (0.5 = top 50%)
 MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
 
@@ -67,15 +67,17 @@ VALID_EMOTIONS = {"tension","melancholy","awe","joy","sadness","catharsis",
                   "intimacy","vulnerability","longing","desire","other"}
 
 SCORE_PROMPT = (
-    "You are evaluating a frame from a film for GIF potential. Output ONLY JSON:\n"
+    "You are evaluating a film frame for GIF potential. Be DECISIVE - use the full 0.0-1.0 scale.\n"
+    "Output ONLY JSON:\n"
     '{"caption":"what you see","emotional_core":"one word","gif_worthiness":0.5,'
-    '"aesthetic_notes":["2-3 observations"],"reason":"why this would make a good GIF (or not)"}\n\n'
-    "gif_worthiness: 0.0 to 1.0 scale.\n"
-    "  0.0-0.3: static shot, nothing happening, dark/blurry, skip.\n"
-    "  0.3-0.5: mildly interesting, single character, basic composition.\n"
-    "  0.5-0.7: good scene, clear emotion or action, cinematic framing.\n"
-    "  0.7-0.9: excellent moment, strong emotion/movement, beautiful composition.\n"
-    "  0.9-1.0: iconic shot, peak drama, would go viral as a reaction GIF.\n"
+    '"aesthetic_notes":["2-3 observations"],"reason":"why this works as a GIF (or why not)"}\n\n'
+    "gif_worthiness scale - SPREAD YOUR SCORES:\n"
+    "  0.0-0.2: BAD - static, dark, blurry, nothing happening, empty frame, skip.\n"
+    "  0.2-0.4: BELOW AVERAGE - barely interesting, single person standing, generic background.\n"
+    "  0.4-0.6: AVERAGE - some emotion visible, decent composition, could work as context GIF.\n"
+    "  0.6-0.8: GOOD - clear emotion or action, cinematic framing, would save to collection.\n"
+    "  0.8-1.0: EXCELLENT - iconic shot, peak drama, beautiful lighting, perfect reaction GIF material.\n\n"
+    "IMPORTANT: Do NOT give everything 0.5-0.7. Use the extremes. Bad frames get 0.1. Great frames get 0.9.\n"
     "CRITICAL: emotional_core = EXACTLY ONE lowercase word from: "
     "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|admiration|intimacy|vulnerability|longing|desire|other"
 )

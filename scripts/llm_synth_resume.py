@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Resume LLM synthesis from VLM frame annotations (checkpoint recovery)."""
-import sys, json, re, uuid, time
+import sys, json, re, uuid, time, io
 from datetime import datetime, timezone
 import httpx
+
+# Fix GBK encoding issues on Windows
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
@@ -10,7 +14,7 @@ from app.db import init_db, get_connection
 init_db()
 conn = get_connection()
 
-LLM_MODEL = 'fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b'
+LLM_MODEL = 'hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M'
 OLLAMA_BASE = 'http://localhost:11434'
 
 # Find media with frame_annotations but no media-level annotation

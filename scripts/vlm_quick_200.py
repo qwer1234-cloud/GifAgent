@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Quick VLM processing for 200 pending RAG frames."""
-import sys, json, re, uuid, time, base64
+import sys, json, re, uuid, time, base64, io
 from datetime import datetime, timezone
 import httpx
+
+# Fix GBK encoding issues on Windows
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
