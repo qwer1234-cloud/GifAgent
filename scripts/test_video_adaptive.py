@@ -314,61 +314,10 @@ print(f"  Multi-frame clips (crossing boundaries): {multi_frame}")
 single_frame = sum(1 for c in clips if c["frame_count"] == 1)
 print(f"  Single-frame clips: {single_frame}")
 
-# ── Phase 2.7: Embedding-based dedup (Plan D) ──────────────────────────
-# After time-based merging, deduplicate by caption similarity
-print(f"\n[2.7/4] Embedding dedup (threshold={EMBED_SIM_THRESHOLD})...")
-
-# Compute text embeddings for each clip's best frame caption
-import numpy as np
-clip_texts = [c["best_frame"].get("caption", "") or f"frame_{c['start_ts']}" for c in clips]
-
-# Compute embeddings in batch (using FAISS index's embed function)
-clip_embs = []
-for i, ct in enumerate(clip_texts):
-    try:
-        emb = compute_text_embedding(ct)
-        clip_embs.append(emb)
-    except Exception:
-        clip_embs.append(None)
-    if (i + 1) % 100 == 0:
-        print(f"  [{i+1}/{len(clips)}] embeddings computed")
-
-# Greedy clustering by cosine similarity
-from collections import defaultdict
-clusters = []  # list of {"center_emb": [...], "members": [clip_index, ...]}
-
-for i, emb in enumerate(clip_embs):
-    if emb is None:
-        clusters.append({"center_emb": None, "members": [i]})
-        continue
-
-    vec = np.array(emb, dtype=np.float32)
-    norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm  # normalize
-
-    assigned = False
-    for c in clusters:
-        if c["center_emb"] is not None:
-            sim = float(np.dot(vec, c["center_emb"]))
-            if sim >= EMBED_SIM_THRESHOLD:
-                c["members"].append(i)
-                assigned = True
-                break
-    if not assigned:
-        clusters.append({"center_emb": vec, "members": [i]})
-
-print(f"  {len(clips)} clips → {len(clusters)} clusters (dedup ratio: {1-len(clusters)/len(clips):.1%})")
-
-# Per cluster: keep top-1 by worthiness, plus top-2 if cluster > 5 members (preserve variety)
-deduped_clips = []
-for c in clusters:
-    members_sorted = sorted(c["members"], key=lambda idx: clips[idx]["gif_worthiness"], reverse=True)
-    keep_count = 3 if len(members_sorted) > 10 else (2 if len(members_sorted) > 3 else 1)
-    for idx in members_sorted[:keep_count]:
-        deduped_clips.append(clips[idx])
-
-print(f"  After dedup: {len(deduped_clips)} clips kept")
+# ── Phase 2.7: Skip embedding dedup, pass all clips through ────────────
+deduped_clips = clips
+clusters = [{"center_emb": None, "members": [i]} for i in range(len(clips))]
+print(f"\n[2.7/4] Dedup skipped — {len(deduped_clips)} clips passed through")
 
 # ── Phase 3: RAG + LLM synthesis ──────────────────────────────────────
 print(f"\n[3/4] RAG + LLM synthesis...")
