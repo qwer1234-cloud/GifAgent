@@ -11,8 +11,10 @@ PLACEHOLDER_SUBSTRINGS = [
     "3-5 keywords",
     "why this works as a gif",
     "describe what you actually see",
+    "describe actual visible subjects",
     "concise description",
     "what you actually observe",
+    "one personal cinephile reason",
 ]
 
 
