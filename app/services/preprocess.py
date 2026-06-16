@@ -31,7 +31,7 @@ def extract_gif_frames(media_id: str) -> list[dict]:
         "-vf", f"fps=2,scale=640:-1",
         f"{prefix}_frame_%06d.jpg",
     ]
-    subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
 
     # Discover generated frames
     frame_files = sorted(Path(frames_dir).glob(f"{media_id}_frame_*.jpg"))
@@ -74,7 +74,7 @@ def generate_thumbnail(media_id: str) -> Optional[str]:
         cmd = ["ffmpeg", "-y", "-i", row["file_path"], "-vf", "scale=320:-1", "-vframes", "1", thumb_path]
     else:
         cmd = ["ffmpeg", "-y", "-i", row["file_path"], "-vf", "scale=320:-1", thumb_path]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=30)
     if result.returncode == 0 and os.path.exists(thumb_path):
         return thumb_path
     return None
