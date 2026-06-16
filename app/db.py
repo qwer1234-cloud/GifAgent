@@ -139,13 +139,37 @@ def init_db():
 
 def _migrate(conn):
     """Add columns missing from older schema versions, then add their indexes."""
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(media)").fetchall()}
-    if "cluster_id" not in existing:
-        conn.execute("ALTER TABLE media ADD COLUMN cluster_id TEXT")
-    if "is_representative" not in existing:
-        conn.execute("ALTER TABLE media ADD COLUMN is_representative INTEGER DEFAULT 0")
+    # media
+    m_cols = {r[1] for r in conn.execute("PRAGMA table_info(media)").fetchall()}
+    for col, ddl in [("cluster_id", "TEXT"), ("is_representative", "INTEGER DEFAULT 0")]:
+        if col not in m_cols:
+            conn.execute(f"ALTER TABLE media ADD COLUMN {col} {ddl}")
+
+    # frames
+    f_cols = {r[1] for r in conn.execute("PRAGMA table_info(frames)").fetchall()}
+    for col, ddl in [("vlm_attempts", "INTEGER DEFAULT 0"), ("vlm_error", "TEXT")]:
+        if col not in f_cols:
+            conn.execute(f"ALTER TABLE frames ADD COLUMN {col} {ddl}")
+
+    # frame_annotations
+    fa_cols = {r[1] for r in conn.execute("PRAGMA table_info(frame_annotations)").fetchall()}
+    for col, ddl in [("quality_status", "TEXT DEFAULT 'unchecked'"), ("quality_errors_json", "TEXT")]:
+        if col not in fa_cols:
+            conn.execute(f"ALTER TABLE frame_annotations ADD COLUMN {col} {ddl}")
+
+    # annotations
+    a_cols = {r[1] for r in conn.execute("PRAGMA table_info(annotations)").fetchall()}
+    for col, ddl in [("quality_status", "TEXT DEFAULT 'unchecked'"), ("quality_errors_json", "TEXT")]:
+        if col not in a_cols:
+            conn.execute(f"ALTER TABLE annotations ADD COLUMN {col} {ddl}")
+
+    # vector_refs
+    vr_cols = {r[1] for r in conn.execute("PRAGMA table_info(vector_refs)").fetchall()}
+    for col, ddl in [("embedding_model", "TEXT"), ("embedding_dim", "INTEGER"), ("source_hash", "TEXT")]:
+        if col not in vr_cols:
+            conn.execute(f"ALTER TABLE vector_refs ADD COLUMN {col} {ddl}")
+
     conn.commit()
-    # Add indexes that reference migrated columns (IF NOT EXISTS safe)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_cluster ON media(cluster_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_media_representative ON media(is_representative)")
     conn.commit()

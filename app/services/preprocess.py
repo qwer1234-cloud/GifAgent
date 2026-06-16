@@ -19,8 +19,12 @@ def extract_gif_frames(media_id: str) -> list[dict]:
 
     file_path = row["file_path"]
     total_frames = row["frame_count"]
-    sample_count = min(get("media.gif_max_sample_frames", 12), total_frames)
-    sample_count = max(get("media.gif_sample_frames", 8), sample_count)
+    duration = row["duration"] or 0
+    max_frames = get("media.gif_max_sample_frames", 12)
+    min_frames = get("media.gif_sample_frames", 8)
+    sample_count = min(max_frames, max(min_frames, total_frames))
+    # Calculate fps to evenly sample the GIF
+    target_fps = max(1, sample_count / max(duration, 0.1))
 
     frames_dir = get("paths.frames_dir", "data/frames")
     os.makedirs(frames_dir, exist_ok=True)
@@ -28,7 +32,7 @@ def extract_gif_frames(media_id: str) -> list[dict]:
     prefix = f"{frames_dir}/{media_id}"
     cmd = [
         "ffmpeg", "-y", "-i", file_path,
-        "-vf", f"fps=2,scale=640:-1",
+        "-vf", f"fps={target_fps:.1f},scale=640:-1",
         f"{prefix}_frame_%06d.jpg",
     ]
     subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace", timeout=60)
