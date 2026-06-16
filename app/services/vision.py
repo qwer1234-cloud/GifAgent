@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 import httpx
 
 from app.db import get_connection
+from app.services.json_guard import parse_json_response
+from app.services.quality import validate_frame_analysis, normalize_emotional_core
 from app.config import get
 
 VLM_BASE = get("vlm.base_url", "http://localhost:11434")
@@ -31,21 +33,11 @@ IMPORTANT RULES:
 - caption and why_i_like_it MUST contain real descriptions, not the instruction text itself."""
 
 
-def _parse_json_response(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r"\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            pass
+def _parse_response(text: str) -> dict:
+    """Thin wrapper around json_guard for backward compat."""
+    result = parse_json_response(text)
+    if result.ok and result.data:
+        return result.data
     return {"_parse_error": True, "_raw": text[:500]}
 
 
@@ -68,25 +60,19 @@ def analyze_frame(frame_id: str, image_path: str, media_id: str) -> dict:
     data = resp.json()
     response_text = data.get("response", "")
 
-    parsed = _parse_json_response(response_text)
+    parsed = _parse_response(response_text)
     if parsed.get("_parse_error"):
         print(f"[WARN] JSON parse failed for frame {frame_id}: {parsed.get('_raw', '')[:200]}")
 
-    # Post-process: clean up emotional_core (model may return pipe-delimited list or template text)
-    VALID_EMOTIONS = {"tension", "melancholy", "awe", "joy", "sadness", "catharsis", "serenity",
-                      "excitement", "dread", "nostalgia", "admiration", "intimacy", "vulnerability",
-                      "longing", "desire", "other"}
-    raw_emotion = (parsed.get("emotional_core") or "").strip().lower()
-    if raw_emotion and raw_emotion not in VALID_EMOTIONS:
-        # Try to extract first valid emotion from pipe-delimited or comma-delimited string
-        parts = [p.strip() for p in raw_emotion.replace("|", ",").split(",")]
-        found = next((p for p in parts if p in VALID_EMOTIONS), None)
-        parsed["emotional_core"] = found if found else "other"
-
-    # Post-process: discard template/placeholder text in caption
-    raw_caption = (parsed.get("caption") or "").strip()
-    if not raw_caption or raw_caption.startswith("concise description") or raw_caption.startswith("describe what"):
-        parsed["caption"] = ""
+    # Quality validation
+    cleaned, quality_errors = validate_frame_analysis(parsed)
+    if quality_errors:
+        print(f"[WARN] Quality check failed for frame {frame_id}: {quality_errors}")
+        # Still save with corrections, but mark status
+        conn = get_connection()
+        conn.execute("UPDATE frames SET vlm_status='quality_failed' WHERE frame_id=?", (frame_id,))
+        conn.commit()
+        # For now, fall through and save the cleaned version
 
     annotation_id = f"ann_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()

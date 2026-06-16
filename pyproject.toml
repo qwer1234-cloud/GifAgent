@@ -19,5 +19,8 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
-[tool.uv]
-dev-dependencies = []
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "respx>=0.21",
+]

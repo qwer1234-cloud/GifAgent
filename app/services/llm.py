@@ -2,38 +2,26 @@
 import json
 import re
 import uuid
+import time
 from datetime import datetime, timezone
 from typing import Optional, List
 
 import httpx
 
 from app.db import get_connection
+from app.services.json_guard import parse_json_response
+from app.services.quality import validate_media_annotation
 from app.config import get
 
 LLM_BASE = get("llm.base_url", "http://localhost:11434")
 LLM_MODEL = get("llm.model")
 
 
-def _parse_json_response(text: str) -> dict:
-    text = text.strip()
-    # Strip Qwen-style think tags
-    if "</think>" in text:
-        text = text.split("</think>")[-1].strip()
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    # Strip markdown code fences
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r"\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}", text, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(0))
-        except json.JSONDecodeError:
-            pass
+def _parse_response(text: str) -> dict:
+    """Thin wrapper around json_guard for backward compat."""
+    result = parse_json_response(text)
+    if result.ok and result.data:
+        return result.data
     return {"_parse_error": True, "_raw": text[:500]}
 
 
@@ -99,7 +87,7 @@ def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
             if not response_text or not response_text.strip():
                 raise ValueError("Empty response from LLM")
 
-            parsed = _parse_json_response(response_text)
+            parsed = _parse_response(response_text)
             if parsed.get("_parse_error"):
                 raw = parsed.get("_raw", "")
                 if attempt < 2 and raw:
@@ -107,6 +95,16 @@ def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
                     prompt = prompt + "\n\nCRITICAL: Your last response was not valid JSON. Output ONLY the JSON object, no other text."
                     continue
                 print(f"[WARN] JSON parse failed for media {media_id} after 3 attempts: {raw[:200]}")
+
+            # Quality validation
+            cleaned, q_errors = validate_media_annotation(parsed)
+            if q_errors and attempt < 2:
+                print(f"[WARN] Quality check failed for media {media_id}: {q_errors}")
+                prompt = prompt + f"\n\nIssues with your response: {', '.join(q_errors)}. Fix these and output valid JSON."
+                continue
+            elif q_errors:
+                print(f"[WARN] Quality check failed for media {media_id} after 3 attempts: {q_errors}")
+            parsed = {**parsed, **cleaned}
             break
         except Exception as e:
             if attempt < 2:
