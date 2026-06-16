@@ -136,6 +136,55 @@ def api_save_feedback(media_id: str = Query(...), rating: str = Query(...), tags
     return {"status": "ok", "feedback_id": feedback_id}
 
 
+@app.get("/api/review/next")
+def api_review_next():
+    """Return the next un-reviewed media item for the Gradio UI."""
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT m.media_id FROM media m
+           INNER JOIN annotations a ON m.media_id = a.media_id
+           WHERE m.media_id NOT IN (SELECT media_id FROM feedback)
+           ORDER BY RANDOM() LIMIT 1"""
+    ).fetchone()
+
+    if not row:
+        return JSONResponse({"message": "No more items to review"}, status_code=404)
+
+    media_id = row["media_id"]
+    return api_get_media_with_review(media_id)
+
+
+@app.get("/api/review/{media_id}")
+def api_get_media_with_review(media_id: str):
+    """Return full review data for a media item, including annotation and similar GIFs."""
+    conn = get_connection()
+    media = conn.execute("SELECT * FROM media WHERE media_id=?", (media_id,)).fetchone()
+    if not media:
+        return JSONResponse({"error": "Not found"}, status_code=404)
+
+    annotation = conn.execute("SELECT * FROM annotations WHERE media_id=?", (media_id,)).fetchone()
+    existing_feedback = conn.execute("SELECT * FROM feedback WHERE media_id=?", (media_id,)).fetchone()
+
+    # Get similar GIFs from FAISS if available
+    similar = []
+    try:
+        from app.services.embedding import compute_text_summary_embedding
+        from app.services.indexer import get_index
+        emb = compute_text_summary_embedding(media_id)
+        if emb:
+            idx = get_index()
+            similar = idx.search(emb, top_k=5)
+    except Exception:
+        pass
+
+    return {
+        "media": dict(media),
+        "annotation": dict(annotation) if annotation else None,
+        "similar": similar,
+        "feedback": dict(existing_feedback) if existing_feedback else None,
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

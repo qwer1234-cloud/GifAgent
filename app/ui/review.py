@@ -7,16 +7,36 @@ API_BASE = "http://127.0.0.1:8000"
 
 
 def load_next_for_review():
-    """Fetch the next media item that needs review."""
+    """Fetch the next un-reviewed media item from the API."""
     try:
-        resp = httpx.get(f"{API_BASE}/api/status", timeout=5)
-        status = resp.json()
-    except Exception:
-        return None, "", None, "", [], "", "Cannot connect to API", ""
+        resp = httpx.get(f"{API_BASE}/api/review/next", timeout=10)
+        if resp.status_code != 200:
+            return None, "", None, None, [], "", "No items to review", ""
+        data = resp.json()
+        media = data.get("media", {})
+        annotation = data.get("annotation", {})
+        similar = data.get("similar", [])
 
-    conn_info = f"Media: {status['media_count']} | Frames: {status['frame_count']} | Annotated: {status['annotated_media']}"
+        media_id = media.get("media_id", "")
+        preview_path = media.get("file_path", "")
+        summary = annotation.get("summary", "")
+        emotional = annotation.get("emotional_core", "")
+        aesthetic = ", ".join(json.loads(annotation.get("aesthetic_notes_json", "[]")) or [])
+        why = annotation.get("why_i_like_it", "")
+        tags_str = ", ".join(json.loads(annotation.get("tags_json", "[]")) or [])
 
-    return None, "", None, "", [], "", conn_info, ""
+        # Build status line
+        conn_info = f"ID: {media_id[:16]}... | Emotion: {emotional}"
+
+        similar_previews = []
+        for s in similar[:3]:
+            # Try to load thumbnail; fall back to placeholder
+            similar_previews.append((None, f"{s.get('emotional_core','?')} | {s.get('film','?')}"))
+
+        return (preview_path, media_id, summary, emotional,
+                similar_previews, aesthetic, why, tags_str, conn_info)
+    except Exception as e:
+        return None, "", None, None, [], "", f"Error: {e}", "", ""
 
 
 def rate(media_id, rating, tags, reason):
