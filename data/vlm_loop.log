@@ -112,3 +112,246 @@
 [2026-06-16 23:55:15] ==================================================
 [2026-06-16 23:55:15] VLM Loop started
 [2026-06-16 23:55:15] Batch 1: 121581 pending / 96 done / 0 failed
+[2026-06-17 00:02:32] ==================================================
+[2026-06-17 00:02:32] VLM Loop started
+[2026-06-17 00:02:32] Batch 1: 121509 pending / 168 done / 0 failed
+[2026-06-17 00:23:04]   200/200 in 1232s (6.2s/frame) ETA 207.9h
+[2026-06-17 00:23:07] Batch 2: 121309 pending / 368 done / 0 failed
+[2026-06-17 00:42:47]   200/200 in 1180s (5.9s/frame) ETA 198.8h
+[2026-06-17 00:42:50] Batch 3: 121109 pending / 568 done / 0 failed
+[2026-06-17 01:02:20]   200/200 in 1170s (5.9s/frame) ETA 196.9h
+[2026-06-17 01:02:23] Batch 4: 120909 pending / 768 done / 0 failed
+[2026-06-17 01:22:16]   200/200 in 1193s (6.0s/frame) ETA 200.4h
+[2026-06-17 01:22:19] Batch 5: 120709 pending / 968 done / 0 failed
+[2026-06-17 01:41:42]   199/200 in 1163s (5.8s/frame) ETA 195.0h
+[2026-06-17 01:41:45] Batch 6: 120509 pending / 1167 done / 1 failed
+[2026-06-17 02:01:56]   200/200 in 1210s (6.1s/frame) ETA 202.6h
+[2026-06-17 02:01:59] Batch 7: 120309 pending / 1367 done / 1 failed
+[2026-06-17 02:21:29]   200/200 in 1170s (5.9s/frame) ETA 195.5h
+[2026-06-17 02:21:32] Batch 8: 120109 pending / 1567 done / 1 failed
+[2026-06-17 02:41:58]   200/200 in 1226s (6.1s/frame) ETA 204.6h
+[2026-06-17 02:42:01] Batch 9: 119909 pending / 1767 done / 1 failed
+[2026-06-17 03:02:29]   200/200 in 1228s (6.1s/frame) ETA 204.4h
+[2026-06-17 03:02:32] Batch 10: 119709 pending / 1967 done / 1 failed
+[2026-06-17 03:22:27]   200/200 in 1195s (6.0s/frame) ETA 198.6h
+[2026-06-17 03:22:30] Batch 11: 119509 pending / 2167 done / 1 failed
+[2026-06-17 03:42:46]   200/200 in 1216s (6.1s/frame) ETA 201.9h
+[2026-06-17 03:42:49] Batch 12: 119309 pending / 2367 done / 1 failed
+[2026-06-17 04:02:50]   200/200 in 1201s (6.0s/frame) ETA 199.1h
+[2026-06-17 04:02:53] Batch 13: 119109 pending / 2567 done / 1 failed
+[2026-06-17 04:22:19]   200/200 in 1166s (5.8s/frame) ETA 192.9h
+[2026-06-17 04:22:22] Batch 14: 118909 pending / 2767 done / 1 failed
+[2026-06-17 04:41:49]   200/200 in 1166s (5.8s/frame) ETA 192.6h
+[2026-06-17 04:41:52] Batch 15: 118709 pending / 2967 done / 1 failed
+[2026-06-17 05:01:32]   200/200 in 1181s (5.9s/frame) ETA 194.6h
+[2026-06-17 05:01:35] Batch 16: 118509 pending / 3167 done / 1 failed
+[2026-06-17 05:22:16]   200/200 in 1240s (6.2s/frame) ETA 204.1h
+[2026-06-17 05:22:19] Batch 17: 118309 pending / 3367 done / 1 failed
+[2026-06-17 05:41:54]   200/200 in 1176s (5.9s/frame) ETA 193.2h
+[2026-06-17 05:41:57] Batch 18: 118109 pending / 3567 done / 1 failed
+[2026-06-17 06:01:31]   200/200 in 1174s (5.9s/frame) ETA 192.5h
+[2026-06-17 06:01:34] Batch 19: 117909 pending / 3767 done / 1 failed
+[2026-06-17 06:21:32]   200/200 in 1198s (6.0s/frame) ETA 196.2h
+[2026-06-17 06:21:35] Batch 20: 117709 pending / 3967 done / 1 failed
+[2026-06-17 06:40:26]   200/200 in 1131s (5.7s/frame) ETA 184.9h
+[2026-06-17 06:40:29] Batch 21: 117509 pending / 4167 done / 1 failed
+[2026-06-17 06:59:47]   200/200 in 1158s (5.8s/frame) ETA 189.0h
+[2026-06-17 06:59:50] Batch 22: 117309 pending / 4367 done / 1 failed
+[2026-06-17 07:19:42]   200/200 in 1192s (6.0s/frame) ETA 194.2h
+[2026-06-17 07:19:45] Batch 23: 117109 pending / 4567 done / 1 failed
+[2026-06-17 07:38:28]   200/200 in 1123s (5.6s/frame) ETA 182.7h
+[2026-06-17 07:38:31] Batch 24: 116909 pending / 4767 done / 1 failed
+[2026-06-17 07:57:22]   200/200 in 1131s (5.7s/frame) ETA 183.7h
+[2026-06-17 07:57:25] Batch 25: 116709 pending / 4967 done / 1 failed
+[2026-06-17 08:16:05]   200/200 in 1119s (5.6s/frame) ETA 181.4h
+[2026-06-17 08:16:08] Batch 26: 116509 pending / 5167 done / 1 failed
+[2026-06-17 08:36:20]   200/200 in 1212s (6.1s/frame) ETA 196.2h
+[2026-06-17 08:36:23] Batch 27: 116309 pending / 5367 done / 1 failed
+[2026-06-17 08:55:50]   200/200 in 1167s (5.8s/frame) ETA 188.4h
+[2026-06-17 08:55:53] Batch 28: 116109 pending / 5567 done / 1 failed
+[2026-06-17 09:15:07]   200/200 in 1154s (5.8s/frame) ETA 186.1h
+[2026-06-17 09:15:10] Batch 29: 115909 pending / 5767 done / 1 failed
+[2026-06-17 09:34:43]   200/200 in 1173s (5.9s/frame) ETA 188.8h
+[2026-06-17 09:34:46] Batch 30: 115709 pending / 5967 done / 1 failed
+[2026-06-17 09:53:58]   200/200 in 1153s (5.8s/frame) ETA 185.3h
+[2026-06-17 09:54:01] Batch 31: 115509 pending / 6167 done / 1 failed
+[2026-06-17 10:13:21]   200/200 in 1159s (5.8s/frame) ETA 186.0h
+[2026-06-17 10:13:24] Batch 32: 115309 pending / 6367 done / 1 failed
+[2026-06-17 10:32:41]   200/200 in 1157s (5.8s/frame) ETA 185.2h
+[2026-06-17 10:32:44] Batch 33: 115109 pending / 6567 done / 1 failed
+[2026-06-17 10:51:29]   200/200 in 1125s (5.6s/frame) ETA 179.9h
+[2026-06-17 10:51:32] Batch 34: 114909 pending / 6767 done / 1 failed
+[2026-06-17 11:10:49]   200/200 in 1157s (5.8s/frame) ETA 184.7h
+[2026-06-17 11:10:52] Batch 35: 114709 pending / 6967 done / 1 failed
+[2026-06-17 11:30:19]   200/200 in 1167s (5.8s/frame) ETA 185.9h
+[2026-06-17 11:30:22] Batch 36: 114509 pending / 7167 done / 1 failed
+[2026-06-17 11:50:01]   200/200 in 1179s (5.9s/frame) ETA 187.4h
+[2026-06-17 11:50:04] Batch 37: 114309 pending / 7367 done / 1 failed
+[2026-06-17 12:08:44]   200/200 in 1120s (5.6s/frame) ETA 177.8h
+[2026-06-17 12:08:47] Batch 38: 114109 pending / 7567 done / 1 failed
+[2026-06-17 12:27:48]   200/200 in 1141s (5.7s/frame) ETA 180.8h
+[2026-06-17 12:27:51] Batch 39: 113909 pending / 7767 done / 1 failed
+[2026-06-17 12:47:06]   200/200 in 1156s (5.8s/frame) ETA 182.8h
+[2026-06-17 12:47:09] Batch 40: 113709 pending / 7967 done / 1 failed
+[2026-06-17 13:07:00]   200/200 in 1190s (6.0s/frame) ETA 188.0h
+[2026-06-17 13:07:03] Batch 41: 113509 pending / 8167 done / 1 failed
+[2026-06-17 13:26:47]   200/200 in 1184s (5.9s/frame) ETA 186.6h
+[2026-06-17 13:26:50] Batch 42: 113309 pending / 8367 done / 1 failed
+[2026-06-17 13:45:48]   200/200 in 1138s (5.7s/frame) ETA 179.2h
+[2026-06-17 13:45:51] Batch 43: 113109 pending / 8567 done / 1 failed
+[2026-06-17 14:04:44]   200/200 in 1133s (5.7s/frame) ETA 177.9h
+[2026-06-17 14:04:47] Batch 44: 112909 pending / 8767 done / 1 failed
+[2026-06-17 14:23:28]   200/200 in 1122s (5.6s/frame) ETA 175.9h
+[2026-06-17 14:23:31] Batch 45: 112709 pending / 8967 done / 1 failed
+[2026-06-17 14:42:31]   200/200 in 1139s (5.7s/frame) ETA 178.4h
+[2026-06-17 14:42:34] Batch 46: 112509 pending / 9167 done / 1 failed
+[2026-06-17 15:01:51]   200/200 in 1157s (5.8s/frame) ETA 180.8h
+[2026-06-17 15:01:54] Batch 47: 112309 pending / 9367 done / 1 failed
+[2026-06-17 15:21:20]   200/200 in 1166s (5.8s/frame) ETA 181.9h
+[2026-06-17 15:21:23] Batch 48: 112109 pending / 9567 done / 1 failed
+[2026-06-17 15:41:07]   199/200 in 1184s (5.9s/frame) ETA 184.3h
+[2026-06-17 15:41:10] Batch 49: 111909 pending / 9766 done / 2 failed
+[2026-06-17 16:00:54]   200/200 in 1184s (5.9s/frame) ETA 184.1h
+[2026-06-17 16:00:57] Batch 50: 111709 pending / 9966 done / 2 failed
+[2026-06-17 16:00:57] Restarting VLM to prevent slowdown...
+[2026-06-17 16:22:16]   200/200 in 1226s (6.1s/frame) ETA 190.3h
+[2026-06-17 16:22:19] Batch 51: 111509 pending / 10166 done / 2 failed
+[2026-06-17 16:42:22]   200/200 in 1203s (6.0s/frame) ETA 186.3h
+[2026-06-17 16:42:25] Batch 52: 111309 pending / 10366 done / 2 failed
+[2026-06-17 17:02:46]   200/200 in 1220s (6.1s/frame) ETA 188.6h
+[2026-06-17 17:02:49] Batch 53: 111109 pending / 10566 done / 2 failed
+[2026-06-17 17:22:30]   200/200 in 1181s (5.9s/frame) ETA 182.2h
+[2026-06-17 17:22:33] Batch 54: 110909 pending / 10766 done / 2 failed
+[2026-06-17 17:42:10]   200/200 in 1177s (5.9s/frame) ETA 181.3h
+[2026-06-17 17:42:13] Batch 55: 110709 pending / 10966 done / 2 failed
+[2026-06-17 18:01:21]   200/200 in 1148s (5.7s/frame) ETA 176.5h
+[2026-06-17 18:01:24] Batch 56: 110509 pending / 11166 done / 2 failed
+[2026-06-17 18:20:20]   200/200 in 1136s (5.7s/frame) ETA 174.4h
+[2026-06-17 18:20:23] Batch 57: 110309 pending / 11366 done / 2 failed
+[2026-06-17 18:39:59]   200/200 in 1176s (5.9s/frame) ETA 180.2h
+[2026-06-17 18:40:02] Batch 58: 110109 pending / 11566 done / 2 failed
+[2026-06-17 18:59:10]   200/200 in 1147s (5.7s/frame) ETA 175.5h
+[2026-06-17 18:59:13] Batch 59: 109909 pending / 11766 done / 2 failed
+[2026-06-17 19:19:16]   200/200 in 1203s (6.0s/frame) ETA 183.7h
+[2026-06-17 19:19:19] Batch 60: 109709 pending / 11966 done / 2 failed
+[2026-06-17 19:38:33]   200/200 in 1153s (5.8s/frame) ETA 175.8h
+[2026-06-17 19:38:36] Batch 61: 109509 pending / 12166 done / 2 failed
+[2026-06-18 00:18:39] ==================================================
+[2026-06-18 00:18:39] VLM Loop started
+[2026-06-18 00:18:39] Batch 1: 109472 pending / 12203 done / 2 failed
+[2026-06-18 00:39:03]   200/200 in 1224s (6.1s/frame) ETA 186.1h
+[2026-06-18 00:39:06] Batch 2: 109272 pending / 12403 done / 2 failed
+[2026-06-18 00:58:47]   200/200 in 1181s (5.9s/frame) ETA 179.3h
+[2026-06-18 00:58:50] Batch 3: 109072 pending / 12603 done / 2 failed
+[2026-06-18 01:18:30]   200/200 in 1180s (5.9s/frame) ETA 178.8h
+[2026-06-18 01:18:33] Batch 4: 108872 pending / 12803 done / 2 failed
+[2026-06-18 01:39:59]   200/200 in 1285s (6.4s/frame) ETA 194.4h
+[2026-06-18 01:40:02] Batch 5: 108672 pending / 13003 done / 2 failed
+[2026-06-18 02:00:19]   199/200 in 1217s (6.1s/frame) ETA 183.6h
+[2026-06-18 02:00:22] Batch 6: 108472 pending / 13202 done / 3 failed
+[2026-06-18 02:20:22]   200/200 in 1200s (6.0s/frame) ETA 180.8h
+[2026-06-18 02:20:25] Batch 7: 108272 pending / 13402 done / 3 failed
+[2026-06-18 02:39:37]   200/200 in 1153s (5.8s/frame) ETA 173.3h
+[2026-06-18 02:39:40] Batch 8: 108072 pending / 13602 done / 3 failed
+[2026-06-18 02:59:35]   200/200 in 1195s (6.0s/frame) ETA 179.3h
+[2026-06-18 02:59:38] Batch 9: 107872 pending / 13802 done / 3 failed
+[2026-06-18 03:20:10]   200/200 in 1232s (6.2s/frame) ETA 184.6h
+[2026-06-18 03:20:13] Batch 10: 107672 pending / 14002 done / 3 failed
+[2026-06-18 03:40:50]   200/200 in 1237s (6.2s/frame) ETA 184.9h
+[2026-06-18 03:40:53] Batch 11: 107472 pending / 14202 done / 3 failed
+[2026-06-18 04:00:37]   200/200 in 1184s (5.9s/frame) ETA 176.8h
+[2026-06-18 04:00:40] Batch 12: 107272 pending / 14402 done / 3 failed
+[2026-06-18 04:20:30]   200/200 in 1190s (6.0s/frame) ETA 177.3h
+[2026-06-18 04:20:33] Batch 13: 107072 pending / 14602 done / 3 failed
+[2026-06-18 04:40:42]   200/200 in 1209s (6.0s/frame) ETA 179.8h
+[2026-06-18 04:40:45] Batch 14: 106872 pending / 14802 done / 3 failed
+[2026-06-18 05:00:27]   200/200 in 1182s (5.9s/frame) ETA 175.4h
+[2026-06-18 05:00:30] Batch 15: 106672 pending / 15002 done / 3 failed
+[2026-06-18 05:19:53]   200/200 in 1163s (5.8s/frame) ETA 172.2h
+[2026-06-18 05:19:56] Batch 16: 106472 pending / 15202 done / 3 failed
+[2026-06-18 05:40:01]   200/200 in 1205s (6.0s/frame) ETA 178.1h
+[2026-06-18 05:40:04] Batch 17: 106272 pending / 15402 done / 3 failed
+[2026-06-18 06:00:19]   200/200 in 1216s (6.1s/frame) ETA 179.4h
+[2026-06-18 06:00:22] Batch 18: 106072 pending / 15602 done / 3 failed
+[2026-06-18 06:19:54]   200/200 in 1171s (5.9s/frame) ETA 172.5h
+[2026-06-18 06:19:57] Batch 19: 105872 pending / 15802 done / 3 failed
+[2026-06-18 06:40:04]   200/200 in 1207s (6.0s/frame) ETA 177.5h
+[2026-06-18 06:40:07] Batch 20: 105672 pending / 16002 done / 3 failed
+[2026-06-18 06:59:35]   200/200 in 1168s (5.8s/frame) ETA 171.4h
+[2026-06-18 06:59:38] Batch 21: 105472 pending / 16202 done / 3 failed
+[2026-06-18 07:19:07]   200/200 in 1169s (5.8s/frame) ETA 171.3h
+[2026-06-18 07:19:10] Batch 22: 105272 pending / 16402 done / 3 failed
+[2026-06-18 07:38:24]   199/200 in 1154s (5.8s/frame) ETA 168.7h
+[2026-06-18 07:38:27] Batch 23: 105072 pending / 16601 done / 4 failed
+[2026-06-18 07:57:54]   200/200 in 1167s (5.8s/frame) ETA 170.3h
+[2026-06-18 07:57:58] Batch 24: 104872 pending / 16801 done / 4 failed
+[2026-06-18 08:18:03]   200/200 in 1205s (6.0s/frame) ETA 175.6h
+[2026-06-18 08:18:06] Batch 25: 104672 pending / 17001 done / 4 failed
+[2026-06-18 08:39:08]   200/200 in 1262s (6.3s/frame) ETA 183.5h
+[2026-06-18 08:39:11] Batch 26: 104472 pending / 17201 done / 4 failed
+[2026-06-18 08:59:07]   200/200 in 1195s (6.0s/frame) ETA 173.4h
+[2026-06-18 08:59:10] Batch 27: 104272 pending / 17401 done / 4 failed
+[2026-06-18 09:19:03]   200/200 in 1194s (6.0s/frame) ETA 172.9h
+[2026-06-18 09:19:06] Batch 28: 104072 pending / 17601 done / 4 failed
+[2026-06-18 09:39:39]   200/200 in 1232s (6.2s/frame) ETA 178.1h
+[2026-06-18 09:39:42] Batch 29: 103872 pending / 17801 done / 4 failed
+[2026-06-18 09:59:37]   200/200 in 1196s (6.0s/frame) ETA 172.5h
+[2026-06-18 09:59:40] Batch 30: 103672 pending / 18001 done / 4 failed
+[2026-06-18 10:20:19]   200/200 in 1239s (6.2s/frame) ETA 178.3h
+[2026-06-18 10:20:22] Batch 31: 103472 pending / 18201 done / 4 failed
+[2026-06-18 10:40:51]   200/200 in 1229s (6.1s/frame) ETA 176.6h
+[2026-06-18 10:40:54] Batch 32: 103272 pending / 18401 done / 4 failed
+[2026-06-18 11:01:33]   200/200 in 1239s (6.2s/frame) ETA 177.8h
+[2026-06-18 11:01:36] Batch 33: 103072 pending / 18601 done / 4 failed
+[2026-06-18 11:21:31]   200/200 in 1195s (6.0s/frame) ETA 171.0h
+[2026-06-18 11:21:34] Batch 34: 102872 pending / 18801 done / 4 failed
+[2026-06-18 11:42:28]   200/200 in 1254s (6.3s/frame) ETA 179.2h
+[2026-06-18 11:42:31] Batch 35: 102672 pending / 19001 done / 4 failed
+[2026-06-18 12:02:52]   200/200 in 1221s (6.1s/frame) ETA 174.1h
+[2026-06-18 12:02:55] Batch 36: 102472 pending / 19201 done / 4 failed
+[2026-06-18 12:23:37]   200/200 in 1242s (6.2s/frame) ETA 176.7h
+[2026-06-18 12:23:40] Batch 37: 102272 pending / 19401 done / 4 failed
+[2026-06-18 12:44:35]   200/200 in 1255s (6.3s/frame) ETA 178.2h
+[2026-06-18 12:44:38] Batch 38: 102072 pending / 19601 done / 4 failed
+[2026-06-18 13:04:27]   200/200 in 1189s (5.9s/frame) ETA 168.6h
+[2026-06-18 13:04:30] Batch 39: 101872 pending / 19801 done / 4 failed
+[2026-06-18 13:24:42]   200/200 in 1212s (6.1s/frame) ETA 171.5h
+[2026-06-18 13:24:45] Batch 40: 101672 pending / 20001 done / 4 failed
+[2026-06-18 13:45:42]   200/200 in 1257s (6.3s/frame) ETA 177.5h
+[2026-06-18 13:45:45] Batch 41: 101472 pending / 20201 done / 4 failed
+[2026-06-18 14:06:52]   200/200 in 1267s (6.3s/frame) ETA 178.5h
+[2026-06-18 14:06:55] Batch 42: 101272 pending / 20401 done / 4 failed
+[2026-06-18 14:27:46]   200/200 in 1251s (6.3s/frame) ETA 175.9h
+[2026-06-18 14:27:49] Batch 43: 101072 pending / 20601 done / 4 failed
+[2026-06-18 14:48:25]   200/200 in 1236s (6.2s/frame) ETA 173.5h
+[2026-06-18 14:48:28] Batch 44: 100872 pending / 20801 done / 4 failed
+[2026-06-18 15:08:54]   200/200 in 1226s (6.1s/frame) ETA 171.7h
+[2026-06-18 15:08:57] Batch 45: 100672 pending / 21001 done / 4 failed
+[2026-06-18 15:29:27]   200/200 in 1231s (6.2s/frame) ETA 172.1h
+[2026-06-18 15:29:30] Batch 46: 100472 pending / 21201 done / 4 failed
+[2026-06-18 15:50:39]   200/200 in 1269s (6.3s/frame) ETA 177.0h
+[2026-06-18 15:50:42] Batch 47: 100272 pending / 21401 done / 4 failed
+[2026-06-18 16:11:25]   200/200 in 1243s (6.2s/frame) ETA 173.1h
+[2026-06-18 16:11:28] Batch 48: 100072 pending / 21601 done / 4 failed
+[2026-06-18 16:32:02]   200/200 in 1234s (6.2s/frame) ETA 171.5h
+[2026-06-18 16:32:05] Batch 49: 99872 pending / 21801 done / 4 failed
+[2026-06-18 16:52:54]   200/200 in 1248s (6.2s/frame) ETA 173.2h
+[2026-06-18 16:52:57] Batch 50: 99672 pending / 22001 done / 4 failed
+[2026-06-18 16:52:57] Restarting VLM to prevent slowdown...
+[2026-06-18 17:14:15]   200/200 in 1215s (6.1s/frame) ETA 168.1h
+[2026-06-18 17:14:18] Batch 51: 99472 pending / 22201 done / 4 failed
+[2026-06-18 17:34:48]   200/200 in 1230s (6.2s/frame) ETA 170.0h
+[2026-06-18 17:34:52] Batch 52: 99272 pending / 22401 done / 4 failed
+[2026-06-18 17:56:02]   200/200 in 1271s (6.4s/frame) ETA 175.2h
+[2026-06-18 17:56:05] Batch 53: 99072 pending / 22601 done / 4 failed
+[2026-06-18 18:16:31]   200/200 in 1225s (6.1s/frame) ETA 168.6h
+[2026-06-18 18:16:34] Batch 54: 98872 pending / 22801 done / 4 failed
+[2026-06-18 18:37:55]   200/200 in 1281s (6.4s/frame) ETA 176.0h
+[2026-06-18 18:37:58] Batch 55: 98672 pending / 23001 done / 4 failed
+[2026-06-18 18:58:49]   200/200 in 1251s (6.3s/frame) ETA 171.4h
+[2026-06-18 18:58:52] Batch 56: 98472 pending / 23201 done / 4 failed
+[2026-06-18 23:58:06] ==================================================
+[2026-06-18 23:58:06] VLM Loop started
+[2026-06-18 23:58:06] Batch 1: 98437 pending / 23236 done / 4 failed
+[2026-06-19 00:19:12]   200/200 in 1266s (6.3s/frame) ETA 173.1h
+[2026-06-19 00:19:15] Batch 2: 98237 pending / 23436 done / 4 failed

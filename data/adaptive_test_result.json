@@ -2,31 +2,31 @@
   "video": "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4",
   "sample_interval": 20,
   "total_samples": 555,
-  "scored_kept": 1077,
+  "scored_kept": 1069,
   "worthiness_distribution": {
     "0.0-0.3": 0,
     "0.3-0.5": 60,
-    "0.5-0.7": 454,
-    "0.7-0.9": 19,
+    "0.5-0.7": 453,
+    "0.7-0.9": 16,
     "0.9-1.0": 0
   },
   "synthesis": {
-    "summary": "The film alternates between intimate close-ups and dynamic lighting to emphasize emotional contrasts.",
-    "emotional_core": "joy",
+    "summary": "The visual style emphasizes intimate close-ups and stark contrasts to amplify emotional intensity.",
+    "emotional_core": "tension",
     "aesthetic_notes": [
-      "intimate close-ups",
-      "dynamic lighting",
-      "contrasting shadows",
-      "vibrant colors"
+      "high contrast lighting",
+      "intimate framing",
+      "dynamic camera angles",
+      "slow motion"
     ],
     "tags": [
-      "romantic tension",
-      "joyful moments",
+      "tension",
       "intimacy",
-      "dramatic transitions",
-      "emotional crescendo"
+      "melancholy",
+      "desire",
+      "joy"
     ],
-    "scene_type": "close-up"
+    "scene_type": "other"
   },
   "merge_gap": 10,
   "refine_radius": 20,
@@ -34,39 +34,39 @@
   "output_ratio": 1.0,
   "max_output": 500,
   "embed_dedup_threshold": 0.95,
-  "total_clips": 34,
-  "deduped_clips": 34,
-  "clusters_after_dedup": 34,
-  "output_count": 34,
-  "multi_frame_clips": 32,
+  "total_clips": 41,
+  "deduped_clips": 41,
+  "clusters_after_dedup": 41,
+  "output_count": 41,
+  "multi_frame_clips": 38,
   "top_clips": [
     {
       "rank": 1,
-      "timestamp": 610,
-      "start_ts": 300,
-      "end_ts": 770,
+      "timestamp": 440,
+      "start_ts": 180,
+      "end_ts": 680,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 48,
+      "frame_count": 51,
       "merged": true,
-      "caption": "what you see",
+      "caption": "tension",
       "emotional_core": "tension",
       "aesthetic_notes": [
-        "2-3 observations"
+        "Two characters in a tense moment."
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This frame captures a tense interaction between two characters which makes it ideal for a GIF that conveys emotional intensity. The characters are leaning towards each other, which creates a sense of connection and closeness, while the clasped hands add to the tension. The background is relatively simple, allowing the focus to remain on the characters and their interaction."
     },
     {
       "rank": 2,
-      "timestamp": 1130,
-      "start_ts": 960,
-      "end_ts": 1360,
+      "timestamp": 760,
+      "start_ts": 700,
+      "end_ts": 770,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 41,
+      "frame_count": 8,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "joy",
+      "emotional_core": "tension",
       "aesthetic_notes": [
         "2-3 observations"
       ],
@@ -74,97 +74,102 @@
     },
     {
       "rank": 3,
-      "timestamp": 2160,
-      "start_ts": 2060,
-      "end_ts": 2360,
+      "timestamp": 1370,
+      "start_ts": 940,
+      "end_ts": 1420,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 31,
+      "frame_count": 49,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "joy",
+      "emotional_core": "tension",
       "aesthetic_notes": [
-        "2-3 observations"
+        "strong tension between two characters",
+        "acting is compelling and realistic",
+        "lighting highlights the emotional core"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 4,
-      "timestamp": 2740,
-      "start_ts": 2380,
-      "end_ts": 3040,
+      "timestamp": 2270,
+      "start_ts": 2200,
+      "end_ts": 3360,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 67,
+      "frame_count": 117,
       "merged": true,
-      "caption": "kiss",
-      "emotional_core": "intimacy",
+      "caption": "what you see",
+      "emotional_core": "melancholy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "the scene is a bit blurry",
+        "the colors are muted"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This image could work as a GIF due to the emotional content. The woman's facial expression and body language suggest melancholy or sadness. As for the aesthetic, while the scene might not be perfect in terms of clarity or color saturation, it captures an intimate moment that could resonate with viewers."
     },
     {
       "rank": 5,
-      "timestamp": 3180,
-      "start_ts": 3060,
-      "end_ts": 3520,
+      "timestamp": 3440,
+      "start_ts": 3380,
+      "end_ts": 3620,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 47,
+      "frame_count": 25,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "joy",
+      "emotional_core": "desire",
       "aesthetic_notes": [
-        "2-3 observations"
+        "moment of intimacy"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 6,
-      "timestamp": 3650,
-      "start_ts": 3540,
-      "end_ts": 3720,
+      "timestamp": 4110,
+      "start_ts": 4000,
+      "end_ts": 5380,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 19,
+      "frame_count": 139,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "intimacy",
+      "emotional_core": "tension",
       "aesthetic_notes": [
-        "muted color palette",
-        "nude woman on bed",
-        "sparse lighting"
+        "intense expression on woman's face",
+        "man licking her neck",
+        "dark ambiance"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 7,
-      "timestamp": 4030,
-      "start_ts": 3800,
-      "end_ts": 4500,
+      "timestamp": 5430,
+      "start_ts": 5400,
+      "end_ts": 5700,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 71,
+      "frame_count": 31,
       "merged": true,
-      "caption": "what you see",
+      "caption": "sexual tension",
       "emotional_core": "tension",
       "aesthetic_notes": [
-        "The image captures a tense moment between two characters"
+        "intense look from both characters",
+        "restricted space suggesting vulnerability",
+        "focus on the interaction between characters"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This image could work as a GIF due to the strong tension between the two characters. The close-up of their faces, with one looking away and the other making an intense face, creates a sense of conflict or anticipation that can be effective in conveying emotion or storyline in a single frame."
     },
     {
       "rank": 8,
-      "timestamp": 4710,
-      "start_ts": 4520,
-      "end_ts": 4780,
+      "timestamp": 5720,
+      "start_ts": 5720,
+      "end_ts": 6060,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 27,
+      "frame_count": 35,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "excitement",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
         "2-3 observations"
       ],
@@ -172,57 +177,26 @@
     },
     {
       "rank": 9,
-      "timestamp": 5100,
-      "start_ts": 5090,
-      "end_ts": 5180,
+      "timestamp": 6170,
+      "start_ts": 6140,
+      "end_ts": 6380,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 10,
+      "frame_count": 25,
       "merged": true,
-      "caption": "What you see",
-      "emotional_core": "tension",
+      "caption": "oral sex",
+      "emotional_core": "longing",
       "aesthetic_notes": [
-        "the tense moment between the characters"
+        "sensuality",
+        "human intimacy"
       ],
-      "reason": "This scene captures a moment of tension and anticipation, which could work well as a GIF. The characters' body language suggests that something significant is about to happen, creating an intriguing visual experience for the viewer."
+      "reason": "this scene is a realistic and relatable portrayal of human desire and attraction, which could resonate with viewers on an emotional level."
     },
     {
       "rank": 10,
-      "timestamp": 6140,
-      "start_ts": 5580,
-      "end_ts": 6580,
-      "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 101,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "joy",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 11,
-      "timestamp": 6670,
-      "start_ts": 6600,
-      "end_ts": 7020,
-      "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 43,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 12,
-      "timestamp": 7060,
-      "start_ts": 7040,
-      "end_ts": 7140,
+      "timestamp": 6440,
+      "start_ts": 6420,
+      "end_ts": 6520,
       "gif_worthiness": 0.7,
       "duration": 7.0,
       "frame_count": 11,
@@ -235,65 +209,101 @@
       "reason": "why this works as a GIF (or why not)"
     },
     {
-      "rank": 13,
-      "timestamp": 7340,
-      "start_ts": 7160,
-      "end_ts": 7560,
+      "rank": 11,
+      "timestamp": 6620,
+      "start_ts": 6540,
+      "end_ts": 6800,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 41,
+      "frame_count": 27,
+      "merged": true,
+      "caption": "a woman sitting on a man",
+      "emotional_core": "joy",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 12,
+      "timestamp": 7440,
+      "start_ts": 7040,
+      "end_ts": 8400,
+      "gif_worthiness": 0.7,
+      "duration": 7.0,
+      "frame_count": 137,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "blurred image",
+        "different angles and perspectives"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 13,
+      "timestamp": 8910,
+      "start_ts": 8820,
+      "end_ts": 8920,
+      "gif_worthiness": 0.7,
+      "duration": 7.0,
+      "frame_count": 11,
       "merged": true,
       "caption": "what you see",
       "emotional_core": "joy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "clear and vibrant colors",
+        "good framing of subject",
+        "lively expression"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 14,
-      "timestamp": 7720,
-      "start_ts": 7580,
-      "end_ts": 7980,
+      "timestamp": 9370,
+      "start_ts": 9300,
+      "end_ts": 9420,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 41,
+      "frame_count": 13,
       "merged": true,
       "caption": "what you see",
       "emotional_core": "joy",
       "aesthetic_notes": [
-        "nudity",
-        "sexual context"
+        "interesting perspective",
+        "colorful",
+        "energetic"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 15,
-      "timestamp": 8030,
-      "start_ts": 8000,
-      "end_ts": 8600,
+      "timestamp": 9570,
+      "start_ts": 9460,
+      "end_ts": 10100,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 61,
+      "frame_count": 65,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "joy",
+      "emotional_core": "tension",
       "aesthetic_notes": [
-        "2-3 observations"
+        "close framing captures tension between characters"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 16,
-      "timestamp": 8870,
-      "start_ts": 8620,
-      "end_ts": 8920,
+      "timestamp": 10310,
+      "start_ts": 10240,
+      "end_ts": 10400,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 31,
+      "frame_count": 17,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "excitement",
+      "emotional_core": "awe",
       "aesthetic_notes": [
         "2-3 observations"
       ],
@@ -301,89 +311,57 @@
     },
     {
       "rank": 17,
-      "timestamp": 8990,
-      "start_ts": 8980,
-      "end_ts": 9820,
+      "timestamp": 10460,
+      "start_ts": 10420,
+      "end_ts": 10460,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 85,
+      "frame_count": 5,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "joy",
+      "emotional_core": "excitement",
       "aesthetic_notes": [
-        "interesting composition, clear subjects"
+        "The woman's pose is dynamic and suggests movement which makes it suitable for a GIF.",
+        "Her expression and body language convey excitement and energy, adding to the visual appeal of the image."
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This frame captures a moment that would be engaging as an animated GIF due to the woman's dynamic pose and expressive face."
     },
     {
       "rank": 18,
-      "timestamp": 9860,
-      "start_ts": 9840,
-      "end_ts": 9860,
+      "timestamp": 10800,
+      "start_ts": 10780,
+      "end_ts": 11000,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 3,
+      "frame_count": 23,
       "merged": true,
       "caption": "what you see",
-      "emotional_core": "desire",
+      "emotional_core": "serenity",
       "aesthetic_notes": [
-        "2-3 observations"
+        "1 observation"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 19,
-      "timestamp": 10520,
-      "start_ts": 9880,
-      "end_ts": 10560,
+      "timestamp": 11100,
+      "start_ts": 11020,
+      "end_ts": 11210,
       "gif_worthiness": 0.7,
       "duration": 7.0,
-      "frame_count": 69,
+      "frame_count": 20,
       "merged": true,
       "caption": "what you see",
       "emotional_core": "joy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "2-3 observations",
+        "reason why this works as a GIF (or why not)"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "why this is an excellent GIF frame: clear action, well composed, captures peak emotion"
     },
     {
       "rank": 20,
-      "timestamp": 10710,
-      "start_ts": 10580,
-      "end_ts": 10840,
-      "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 27,
-      "merged": true,
-      "caption": "sex scene",
-      "emotional_core": "desire",
-      "aesthetic_notes": [
-        "intimate close up",
-        "bold and intense lighting"
-      ],
-      "reason": "this works as a GIF because the intimacy of the scene is conveyed through body language and expressions, capturing the viewer's attention in just one frame. The bold and intense lighting adds to the dramatic effect, creating a strong emotional core."
-    },
-    {
-      "rank": 21,
-      "timestamp": 10870,
-      "start_ts": 10860,
-      "end_ts": 11210,
-      "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 36,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "awe",
-      "aesthetic_notes": [
-        "clear image of the scene",
-        "interesting subject matter"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 22,
-      "timestamp": 90,
+      "timestamp": 80,
       "start_ts": 80,
       "end_ts": 100,
       "gif_worthiness": 0.6,
@@ -393,47 +371,65 @@
       "caption": "what you see",
       "emotional_core": "sadness",
       "aesthetic_notes": [
-        "blurry"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 23,
-      "timestamp": 180,
-      "start_ts": 140,
-      "end_ts": 280,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 15,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "melancholy",
-      "aesthetic_notes": [
-        "the woman's expression is subtle but conveys a sense of sadness"
-      ],
-      "reason": "this frame could work as a GIF because the woman's face is clear and her expression is relatable. The lighting is soft which adds to the moodiness of the scene, making it a good fit for a melancholy GIF."
-    },
-    {
-      "rank": 24,
-      "timestamp": 1410,
-      "start_ts": 1380,
-      "end_ts": 1680,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 31,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "other",
-      "aesthetic_notes": [
         "2-3 observations"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
-      "rank": 25,
-      "timestamp": 1920,
-      "start_ts": 1700,
-      "end_ts": 2040,
+      "rank": 21,
+      "timestamp": 140,
+      "start_ts": 130,
+      "end_ts": 160,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 4,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "the framing and lighting add to the tension",
+        "she appears scared"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 22,
+      "timestamp": 1470,
+      "start_ts": 1440,
+      "end_ts": 1620,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 19,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "the woman's intense facial expression",
+        "the close-up framing that puts the focus on her emotions"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 23,
+      "timestamp": 1670,
+      "start_ts": 1640,
+      "end_ts": 2080,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 45,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "awe",
+      "aesthetic_notes": [
+        "1-2 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 24,
+      "timestamp": 3710,
+      "start_ts": 3640,
+      "end_ts": 3980,
       "gif_worthiness": 0.6,
       "duration": 7.0,
       "frame_count": 35,
@@ -446,29 +442,30 @@
       "reason": "why this works as a GIF (or why not)"
     },
     {
-      "rank": 26,
-      "timestamp": 4820,
-      "start_ts": 4800,
-      "end_ts": 5070,
+      "rank": 25,
+      "timestamp": 6860,
+      "start_ts": 6820,
+      "end_ts": 6860,
       "gif_worthiness": 0.6,
       "duration": 7.0,
-      "frame_count": 28,
+      "frame_count": 5,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "awe",
+      "caption": "woman being masturbated by man",
+      "emotional_core": "excitement",
       "aesthetic_notes": [
-        "1-2 observations"
+        "clear emotion visible",
+        "interesting framing"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This could work as a GIF because it captures an intense moment of excitement and intimacy between two people."
     },
     {
-      "rank": 27,
-      "timestamp": 5200,
-      "start_ts": 5200,
-      "end_ts": 5480,
+      "rank": 26,
+      "timestamp": 6890,
+      "start_ts": 6880,
+      "end_ts": 6900,
       "gif_worthiness": 0.6,
       "duration": 7.0,
-      "frame_count": 29,
+      "frame_count": 3,
       "merged": true,
       "caption": "what you see",
       "emotional_core": "melancholy",
@@ -478,7 +475,105 @@
       "reason": "why this works as a GIF (or why not)"
     },
     {
+      "rank": 27,
+      "timestamp": 7000,
+      "start_ts": 6980,
+      "end_ts": 7020,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 5,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "serenity",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
       "rank": 28,
+      "timestamp": 8450,
+      "start_ts": 8420,
+      "end_ts": 8700,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 29,
+      "merged": true,
+      "caption": "sexual encounter",
+      "emotional_core": "serenity",
+      "aesthetic_notes": [
+        "Sexual content of the scene"
+      ],
+      "reason": "This works as a GIF because it captures a moment of intimacy between two people, evoking a sense of serenity and closeness. The setting is private and uncluttered, focusing attention on the interaction between the man and woman. The emotional core here is 'serenity', as the scene exudes calmness and contentment."
+    },
+    {
+      "rank": 29,
+      "timestamp": 9020,
+      "start_ts": 8980,
+      "end_ts": 9280,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 31,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "intimacy",
+      "aesthetic_notes": [
+        "the two characters are sharing a close moment, the scene is warm and inviting"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 30,
+      "timestamp": 10210,
+      "start_ts": 10120,
+      "end_ts": 10220,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 11,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "muted colors",
+        "intimate atmosphere",
+        "sensuality"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 31,
+      "timestamp": 10500,
+      "start_ts": 10480,
+      "end_ts": 10760,
+      "gif_worthiness": 0.6,
+      "duration": 7.0,
+      "frame_count": 29,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "other",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 32,
+      "timestamp": 20,
+      "start_ts": 20,
+      "end_ts": 20,
+      "gif_worthiness": 0.5,
+      "duration": 3.25,
+      "frame_count": 1,
+      "merged": false,
+      "caption": "what you see",
+      "emotional_core": "other",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 33,
       "timestamp": 40,
       "start_ts": 40,
       "end_ts": 60,
@@ -489,107 +584,139 @@
       "caption": "what you see",
       "emotional_core": "tension",
       "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 29,
-      "timestamp": 810,
-      "start_ts": 800,
-      "end_ts": 840,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 5,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 30,
-      "timestamp": 870,
-      "start_ts": 870,
-      "end_ts": 940,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 8,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "serenity",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 31,
-      "timestamp": 3740,
-      "start_ts": 3740,
-      "end_ts": 3740,
-      "gif_worthiness": 0.5,
-      "duration": 3.25,
-      "frame_count": 1,
-      "merged": false,
-      "caption": "what you see",
-      "emotional_core": "joy",
-      "aesthetic_notes": [
-        "clear focus on characters",
-        "interaction between two people",
-        "lighting is warm and inviting"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 32,
-      "timestamp": 3760,
-      "start_ts": 3760,
-      "end_ts": 3780,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 3,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "joy",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 33,
-      "timestamp": 5530,
-      "start_ts": 5520,
-      "end_ts": 5560,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 5,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "2-3 observations"
+        "the scene is set in a room with a couch and clothes scattered around",
+        "one person appears to be upset or crying while the other person seems to be calming them down"
       ],
       "reason": "why this works as a GIF (or why not)"
     },
     {
       "rank": 34,
-      "timestamp": 20,
-      "start_ts": 20,
-      "end_ts": 20,
+      "timestamp": 790,
+      "start_ts": 790,
+      "end_ts": 840,
+      "gif_worthiness": 0.5,
+      "duration": 7.0,
+      "frame_count": 6,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "tension",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 35,
+      "timestamp": 910,
+      "start_ts": 900,
+      "end_ts": 920,
+      "gif_worthiness": 0.5,
+      "duration": 7.0,
+      "frame_count": 3,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 36,
+      "timestamp": 2100,
+      "start_ts": 2100,
+      "end_ts": 2160,
+      "gif_worthiness": 0.5,
+      "duration": 7.0,
+      "frame_count": 7,
+      "merged": true,
+      "caption": "sexual assault",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "vulgar content",
+        "uncomfortable scene"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 37,
+      "timestamp": 6090,
+      "start_ts": 6080,
+      "end_ts": 6120,
+      "gif_worthiness": 0.5,
+      "duration": 7.0,
+      "frame_count": 5,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "awe",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 38,
+      "timestamp": 6920,
+      "start_ts": 6920,
+      "end_ts": 6960,
+      "gif_worthiness": 0.5,
+      "duration": 7.0,
+      "frame_count": 5,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "melancholy",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 39,
+      "timestamp": 8730,
+      "start_ts": 8720,
+      "end_ts": 8800,
+      "gif_worthiness": 0.5,
+      "duration": 7.0,
+      "frame_count": 9,
+      "merged": true,
+      "caption": "what you see",
+      "emotional_core": "awe",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 40,
+      "timestamp": 880,
+      "start_ts": 880,
+      "end_ts": 880,
       "gif_worthiness": 0.4,
       "duration": 2.9000000000000004,
       "frame_count": 1,
       "merged": false,
       "caption": "what you see",
-      "emotional_core": "other",
+      "emotional_core": "awe",
       "aesthetic_notes": [
-        "nothing interesting happening"
+        "clear focus on the owl, natural lighting creates a sense of wonder"
       ],
-      "reason": "why this does not work as a GIF"
+      "reason": "why this works as a GIF (or why not)"
+    },
+    {
+      "rank": 41,
+      "timestamp": 9440,
+      "start_ts": 9440,
+      "end_ts": 9440,
+      "gif_worthiness": 0.4,
+      "duration": 2.9000000000000004,
+      "frame_count": 1,
+      "merged": false,
+      "caption": "what you see",
+      "emotional_core": "joy",
+      "aesthetic_notes": [
+        "2-3 observations"
+      ],
+      "reason": "why this works as a GIF (or why not)"
     }
   ]
 }

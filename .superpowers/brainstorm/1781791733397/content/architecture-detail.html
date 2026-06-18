@@ -1,0 +1,29 @@
+<h2>设计 1/4：系统架构与存储边界</h2>
+<p class="subtitle">后端部署在 WSL Docker，Ollama 保留在 WSL 宿主机；测试运行数据与主收藏库分离。</p>
+
+<div class="mockup">
+  <div class="mockup-header">Docker Compose on WSL2</div>
+  <div class="mockup-body" style="background:#f7f8fa;padding:18px">
+    <div class="mock-content" style="text-align:center"><strong>Browser</strong><br>React：测试运行 / 偏好地图 / 共享检查器</div>
+    <div style="text-align:center;padding:8px">REST 请求　↑ SSE 进度</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+      <div class="mock-content" style="text-align:center"><strong>frontend</strong><br>Nginx 静态资源与反向代理</div>
+      <div class="mock-content" style="text-align:center"><strong>api</strong><br>FastAPI 查询、创建任务、比较</div>
+      <div class="mock-content" style="text-align:center"><strong>worker</strong><br>单任务队列、可取消、可恢复</div>
+    </div>
+    <div style="text-align:center;padding:8px">共享 ID 与版本快照</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+      <div class="mock-sidebar" style="text-align:center"><strong>library.db + FAISS</strong><br>现有主库，工作台默认只读</div>
+      <div class="mock-sidebar" style="text-align:center"><strong>runs.db</strong><br>任务、步骤、帧、Top-K、候选、事件</div>
+      <div class="mock-sidebar" style="text-align:center"><strong>run artifacts</strong><br>参数快照、帧、GIF、日志、JSON</div>
+    </div>
+  </div>
+</div>
+
+<div style="text-align:center;padding:10px">HTTP：host.docker.internal:11434</div>
+<div class="mock-content" style="text-align:center"><strong>WSL Host Ollama</strong><br>llava / Qwen / nomic-embed-text，沿用现有模型目录和 GPU 配置</div>
+
+<div class="pros-cons" style="margin-top:18px">
+  <div class="pros"><h4>关键约束</h4><ul><li>每次重跑创建新 run_id，不覆盖历史</li><li>library.db 与 runs.db 分离，降低锁竞争</li><li>worker 只允许一个 GPU 任务进入 running</li><li>所有评分保存原始值与最终值</li></ul></div>
+  <div class="cons"><h4>部署要求</h4><ul><li>数据库与 FAISS 放在 WSL ext4 Volume</li><li>原视频以只读目录挂载到 /media</li><li>移除容器内的 Windows 路径和 wsl 命令</li><li>宿主 Ollama 需允许 Docker 网桥访问</li></ul></div>
+</div>

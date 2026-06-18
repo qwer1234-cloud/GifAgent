@@ -15,6 +15,8 @@ from app.db import init_db, get_connection
 from app.config import load_config
 from app.services.embedding import compute_text_embedding
 from app.services.indexer import get_index
+from app.services.json_guard import parse_json_response
+from app.services.quality import validate_frame_analysis, normalize_emotional_core
 
 load_config()
 init_db()
@@ -48,40 +50,31 @@ print("=" * 60)
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
-def parse_json(text):
-    text = text.strip()
-    if "</think>" in text:
-        text = text.split("</think>")[-1].strip()
-    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    try: return json.loads(text)
-    except: pass
-    m = re.search(r"\{[^{}]*\{[^{}]*\}[^{}]*\}|\{[^{}]*\}", text, re.DOTALL)
-    if m:
-        try: return json.loads(m.group(0))
-        except: pass
-    return {"_parse_error": True, "_raw": text[:500]}
-
-VALID_EMOTIONS = {"tension","melancholy","awe","joy","sadness","catharsis",
-                  "serenity","excitement","dread","nostalgia","admiration",
-                  "intimacy","vulnerability","longing","desire","other"}
+def parse_vlm_response(raw_text: str) -> dict:
+    """Parse VLM response through quality gate, return cleaned dict."""
+    result = parse_json_response(raw_text)
+    if not result.ok:
+        return {"_parse_error": True, "_raw": raw_text[:500]}
+    cleaned, errors = validate_frame_analysis(result.data)
+    if errors:
+        cleaned["_quality_errors"] = errors
+    return cleaned
 
 SCORE_PROMPT = (
-    "You are evaluating a film frame for GIF potential. Be DECISIVE - use the full 0.0-1.0 scale.\n"
-    "Output ONLY JSON:\n"
-    '{"caption":"what you see","emotional_core":"one word","gif_worthiness":0.5,'
-    '"aesthetic_notes":["2-3 observations"],"reason":"why this works as a GIF (or why not)"}\n\n'
-    "gif_worthiness scale - SPREAD YOUR SCORES:\n"
-    "  0.0-0.2: BAD - static, dark, blurry, nothing happening, empty frame, skip.\n"
-    "  0.2-0.4: BELOW AVERAGE - barely interesting, single person standing, generic background.\n"
-    "  0.4-0.6: AVERAGE - some emotion visible, decent composition, could work as context GIF.\n"
-    "  0.6-0.8: GOOD - clear emotion or action, cinematic framing, would save to collection.\n"
-    "  0.8-1.0: EXCELLENT - iconic shot, peak drama, beautiful lighting, perfect reaction GIF material.\n\n"
-    "IMPORTANT: Do NOT give everything 0.5-0.7. Use the extremes. Bad frames get 0.1. Great frames get 0.9.\n"
+    "Evaluate this film frame for GIF potential. Use the full 0.0-1.0 scale.\n"
+    "Output ONLY valid JSON with real, specific content. No template text.\n\n"
+    '{"caption":"describe actual visible subjects, lighting, and composition",'
+    '"emotional_core":"one lowercase word","gif_worthiness":0.5,'
+    '"aesthetic_notes":["2-3 concrete visual observations"],'
+    '"reason":"why this specific moment works as a GIF (or why not)"}\n\n'
+    "gif_worthiness scale:\n"
+    "  0.0-0.2: BAD - static, dark, blurry, nothing happening. Skip.\n"
+    "  0.3-0.5: AVERAGE - some emotion, decent composition.\n"
+    "  0.6-0.8: GOOD - clear emotion/action, cinematic framing.\n"
+    "  0.9-1.0: EXCELLENT - iconic moment, beautiful lighting, peak drama.\n\n"
     "CRITICAL: emotional_core = EXACTLY ONE lowercase word from: "
-    "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|admiration|intimacy|vulnerability|longing|desire|other"
+    "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|admiration|intimacy|vulnerability|longing|desire|other\n"
+    "NEVER output 'what you see', '2-3 observations', or pipe-delimited emotions."
 )
 
 def stop_model(name):
@@ -155,17 +148,7 @@ for fi, sf in enumerate(sample_frames):
                 json={"model":VLM_MODEL,"prompt":SCORE_PROMPT,"images":[img_b64],"stream":False}, timeout=120)
             resp.raise_for_status()
             raw = resp.json().get("response","")
-            parsed = parse_json(raw)
-
-            raw_emotion = (parsed.get("emotional_core") or "").strip().lower()
-            if raw_emotion and raw_emotion not in VALID_EMOTIONS:
-                parts = [p.strip() for p in raw_emotion.replace("|",",").split(",")]
-                found = next((p for p in parts if p in VALID_EMOTIONS), None)
-                parsed["emotional_core"] = found if found else "other"
-
-            raw_cap = (parsed.get("caption") or "").strip()
-            if raw_cap.startswith("describe what") or raw_cap.startswith("concise"):
-                parsed["caption"] = ""
+            parsed = parse_vlm_response(raw)
 
             worth = float(parsed.get("gif_worthiness", 0.5))
             parsed["gif_worthiness"] = max(0.0, min(1.0, worth))
@@ -247,7 +230,7 @@ if refine_ts:
                     json={"model":VLM_MODEL,"prompt":SCORE_PROMPT,"images":[img_b64],"stream":False}, timeout=120)
                 resp.raise_for_status()
                 raw = resp.json().get("response","")
-                parsed = parse_json(raw)
+                parsed = parse_vlm_response(raw)
 
                 raw_emotion = (parsed.get("emotional_core") or "").strip().lower()
                 if raw_emotion and raw_emotion not in VALID_EMOTIONS:

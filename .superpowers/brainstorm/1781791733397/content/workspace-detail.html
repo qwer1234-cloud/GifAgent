@@ -1,0 +1,51 @@
+<h2>设计 2/4：双工作区与联动</h2>
+<p class="subtitle">两个页面各自使用完整画布，但共享同一个媒体检查器和筛选语义。</p>
+
+<div class="mockup">
+  <div class="mockup-header">测试运行工作区</div>
+  <div class="mockup-body" style="padding:12px;background:#f7f8fa">
+    <div class="mock-nav">概览　<strong>测试运行</strong>　偏好地图　质量状态　　　　　Run #024 · running 63%</div>
+    <div style="display:grid;grid-template-columns:150px minmax(350px,1fr) 220px;gap:8px;margin-top:8px;min-height:310px">
+      <div class="mock-sidebar"><strong>运行历史</strong><br><br>● Run #024<br>✓ Run #023<br>✓ Baseline #018<br><br><button class="mock-button">新建重跑</button><br><br>比较：#018 ↔ #024</div>
+      <div class="mock-content">
+        <strong>视频预览</strong>
+        <div class="placeholder" style="height:92px;margin:8px 0">当前时间 00:42:16 · 当前候选帧</div>
+        <div class="label">处理时间轴</div>
+        <div style="display:grid;grid-template-columns:70px 1fr;gap:5px;margin:7px 0;font-size:12px">
+          <span>抽帧</span><div style="height:13px;background:#8bb7da"></div>
+          <span>VLM</span><div style="height:13px;background:linear-gradient(90deg,#4a86b8 63%,#d9e1e8 63%)"></div>
+          <span>检索</span><div style="height:13px;background:linear-gradient(90deg,#4d9b78 58%,#d9e1e8 58%)"></div>
+          <span>候选</span><div style="height:13px;background:linear-gradient(90deg,#b58c3f 44%,#d9e1e8 44%)"></div>
+        </div>
+        <div class="label">当前帧 Top-K 证据</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px">
+          <div class="placeholder" style="height:54px">0.87</div><div class="placeholder" style="height:54px">0.83</div><div class="placeholder" style="height:54px">0.78</div><div class="placeholder" style="height:54px">0.74</div>
+        </div>
+        <div class="label" style="margin-top:8px">候选结果 / 排名变化</div>
+        <div class="placeholder" style="height:48px;margin-top:6px">#3 → #1　base 0.71　preference +0.09　final 0.80</div>
+      </div>
+      <div class="mock-sidebar"><strong>共享检查器</strong><br><br>GIF 预览<br>caption / emotion<br>RAG query<br>Top-K 来源<br>分数拆解<br>模型与索引版本<br><br>Like　Neutral　Dislike</div>
+    </div>
+  </div>
+</div>
+
+<div class="mockup" style="margin-top:16px">
+  <div class="mockup-header">个人偏好地图工作区</div>
+  <div class="mockup-body" style="padding:12px;background:#f7f8fa">
+    <div class="mock-nav">概览　测试运行　<strong>偏好地图</strong>　质量状态　　情绪 ▾　场景 ▾　Like 状态 ▾　搜索</div>
+    <div style="display:grid;grid-template-columns:minmax(420px,1fr) 170px 220px;gap:8px;margin-top:8px;min-height:245px">
+      <div class="mock-content" style="position:relative;overflow:hidden">
+        <strong>UMAP 语义画布</strong>
+        <div style="position:absolute;left:12%;top:35%;width:92px;height:60px;border-radius:50%;background:#8bb7da;opacity:.65"></div>
+        <div style="position:absolute;left:42%;top:52%;width:115px;height:72px;border-radius:50%;background:#d4a75d;opacity:.65"></div>
+        <div style="position:absolute;right:10%;top:28%;width:98px;height:66px;border-radius:50%;background:#77a98f;opacity:.65"></div>
+        <div style="position:absolute;left:32%;top:27%;width:68px;height:48px;border-radius:50%;background:#bb7d88;opacity:.65"></div>
+        <span style="position:absolute;left:15%;top:61%">melancholy</span><span style="position:absolute;left:48%;top:75%">intimacy</span><span style="position:absolute;right:13%;top:54%">tension</span>
+      </div>
+      <div class="mock-sidebar"><strong>分布联动</strong><br><br>情绪 Top 10<br>场景类型<br>标签频率<br>Like / Dislike<br>影片来源<br><br>点击统计项过滤地图</div>
+      <div class="mock-sidebar"><strong>共享检查器</strong><br><br>GIF 预览<br>所在语义簇<br>最近邻收藏<br>历史反馈<br>出现在哪些 Run<br><br>打开对应运行证据</div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:16px">地图默认绘制点；缩放或选中后加载缩略图，避免一次渲染数千个 GIF。运行页和地图页通过 media_id、candidate_id、run_id 互相跳转。</p>

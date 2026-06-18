@@ -1,0 +1,61 @@
+<h2>RAG 可视化工作台：信息架构选择</h2>
+<p class="subtitle">重点比较测试视频链路与个人偏好地图如何组织。点击一个方案。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f7f8fa">
+      <div class="mock-nav">运行调试　偏好地图　数据质量</div>
+      <div style="display:grid;grid-template-columns:150px 1fr 190px;gap:8px;margin-top:8px;min-height:190px">
+        <div class="mock-sidebar">测试任务列表<br><br>JUR-639<br>Run #24<br>Run #23</div>
+        <div class="mock-content">
+          <strong>视频与时间轴</strong>
+          <div class="placeholder" style="height:70px;margin:8px 0">Video Preview</div>
+          <div style="height:24px;background:#dbe7f5;border-left:40px solid #2367a8;border-right:70px solid #79a9d4"></div>
+          <div class="placeholder" style="height:36px;margin-top:8px">Top-K 检索结果</div>
+        </div>
+        <div class="mock-sidebar">当前帧<br>相似 GIF<br>评分解释<br>RAG 上下文</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 三栏调试器</h3>
+      <p>运行列表、时间轴、证据详情同时显示；偏好地图作为独立页面。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f7f8fa">
+      <div class="mock-nav">GifAgent RAG Observatory</div>
+      <div style="display:grid;grid-template-rows:118px 118px;gap:8px;margin-top:8px">
+        <div class="mock-content">
+          <strong>测试视频链路</strong>
+          <div class="placeholder" style="height:62px;margin-top:8px">时间轴 + Top-K + 分数</div>
+        </div>
+        <div class="mock-content">
+          <strong>个人偏好地图</strong>
+          <div class="placeholder" style="height:62px;margin-top:8px">UMAP + 情绪统计</div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 单页上下联动</h3>
+      <p>视频链路和偏好地图同屏，关联直观，但每个区域可用空间有限。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:14px;background:#f7f8fa">
+      <div class="mock-nav">概览　测试运行　偏好地图　质量中心</div>
+      <div style="display:grid;grid-template-columns:1fr 210px;gap:8px;margin-top:8px;min-height:190px">
+        <div class="mock-content">
+          <strong>当前任务专属画布</strong>
+          <div class="placeholder" style="height:120px;margin-top:8px">运行页显示完整时间轴<br>地图页显示完整 UMAP</div>
+        </div>
+        <div class="mock-sidebar">共享检查器<br><br>GIF 预览<br>标签与情绪<br>相似证据<br>反馈动作</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 双工作区 + 共享检查器</h3>
+      <p>测试运行与偏好地图各自全屏，通过统一详情栏和媒体 ID 联动。推荐。</p>
+    </div>
+  </div>
+</div>

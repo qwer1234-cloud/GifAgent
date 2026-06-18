@@ -1,0 +1,60 @@
+<h2>RAG 可视化：三种实施路径</h2>
+<p class="subtitle">比较开发速度、可解释性、运行控制和后续扩展。点击你倾向的方案。</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:16px;background:#f7f8fa">
+      <div class="mock-content" style="text-align:center">Gradio 增强页</div>
+      <div style="text-align:center;padding:8px">↓ 直接读取</div>
+      <div class="mock-content" style="text-align:center">现有 JSON + SQLite + FAISS</div>
+    </div>
+    <div class="card-body">
+      <h3>A. 现有系统增量增强</h3>
+      <p>最快看到结果，但复杂时间轴、UMAP 联动、历史对比和任务控制会逐渐受限。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:16px;background:#f7f8fa">
+      <div class="mock-content" style="text-align:center">React 工作台</div>
+      <div style="text-align:center;padding:8px">REST + SSE</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div class="mock-content" style="text-align:center">FastAPI<br>运行与查询 API</div>
+        <div class="mock-content" style="text-align:center">单任务 Worker<br>可恢复流水线</div>
+      </div>
+      <div style="text-align:center;padding:8px">↓</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div class="mock-sidebar" style="text-align:center">Run DB</div>
+        <div class="mock-sidebar" style="text-align:center">FAISS</div>
+        <div class="mock-sidebar" style="text-align:center">宿主 Ollama</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 运行中心化可观测平台</h3>
+      <p>每次测试是不可变 Run，原始证据、参数和结果可回放、比较。推荐。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image" style="padding:16px;background:#f7f8fa">
+      <div class="mock-content" style="text-align:center">React + FastAPI</div>
+      <div style="text-align:center;padding:8px">↓</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px">
+        <div class="mock-sidebar" style="text-align:center">PostgreSQL</div>
+        <div class="mock-sidebar" style="text-align:center">Redis/Celery</div>
+        <div class="mock-sidebar" style="text-align:center">向量数据库</div>
+      </div>
+      <div style="text-align:center;padding:8px">↓</div>
+      <div class="mock-content" style="text-align:center">Grafana / Trace / Metrics</div>
+    </div>
+    <div class="card-body">
+      <h3>C. 完整数据平台</h3>
+      <p>并发与运维能力最强，但对本地单用户、单 GPU 场景明显过重。</p>
+    </div>
+  </div>
+</div>
+
+<div class="pros-cons" style="margin-top:20px">
+  <div class="pros"><h4>推荐 B 的原因</h4><ul><li>覆盖实时进度、历史回放和双版本对比</li><li>保留 SQLite/FAISS/Ollama 现有投资</li><li>未来可替换队列或数据库，不阻塞首版</li></ul></div>
+  <div class="cons"><h4>明确代价</h4><ul><li>必须把测试脚本重构成可调用流水线</li><li>需要新增 Run 数据模型和事件协议</li><li>需要维护 React 前端与 Docker Compose</li></ul></div>
+</div>
