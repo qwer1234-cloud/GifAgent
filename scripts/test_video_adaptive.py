@@ -232,12 +232,6 @@ if refine_ts:
                 raw = resp.json().get("response","")
                 parsed = parse_vlm_response(raw)
 
-                raw_emotion = (parsed.get("emotional_core") or "").strip().lower()
-                if raw_emotion and raw_emotion not in VALID_EMOTIONS:
-                    parts = [p.strip() for p in raw_emotion.replace("|",",").split(",")]
-                    found = next((p for p in parts if p in VALID_EMOTIONS), None)
-                    parsed["emotional_core"] = found if found else "other"
-
                 worth = float(parsed.get("gif_worthiness", 0.5))
                 parsed["gif_worthiness"] = max(0.0, min(1.0, worth))
                 parsed["timestamp"] = rf["timestamp"]
