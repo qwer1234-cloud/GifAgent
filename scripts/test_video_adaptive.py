@@ -31,17 +31,18 @@ os.makedirs(FRAMES_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
 # ── Config ────────────────────────────────────────────────────────────
-SAMPLE_INTERVAL = 20       # seconds between coarse samples (dense for multi-per-minute)
+# 2026-06-21: tuned for max output to build preference memory
+SAMPLE_INTERVAL = 15       # was 20 — denser coarse sampling for more candidates
 REFINE_INTERVAL = 10       # seconds for fine sampling around high-score regions
 REFINE_RADIUS = 20         # ±seconds around high-score frame to re-sample
-REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
+REFINE_THRESHOLD = 0.3     # was 0.5 — catch moderately interesting regions too
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
-WORTHINESS_THRESHOLD = 0.4 # below this, skip entirely
-MERGE_GAP = 10             # max seconds between frames to merge (shorter = more independent GIFs)
-EMBED_SIM_THRESHOLD = 0.95 # cosine similarity threshold for embedding dedup (higher = stricter)
+WORTHINESS_THRESHOLD = 0.2 # was 0.4 — keep more borderline frames for human scoring
+MERGE_GAP = 6              # was 10 — shorter gap = more independent clips
+EMBED_SIM_THRESHOLD = 0.95 # cosine similarity threshold for embedding dedup
 OUTPUT_RATIO = 1.0         # fraction of total extracted clips to keep as final output
-MAX_OUTPUT = 500           # absolute cap on output count (0 = no cap)
+MAX_OUTPUT = 0             # was 500 — no cap, export all for preference memory
 GIF_MAX_WIDTH = 1920       # max output width (0 = use source resolution)
 
 print("=" * 60)
@@ -379,7 +380,10 @@ for i, clip in enumerate(ranked_clips):
     start = max(0, ts - duration * 0.4)  # bias towards starting before the peak
     start = min(start, total_duration - duration)  # don't exceed video end
 
-    out_gif = f"{EXPORT_DIR}/adapt_{i+1:03d}_w{worth:.2f}_t{int(ts)}s.gif"
+    start_ts = int(start)
+    end_ts = int(start + duration)
+    video_name = os.path.splitext(os.path.basename(VIDEO_PATH))[0]
+    out_gif = f"{EXPORT_DIR}/{video_name}@@@{i+1:03d}_{start_ts}s-{end_ts}s.gif"
     palette = f"{EXPORT_DIR}/pal_{i+1:03d}.png"
 
     fps = 10 if worth > 0.6 else 8  # 10fps for 4K to keep file sizes reasonable
