@@ -100,6 +100,13 @@ def main():
 
         if pending == 0:
             log(f"COMPLETE! {done} done, {failed_count} failed, {total} this session")
+            log("Triggering Stage 2 pipeline (LLM synthesis + FAISS rebuild)...")
+            try:
+                subprocess.run([
+                    sys.executable, "-u", "scripts/pipeline_stage2.py"
+                ], cwd=".", check=False)
+            except Exception as e:
+                log(f"Stage 2 launch failed: {e} — run manually: uv run python scripts/pipeline_stage2.py")
             break
 
         batch += 1
