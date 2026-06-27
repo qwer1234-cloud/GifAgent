@@ -271,12 +271,14 @@ GifAgent/
 │   ├── rag_synth_recover.py          # RAG 合成恢复
 │   ├── rag_100_batch.py              # RAG 批量处理（100 帧）
 │   ├── test_jur639.py                # JUR-639 专用测试
+│   ├── preference_memory.py          # 偏好记忆迁移安全预检
 │   └── export_gifs.py               # GIF 批量导出
 ├── tests/
 │   ├── test_json_guard.py            # JSON 解析测试（9 tests）
 │   ├── test_quality.py               # 质量校验测试（19 tests）
 │   ├── test_indexer_manifest.py      # FAISS manifest 验证（3 tests）
-│   └── test_reset_derived_quality_data.py  # Reset 安全性测试（3 tests）
+│   ├── test_reset_derived_quality_data.py  # Reset 安全性测试（3 tests）
+│   └── test_preference_preflight.py   # 偏好记忆迁移预检测试
 ├── data/                             # 运行时数据（gitignore）
 │   ├── library.db                    # SQLite 数据库
 │   ├── faiss/                        # FAISS 向量索引
@@ -285,6 +287,8 @@ GifAgent/
 │   ├── exports/                      # GIF 导出
 │   ├── backups/                      # 数据库备份
 │   └── vlm_loop.log                  # VLM 处理日志
+├── docs/
+│   └── runbook-rag-workbench.md       # RAG 工作台运维手册
 ├── pyproject.toml                    # uv 项目配置
 └── README.md
 ```
@@ -326,12 +330,20 @@ Qwen3-14B 使用 `<think>...</think>` 标签包裹推理过程。`json_guard.par
 - `--apply`：自动备份数据库到 `data/backups/`，清除 frame_annotations / annotations / vector_refs / checkpoints，重置 frame 状态为 pending，删除 FAISS 索引文件
 - 保留 media、frames、feedback 数据不受影响
 
+### 偏好记忆迁移安全预检
+
+在修改生产数据库前运行：
+```bash
+python scripts/preference_memory.py status --json
+```
+详见 `docs/runbook-rag-workbench.md`。
+
 ### 运行测试
 
 ```bash
 uv run pytest tests/ -v
-# 33 tests（1 skipped）: JSON 解析、placeholder 检测、emotional_core 归一化、
-# FAISS manifest 验证、reset 安全性
+# 34 tests（1 skipped）: JSON 解析、placeholder 检测、emotional_core 归一化、
+# FAISS manifest 验证、reset 安全性、偏好记忆预检
 ```
 
 ---
