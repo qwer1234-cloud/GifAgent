@@ -1,6 +1,8 @@
-"""P1-5: Preference profile API — build, list, and publish profiles."""
+"""P1-5: Preference profile API — build, list, publish, and evaluate profiles."""
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -8,6 +10,7 @@ from pydantic import BaseModel
 from app.db import get_connection
 from app.services.preference_schema import apply_preference_schema
 from app.services.preference_memory import PreferenceMemoryService
+from app.services.preference_evaluation import PreferenceEvaluationService
 
 router = APIRouter(prefix="/api/preference", tags=["preference"])
 
@@ -19,6 +22,11 @@ class BuildRequest(BaseModel):
 class PublishResponse(BaseModel):
     status: str
     profile_version: str
+
+
+class EvaluateRequest(BaseModel):
+    profile_version: str
+    holdout_path: str
 
 
 @router.get("/profiles")
@@ -96,3 +104,32 @@ def publish_profile(profile_version: str):
         raise HTTPException(status_code=400, detail=str(exc))
 
     return PublishResponse(status="published", profile_version=profile_version)
+
+
+@router.post("/evaluate")
+def evaluate_profile(body: EvaluateRequest):
+    """Evaluate a built profile against a holdout judgment set.
+
+    Request body: ``{"profile_version": "...", "holdout_path": "path/to/holdout.jsonl"}``
+
+    Returns ``can_publish`` (bool), ``gate_reasons`` (list[str]),
+    ``like_at_20``, ``dislike_at_20``, and ``ndcg_at_20`` (float).
+    """
+    conn = get_connection()
+    apply_preference_schema(conn)
+
+    holdout_path = Path(body.holdout_path)
+    if not holdout_path.exists():
+        raise HTTPException(
+            status_code=400, detail=f"Holdout file not found: {body.holdout_path}"
+        )
+
+    service = PreferenceEvaluationService(conn)
+    try:
+        result = service.evaluate(
+            body.profile_version, holdout_path=holdout_path
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return result

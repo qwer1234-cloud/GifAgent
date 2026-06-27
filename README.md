@@ -180,6 +180,7 @@ uv run python app/ui/review.py
 | GET | `/api/review/next` | 获取下一条待审核媒体 |
 | GET | `/api/review/{id}` | 获取指定媒体审核数据 |
 | POST | `/api/feedback` | 提交人工反馈（like/dislike/neutral） |
+| POST | `/api/preference/evaluate` | 配置文件发布门禁评估（holdout 评估） |
 
 ---
 
@@ -272,6 +273,7 @@ GifAgent/
 │   ├── rag_100_batch.py              # RAG 批量处理（100 帧）
 │   ├── test_jur639.py                # JUR-639 专用测试
 │   ├── preference_memory.py          # 偏好记忆迁移安全预检
+│   ├── evaluate_preference.py        # 配置文件发布门禁评估
 │   └── export_gifs.py               # GIF 批量导出
 ├── tests/
 │   ├── test_json_guard.py            # JSON 解析测试（9 tests）
@@ -337,6 +339,18 @@ Qwen3-14B 使用 `<think>...</think>` 标签包裹推理过程。`json_guard.par
 python scripts/preference_memory.py status --json
 ```
 详见 `docs/runbook-rag-workbench.md`。
+
+### 偏好配置文件发布门禁
+
+配置文件在发布前需要通过 holdout 评估门禁（`scripts/evaluate_preference.py`），计算 Like@20、Dislike@20 和 NDCG@20 指标：
+
+- **Holdout 数量门禁**：需要至少 30 条标定判断
+- **源视频重叠检测**：训练集和 holdout 集的源视频不能重叠
+- 门禁通过报告 `can_publish: true`，失败则阻止发布
+
+```bash
+python scripts/evaluate_preference.py --profile-version profile_xxx --holdout data/holdout.jsonl
+```
 
 ### 运行测试
 
