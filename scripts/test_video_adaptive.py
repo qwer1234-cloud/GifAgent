@@ -35,7 +35,7 @@ os.makedirs(EXPORT_DIR, exist_ok=True)
 SAMPLE_INTERVAL = 15       # was 20 — denser coarse sampling for more candidates
 REFINE_INTERVAL = 10       # seconds for fine sampling around high-score regions
 REFINE_RADIUS = 20         # ±seconds around high-score frame to re-sample
-REFINE_THRESHOLD = 0.3     # was 0.5 — catch moderately interesting regions too
+REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.2 # was 0.4 — keep more borderline frames for human scoring
@@ -77,6 +77,22 @@ SCORE_PROMPT = (
     "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|admiration|intimacy|vulnerability|longing|desire|other\n"
     "NEVER output 'what you see', '2-3 observations', or pipe-delimited emotions."
 )
+
+def safe_worth(value):
+    """Parse gif_worthiness robustly — VLM sometimes returns text labels instead of numbers."""
+    if isinstance(value, (int, float)):
+        return max(0.0, min(1.0, float(value)))
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        try:
+            return max(0.0, min(1.0, float(lowered)))
+        except ValueError:
+            pass
+        if "excellent" in lowered: return 0.9
+        if "good" in lowered: return 0.7
+        if "average" in lowered: return 0.4
+        if "bad" in lowered: return 0.15
+    return 0.5  # fallback
 
 def stop_model(name):
     subprocess.run(["wsl","ollama","stop",name], capture_output=True, timeout=30)
@@ -151,11 +167,11 @@ for fi, sf in enumerate(sample_frames):
             raw = resp.json().get("response","")
             parsed = parse_vlm_response(raw)
 
-            worth = float(parsed.get("gif_worthiness", 0.5))
-            parsed["gif_worthiness"] = max(0.0, min(1.0, worth))
+            worth = safe_worth(parsed.get("gif_worthiness", 0.5))
+            parsed["gif_worthiness"] = worth
             parsed["timestamp"] = sf["timestamp"]
 
-            if parsed["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+            if worth >= WORTHINESS_THRESHOLD:
                 scored.append(parsed)
 
             if (fi+1) % 30 == 0:
@@ -233,17 +249,20 @@ if refine_ts:
                 raw = resp.json().get("response","")
                 parsed = parse_vlm_response(raw)
 
-                worth = float(parsed.get("gif_worthiness", 0.5))
-                parsed["gif_worthiness"] = max(0.0, min(1.0, worth))
+                worth = safe_worth(parsed.get("gif_worthiness", 0.5))
+                parsed["gif_worthiness"] = worth
                 parsed["timestamp"] = rf["timestamp"]
 
-                if parsed["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                if worth >= WORTHINESS_THRESHOLD:
                     scored.append(parsed)
                 break
             except Exception as e:
                 if attempt == 2:
                     print(f"  refine [{fi+1}] FAILED: {e}")
                 time.sleep(2)
+
+        if (fi+1) % 50 == 0:
+            print(f"  refine [{fi+1}/{len(refine_frames)}] done, scored={len(scored)}")
 
     print(f"  After refinement: {len(scored)} total scored frames")
 
