@@ -12,7 +12,7 @@ def get_connection() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     return conn
 
-def init_db():
+def init_db(apply_preference: bool = False):
     conn = get_connection()
     conn.executescript('''
         CREATE TABLE IF NOT EXISTS media (
@@ -135,6 +135,10 @@ def init_db():
     ''')
     # Migrate existing tables that may lack new columns
     _migrate(conn)
+    if apply_preference:
+        from app.services.preference_schema import apply_preference_schema
+
+        apply_preference_schema(conn)
     conn.close()
 
 def _migrate(conn):

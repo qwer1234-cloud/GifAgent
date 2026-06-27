@@ -225,5 +225,71 @@ if RUN_INDEX:
 
     log("FAISS index rebuild complete")
 
+# ── Optional: Preference Memory reranking ──────────────────────────────────
+from app.config import get
+
+if get("preference_memory.enabled", False):
+    log("=" * 50)
+    log("Stage 2c: Preference reranking started")
+
+    from app.services.reranker import PreferenceReranker
+    from app.services.embedding import compute_text_embedding
+
+    reranker = PreferenceReranker(get_connection())
+
+    # Re-score candidates that have vectors and RAG similarities
+    candidates = conn.execute(
+        """SELECT c.candidate_id, c.scenario_keys_json, c.base_rag_similarity
+           FROM candidate_gifs c
+           INNER JOIN candidate_vectors cv
+             ON c.candidate_id = cv.candidate_id
+           WHERE c.status = 'candidate'
+             AND c.base_rag_similarity IS NOT NULL
+             AND cv.embedding_model = 'nomic-embed-text:latest'
+             AND cv.embedding_dim = 768"""
+    ).fetchall()
+
+    reranked = 0
+    for row in candidates:
+        try:
+            vec_row = conn.execute(
+                """SELECT vector_blob FROM candidate_vectors
+                   WHERE candidate_id = ? AND embedding_model = 'nomic-embed-text:latest'
+                   AND embedding_dim = 768""",
+                (row["candidate_id"],),
+            ).fetchone()
+            if vec_row is None:
+                continue
+
+            import numpy as np
+            vec = np.frombuffer(vec_row["vector_blob"], dtype=np.float32)
+            scenario_keys = json.loads(row["scenario_keys_json"] or "[]")
+
+            breakdown = reranker.score(
+                candidate_vector=vec,
+                base_rag_similarity=row["base_rag_similarity"],
+                scenario_keys=scenario_keys,
+                profile_version=None,
+                enabled=True,
+            )
+
+            conn.execute(
+                """UPDATE candidate_gifs
+                   SET final_score = ?, profile_score = ?, score_profile_version = ?
+                   WHERE candidate_id = ?""",
+                (
+                    breakdown["final_score"],
+                    breakdown.get("profile_score"),
+                    breakdown.get("preference_profile_version"),
+                    row["candidate_id"],
+                ),
+            )
+            reranked += 1
+        except Exception:
+            pass  # reranking is best-effort
+
+    conn.commit()
+    log(f"Preference reranking complete: {reranked} candidates rescored")
+
 log("=" * 50)
 log("Pipeline Stage 2 finished")

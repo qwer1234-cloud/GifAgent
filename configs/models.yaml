@@ -39,6 +39,9 @@ scoring:
 dedup:
   phash_hamming_threshold: 5
 
+preference_memory:
+  enabled: false
+
 database:
   path: "data/library.db"
 

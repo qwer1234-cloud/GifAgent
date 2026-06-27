@@ -12,7 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
-from app.config import load_config
+from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
@@ -383,6 +383,32 @@ print(f"\n[4/4] Exporting {output_count}/{len(deduped_clips)} GIFs (4K) "
 
 # Rank clips by gif_worthiness, take top N
 ranked_clips = sorted(deduped_clips, key=lambda x: x["gif_worthiness"], reverse=True)[:output_count]
+
+# Optional: Preference Memory reranking
+if get("preference_memory.enabled", False):
+    from app.services.reranker import PreferenceReranker
+    reranker = PreferenceReranker(get_connection())
+    for clip in ranked_clips:
+        caption = clip["best_frame"].get("caption", "")
+        if caption:
+            try:
+                vec = compute_text_embedding(caption)
+                if vec is not None:
+                    emo = clip["best_frame"].get("emotional_core", "")
+                    scenario_keys = [f"emotion:{emo}"] if (emo and emo != "?") else []
+                    breakdown = reranker.score(
+                        candidate_vector=vec,
+                        base_rag_similarity=clip["gif_worthiness"],
+                        scenario_keys=scenario_keys,
+                        profile_version=None,
+                        enabled=True,
+                    )
+                    clip["final_score"] = breakdown["final_score"]
+                    clip["profile_score"] = breakdown.get("profile_score")
+                    clip["score_profile_version"] = breakdown.get("preference_profile_version")
+            except Exception:
+                pass  # reranking is best-effort, not critical path
+
 
 for i, clip in enumerate(ranked_clips):
     worth = clip["gif_worthiness"]
