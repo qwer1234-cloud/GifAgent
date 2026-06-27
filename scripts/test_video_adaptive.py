@@ -113,17 +113,48 @@ def safe_worth(value):
     return 0.5  # fallback
 
 def stop_model(name):
-    subprocess.run(["wsl","ollama","stop",name], capture_output=True, timeout=30)
+    """Stop an Ollama model and wait until it's fully unloaded from GPU."""
+    for attempt in range(3):
+        subprocess.run(["wsl","ollama","stop",name], capture_output=True, timeout=30)
+        time.sleep(5)
+        # Verify it's actually unloaded
+        try:
+            r = httpx.get(f"{OLLAMA_BASE}/api/ps", timeout=5)
+            loaded = {m.get("name","") for m in r.json().get("models",[])}
+            # Check if any matching model is still loaded
+            still_loaded = any(name.split(":")[0] in m for m in loaded)
+            if not still_loaded:
+                return True
+        except Exception:
+            pass
+        time.sleep(10)
+    return False
 
 def wait_model(name, timeout_s=120):
+    """Wait for an Ollama model to be ready, loading it if needed."""
     deadline = time.time() + timeout_s
+    load_triggered = False
     while time.time() < deadline:
         try:
             r = httpx.post(f"{OLLAMA_BASE}/api/generate",
-                          json={"model":name,"prompt":"ping","stream":False}, timeout=10)
-            if r.status_code == 200: return True
-        except: pass
-        time.sleep(3)
+                          json={"model":name,"prompt":"ping","stream":False}, timeout=30)
+            if r.status_code == 200:
+                return True
+            # If server is busy loading, keep waiting
+            if r.status_code == 503:
+                time.sleep(10)
+                continue
+        except Exception:
+            pass
+        # Trigger model load on first attempt
+        if not load_triggered:
+            try:
+                httpx.post(f"{OLLAMA_BASE}/api/generate",
+                    json={"model":name,"prompt":"ping","stream":False,"options":{"num_predict":1}}, timeout=5)
+            except Exception:
+                pass
+            load_triggered = True
+        time.sleep(5)
     return False
 
 # ── Phase 1: Probe video + sample frames ──────────────────────────────
@@ -334,14 +365,15 @@ deduped_clips = clips
 clusters = [{"center_emb": None, "members": [i]} for i in range(len(clips))]
 print(f"\n[2.7/4] Dedup skipped — {len(deduped_clips)} clips passed through")
 
-# ── Phase 3: RAG + LLM synthesis ──────────────────────────────────────
+# ── Phase 3: RAG + LLM synthesis (non-fatal — skip if LLM unavailable) ──
 print(f"\n[3/4] RAG + LLM synthesis...")
 
 # Switch to LLM
 stop_model("llava")
 time.sleep(10)
 if not wait_model(LLM_MODEL, timeout_s=180):
-    print("ERROR: LLM not responding"); sys.exit(1)
+    print("WARNING: LLM not responding — skipping synthesis, proceeding to export")
+    synthesis = {"_parse_error": True}
 
 # Per-frame RAG using FAISS
 idx = get_index()
@@ -373,21 +405,25 @@ synth_prompt = (
 )
 
 synthesis = {"_parse_error": True}
-for attempt in range(3):
-    try:
-        resp = httpx.post(f"{OLLAMA_BASE}/api/generate",
-            json={"model":LLM_MODEL,"prompt":synth_prompt,"stream":False,"options":{"temperature":0.3}}, timeout=180)
-        resp.raise_for_status()
-        raw = resp.json().get("response","") or resp.json().get("thinking","")
-        synthesis = parse_json(raw)
-        if not synthesis.get("_parse_error"):
-            print(f"  summary: {synthesis.get('summary','?')}")
-            print(f"  emotional_core: {synthesis.get('emotional_core','?')}")
-            print(f"  tags: {synthesis.get('tags',[])}")
-            break
-    except Exception as e:
-        print(f"  Attempt {attempt+1}: {e}")
-        time.sleep(5)
+llm_available = wait_model(LLM_MODEL, timeout_s=180)
+if llm_available:
+    for attempt in range(3):
+        try:
+            resp = httpx.post(f"{OLLAMA_BASE}/api/generate",
+                json={"model":LLM_MODEL,"prompt":synth_prompt,"stream":False,"options":{"temperature":0.3}}, timeout=180)
+            resp.raise_for_status()
+            raw = resp.json().get("response","") or resp.json().get("thinking","")
+            synthesis = parse_json(raw)
+            if not synthesis.get("_parse_error"):
+                print(f"  summary: {synthesis.get('summary','?')}")
+                print(f"  emotional_core: {synthesis.get('emotional_core','?')}")
+                print(f"  tags: {synthesis.get('tags',[])}")
+                break
+        except Exception as e:
+            print(f"  Attempt {attempt+1}: {e}")
+            time.sleep(5)
+else:
+    print("  Skipping LLM synthesis — model unavailable, proceeding to GIF export")
 
 # ── Phase 4: Export adaptive-duration GIFs ─────────────────────────────
 # Determine output count: ratio of total deduped clips, capped at MAX_OUTPUT
