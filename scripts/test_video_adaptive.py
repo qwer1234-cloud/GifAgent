@@ -6,7 +6,7 @@ Two-pass adaptive GIF extraction:
   Adjacent high-score frames are merged into longer clips.
   Top-50 ranked by gif_worthiness.
 """
-import sys, os, subprocess, json, re, base64, time
+import sys, os, subprocess, json, re, base64, time, argparse
 import httpx
 from PIL import Image
 
@@ -21,14 +21,32 @@ from app.services.quality import validate_frame_analysis, normalize_emotional_co
 load_config()
 init_db()
 
-VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
+# ── CLI ──────────────────────────────────────────────────────────────────
+parser = argparse.ArgumentParser(description="Adaptive GIF extraction from video")
+parser.add_argument("--video", default=None, help="Video file path")
+parser.add_argument("--export-dir", default=None, help="Export directory for GIFs")
+args_cli, _ = parser.parse_known_args()
+
+if args_cli.video:
+    VIDEO_PATH = args_cli.video
+else:
+    VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
+
 OLLAMA_BASE = "http://localhost:11434"
 VLM_MODEL = "llava:13b"
 LLM_MODEL = "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M"
-EXPORT_DIR = "data/exports/adaptive_test"
-FRAMES_DIR = "data/frames/adaptive_test"
+
+video_name = os.path.splitext(os.path.basename(VIDEO_PATH))[0]
+if args_cli.export_dir:
+    EXPORT_DIR = os.path.join(args_cli.export_dir, video_name)
+else:
+    EXPORT_DIR = "data/exports/adaptive_test"
+
+FRAMES_DIR = f"data/frames/adaptive_test/{video_name}"
 os.makedirs(FRAMES_DIR, exist_ok=True)
 os.makedirs(EXPORT_DIR, exist_ok=True)
+print(f"Video: {os.path.basename(VIDEO_PATH)}")
+print(f"Export: {EXPORT_DIR}")
 
 # ── Config ────────────────────────────────────────────────────────────
 # 2026-06-21: tuned for max output to build preference memory
