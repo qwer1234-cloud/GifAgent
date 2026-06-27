@@ -64,21 +64,86 @@ def collect_status(*, library_db_path: Path, faiss_manifest_path: Path) -> dict[
     }
 
 
+def cmd_build(args: argparse.Namespace) -> int:
+    """Trigger a preference profile build."""
+    from app.db import get_connection
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_memory import PreferenceMemoryService
+
+    conn = get_connection()
+    apply_preference_schema(conn)
+
+    service = PreferenceMemoryService(conn)
+    result = service.build_profile(dry_run=args.dry_run)
+
+    print(json.dumps(result, ensure_ascii=False, indent=2 if args.pretty else None))
+    return 0 if result["status"] == "built" else 1
+
+
+def cmd_publish(args: argparse.Namespace) -> int:
+    """Publish a completed profile build as the current active profile."""
+    from app.db import get_connection
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_memory import PreferenceMemoryService
+
+    conn = get_connection()
+    apply_preference_schema(conn)
+
+    service = PreferenceMemoryService(conn)
+    try:
+        service.publish(args.profile_version)
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 1
+
+    print(
+        json.dumps(
+            {"status": "published", "profile_version": args.profile_version},
+            ensure_ascii=False,
+            indent=2 if args.pretty else None,
+        )
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
+
+    # status subcommand (existing)
     status = sub.add_parser("status")
     status.add_argument("--library-db", default="data/library.db")
     status.add_argument("--faiss-manifest", default="data/faiss/manifest.json")
     status.add_argument("--pretty", action="store_true")
+
+    # build subcommand
+    build = sub.add_parser("build", help="Build an immutable preference profile")
+    build.add_argument("--dry-run", action="store_true", help="Validate gates without persisting")
+    build.add_argument("--library-db", default="data/library.db")
+    build.add_argument("--pretty", action="store_true")
+
+    # publish subcommand
+    publish = sub.add_parser("publish", help="Publish a completed profile as current")
+    publish.add_argument("--profile-version", required=True, help="Profile version to publish")
+    publish.add_argument("--library-db", default="data/library.db")
+    publish.add_argument("--pretty", action="store_true")
+
     args = parser.parse_args()
 
-    payload = collect_status(
-        library_db_path=Path(args.library_db),
-        faiss_manifest_path=Path(args.faiss_manifest),
-    )
-    print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
-    return 0
+    if args.command == "status":
+        payload = collect_status(
+            library_db_path=Path(args.library_db),
+            faiss_manifest_path=Path(args.faiss_manifest),
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+        return 0
+    elif args.command == "build":
+        return cmd_build(args)
+    elif args.command == "publish":
+        return cmd_publish(args)
+    else:
+        print(json.dumps({"error": f"unknown command: {args.command}"}))
+        return 1
 
 
 if __name__ == "__main__":
