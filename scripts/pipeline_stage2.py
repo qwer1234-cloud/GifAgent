@@ -10,7 +10,6 @@ Usage:
 """
 import sys, json, uuid, time, io
 from datetime import datetime, timezone
-import httpx
 
 # Fix Windows GBK encoding
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -18,13 +17,14 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
+from app.config import get
 from app.services.json_guard import parse_json_response
+from app.services.llm_client import generate_llm_text, llm_model_name, wait_for_llm
 from app.services.quality import validate_media_annotation
 
 init_db()
 
-LLM_MODEL = 'hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M'
-OLLAMA_BASE = 'http://localhost:11434'
+LLM_MODEL = llm_model_name()
 LOG_FILE = 'data/pipeline_stage2.log'
 BATCH_COMMIT = 10
 
@@ -41,20 +41,6 @@ def log(msg):
             f.write(line + "\n")
     except Exception:
         pass
-
-
-def wait_model(model, timeout_s=180):
-    t0 = time.time()
-    while time.time() - t0 < timeout_s:
-        try:
-            resp = httpx.post(f"{OLLAMA_BASE}/api/generate",
-                              json={"model": model, "prompt": "ping", "stream": False}, timeout=30)
-            if resp.status_code == 200:
-                return True
-        except Exception:
-            pass
-        time.sleep(5)
-    return False
 
 
 def stop_model(name):
@@ -86,7 +72,7 @@ if RUN_LLM:
         stop_model("llava")
         stop_model("nomic-embed-text")
         time.sleep(5)
-        if not wait_model(LLM_MODEL, timeout_s=180):
+        if not wait_for_llm(timeout_s=180):
             log("ERROR: LLM not responding")
             sys.exit(1)
 
@@ -121,14 +107,7 @@ if RUN_LLM:
 
             for attempt in range(3):
                 try:
-                    resp = httpx.post(
-                        f'{OLLAMA_BASE}/api/generate',
-                        json={'model': LLM_MODEL, 'prompt': prompt, 'stream': False,
-                              'options': {'temperature': 0.3, 'num_think': 0}},
-                        timeout=120,
-                    )
-                    resp.raise_for_status()
-                    raw = resp.json().get('response', '') or resp.json().get('thinking', '')
+                    raw = generate_llm_text(prompt, temperature=0.3, timeout=120)
 
                     parse_result = parse_json_response(raw)
                     if not parse_result.ok:
@@ -226,8 +205,6 @@ if RUN_INDEX:
     log("FAISS index rebuild complete")
 
 # ── Optional: Preference Memory reranking ──────────────────────────────────
-from app.config import get
-
 if get("preference_memory.enabled", False):
     log("=" * 50)
     log("Stage 2c: Preference reranking started")

@@ -6,6 +6,7 @@ from typing import Optional, List, Dict, Any, Callable
 import httpx
 
 from app.config import get
+from app.services.llm_client import is_local_llm, wait_for_llm
 
 
 class ModelScheduler:
@@ -45,7 +46,8 @@ class ModelScheduler:
 
     def switch_to_vlm(self) -> bool:
         """Stop LLM, wait for VLM to be ready."""
-        self.stop_model(self.llm_model)
+        if is_local_llm():
+            self.stop_model(self.llm_model)
         for attempt in range(self.max_retries):
             if self._wait_for_model(self.vlm_model, timeout=10):
                 return True
@@ -55,6 +57,8 @@ class ModelScheduler:
     def switch_to_llm(self) -> bool:
         """Stop VLM, wait for LLM to be ready."""
         self.stop_model(self.vlm_model)
+        if not is_local_llm():
+            return wait_for_llm(timeout_s=10)
         for attempt in range(self.max_retries):
             if self._wait_for_model(self.llm_model, timeout=10):
                 return True

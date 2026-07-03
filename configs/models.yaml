@@ -13,10 +13,15 @@ vlm:
   max_batch_size: 100
 
 llm:
-  provider: "ollama"
-  model: "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M"
-  base_url: "http://localhost:11434"
+  provider: "openai_compatible"
+  model: "deepseek-v4-flash"
+  api_key_env: "DEEPSEEK_API_KEY"
+  base_url: "https://api.deepseek.com/v1"
   require_json: true
+  temperature: 0.3
+  max_tokens: 2048
+  timeout_s: 120
+  anthropic_version: "2023-06-01"
 
 embedding:
   provider: "ollama"

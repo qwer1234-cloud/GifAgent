@@ -1,20 +1,16 @@
 """LLM Synthesis Service — synthesize frame analyses into a cohesive media-level annotation."""
 import json
-import re
 import uuid
 import time
 from datetime import datetime, timezone
-from typing import Optional, List
-
-import httpx
+from typing import List
 
 from app.db import get_connection
 from app.services.json_guard import parse_json_response
+from app.services.llm_client import generate_llm_text, llm_model_name
 from app.services.quality import validate_media_annotation
-from app.config import get
 
-LLM_BASE = get("llm.base_url", "http://localhost:11434")
-LLM_MODEL = get("llm.model")
+LLM_MODEL = llm_model_name()
 
 
 def _parse_response(text: str) -> dict:
@@ -73,17 +69,7 @@ def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
 
     for attempt in range(3):
         try:
-            resp = httpx.post(
-                f"{LLM_BASE}/api/generate",
-                json={"model": LLM_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.3, "num_think": 0}},
-                timeout=120,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            response_text = data.get("response", "")
-            # Fallback: deepseek-v4-flash models put content in "thinking" field
-            if not response_text or not response_text.strip():
-                response_text = data.get("thinking", "")
+            response_text = generate_llm_text(prompt, temperature=0.3, timeout=120)
             if not response_text or not response_text.strip():
                 raise ValueError("Empty response from LLM")
 

@@ -82,6 +82,10 @@ def main():
         print("All videos already processed. Use --force to re-run.")
         return 0
 
+    # Derive input folder name so outputs are grouped: adaptive_test/{folder}/{video}/
+    input_folder = os.path.basename(os.path.normpath(args.dir))
+    base_export_dir = os.path.join("data/exports/adaptive_test", input_folder) if input_folder else "data/exports/adaptive_test"
+
     # ── Process ──────────────────────────────────────────────────────────
     total_start = time.time()
     succeeded = 0
@@ -98,7 +102,7 @@ def main():
             result = subprocess.run([
                 sys.executable, "-u", "scripts/test_video_adaptive.py",
                 "--video", video,
-                "--export-dir", "data/exports/adaptive_test",
+                "--export-dir", base_export_dir,
             ], cwd=".", timeout=14400)
 
             if result.returncode == 0:

@@ -21,6 +21,7 @@ import httpx
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection, save_checkpoint, load_checkpoint
 from app.config import load_config, get
+from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.preprocess import extract_gif_frames
 
 load_config()
@@ -28,7 +29,7 @@ init_db()
 
 OLLAMA_BASE = get("vlm.base_url", "http://localhost:11434")
 VLM_MODEL = get("vlm.model", "llava:13b")
-LLM_MODEL = get("llm.model")
+LLM_MODEL = llm_model_name()
 BATCH_SIZE = 10  # GIFs per batch (not frames)
 FRAMES_DIR = get("paths.frames_dir", "data/frames")
 PHASE = "vlm_llm_representatives"
@@ -228,7 +229,8 @@ for i in range(0, len(rows), BATCH_SIZE):
     print(f"  VLM analysis ({len(batch_frame_map)} GIFs, ~{sum(len(v) for v in batch_frame_map.values())} frames)...")
 
     # Ensure VLM is running
-    ollama_stop(LLM_MODEL.split("/")[-1].split(":")[0])
+    if is_local_llm():
+        ollama_stop(LLM_MODEL.split("/")[-1].split(":")[0])
     if not wait_model(VLM_MODEL):
         print("  ERROR: VLM model not responding, saving checkpoint...")
         save_checkpoint(PHASE, last_media_id or batch[0]["media_id"], batch_idx, total_processed, total_failed)
@@ -300,7 +302,7 @@ for i in range(0, len(rows), BATCH_SIZE):
     # Step 3: Switch to LLM and synthesize
     print(f"  Switching to LLM...")
     ollama_stop(VLM_MODEL.split("/")[-1].split(":")[0])
-    if not wait_model(LLM_MODEL):
+    if not wait_for_llm(timeout_s=30):
         print("  ERROR: LLM model not responding, saving checkpoint...")
         save_checkpoint(PHASE, last_media_id or batch[0]["media_id"], batch_idx, total_processed, total_failed)
         sys.exit(1)
@@ -311,7 +313,7 @@ for i in range(0, len(rows), BATCH_SIZE):
         prompt = build_synthesis_prompt(annotations)
         for attempt in range(3):
             try:
-                raw = ollama_generate(LLM_MODEL, prompt)
+                raw = generate_llm_text(prompt, temperature=0.3, timeout=120)
                 parsed = parse_json(raw)
                 if parsed.get("_parse_error"):
                     if attempt < 2:

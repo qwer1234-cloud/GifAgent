@@ -2,7 +2,6 @@
 """Resume LLM synthesis from VLM frame annotations (checkpoint recovery)."""
 import sys, json, re, uuid, time, io
 from datetime import datetime, timezone
-import httpx
 
 # Fix GBK encoding issues on Windows
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -10,12 +9,12 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
+from app.services.llm_client import generate_llm_text, llm_model_name
 
 init_db()
 conn = get_connection()
 
-LLM_MODEL = 'hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M'
-OLLAMA_BASE = 'http://localhost:11434'
+LLM_MODEL = llm_model_name()
 
 # Find media with frame_annotations but no media-level annotation
 rows = conn.execute('''
@@ -77,13 +76,7 @@ for idx, (mid, fpath) in enumerate(rows):
 
     for attempt in range(3):
         try:
-            resp = httpx.post(
-                f'{OLLAMA_BASE}/api/generate',
-                json={'model': LLM_MODEL, 'prompt': prompt, 'stream': False, 'options': {'temperature': 0.3, 'num_think': 0}},
-                timeout=120,
-            )
-            resp.raise_for_status()
-            raw = resp.json().get('response', '')
+            raw = generate_llm_text(prompt, temperature=0.3, timeout=120)
             parsed = parse_json(raw)
             if parsed.get('_parse_error'):
                 if attempt < 2:

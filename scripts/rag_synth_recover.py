@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Recover LLM synthesis for RAG test after VLM completion."""
-import json, re, time, httpx
+import json, re, sys
 
-OLLAMA_BASE = 'http://localhost:11434'
-LLM_MODEL = 'fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b'
+sys.path.insert(0, '.')
+from app.services.llm_client import generate_llm_text, llm_model_name
+
+LLM_MODEL = llm_model_name()
 
 with open('data/test_jur639_rag_result.json') as f:
     data = json.load(f)
@@ -31,11 +33,9 @@ prompt = (
     'Frame analyses:\n' + analyses
 )
 
-LLM_MODEL = 'hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M'
-
 def parse_json(text):
     text = text.strip()
-    # Strip think tags (Qwen-style reasoning)
+    # Strip model reasoning tags when present.
     if '</think>' in text:
         text = text.split('</think>')[-1].strip()
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
@@ -55,14 +55,7 @@ def parse_json(text):
     return {'_parse_error': True, '_raw': text[:500]}
 
 print('Sending prompt to LLM...')
-resp = httpx.post(
-    f'{OLLAMA_BASE}/api/generate',
-    json={'model': LLM_MODEL, 'prompt': prompt, 'stream': False, 'options': {'temperature': 0.3}},
-    timeout=120,
-)
-resp.raise_for_status()
-resp_data = resp.json()
-raw = resp_data.get('response', '') or resp_data.get('thinking', '')
+raw = generate_llm_text(prompt, temperature=0.3, timeout=120)
 
 synthesis = parse_json(raw)
 print('Synthesis result:')

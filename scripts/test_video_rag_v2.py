@@ -11,17 +11,18 @@ from PIL import Image
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
-from app.config import load_config
+from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.indexer import get_index
+from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 
 load_config()
 init_db()
 
 VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
-OLLAMA_BASE = "http://localhost:11434"
-VLM_MODEL = "llava:13b"
-LLM_MODEL = "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M"
+OLLAMA_BASE = get("vlm.base_url", "http://localhost:11434")
+VLM_MODEL = get("vlm.model", "llava:13b")
+LLM_MODEL = llm_model_name()
 FRAMES_DIR = "data/frames/rag_v2_test"
 EXPORT_DIR = "data/exports/rag_v2_test"
 os.makedirs(FRAMES_DIR, exist_ok=True)
@@ -116,7 +117,8 @@ step = max(1, len(good_frames) // N_FRAMES)
 sample_frames = good_frames[::step][:N_FRAMES]
 print(f"\n[2/5] Pass 1: VLM bare analysis ({len(sample_frames)} frames)...")
 
-stop_model("Qwen3-14B-GGUF")
+if is_local_llm():
+    stop_model(LLM_MODEL.split("/")[-1].split(":")[0])
 stop_model("nomic-embed-text")
 time.sleep(5)
 if not wait_model(VLM_MODEL):
@@ -173,7 +175,7 @@ print(f"\n[3/5] Pass 2: Per-frame RAG search with VLM captions...")
 # Switch to LLM model
 stop_model("llava")
 time.sleep(10)
-if not wait_model(LLM_MODEL, timeout_s=180):
+if not wait_for_llm(timeout_s=180):
     print("  ERROR: LLM not responding")
     sys.exit(1)
 
@@ -251,14 +253,7 @@ synth_prompt = (
 synthesis = {"_parse_error": True, "_raw": ""}
 for attempt in range(3):
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": LLM_MODEL, "prompt": synth_prompt, "stream": False, "options": {"temperature": 0.3}},
-            timeout=180,
-        )
-        resp.raise_for_status()
-        resp_data = resp.json()
-        raw = resp_data.get("response", "") or resp_data.get("thinking", "")
+        raw = generate_llm_text(synth_prompt, temperature=0.3, timeout=180)
         synthesis = parse_json(raw)
         if not synthesis.get("_parse_error"):
             print(f"  summary: {synthesis.get('summary', '?')}")

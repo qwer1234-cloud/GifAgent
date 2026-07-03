@@ -17,6 +17,35 @@ class FeedbackRequest(BaseModel):
     note: str | None = None
 
 
+@router.get("")
+def list_candidates():
+    """List all candidate GIFs with their details."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT candidate_id, source_run_id, source_run_candidate_id,
+               start_sec, end_sec, artifact_path, preview_path,
+               status, base_rag_similarity, final_score
+        FROM candidate_gifs ORDER BY created_at DESC
+    """).fetchall()
+    return {
+        "candidates": [
+            {
+                "candidate_id": r["candidate_id"],
+                "source_run_id": r["source_run_id"],
+                "source_run_candidate_id": r["source_run_candidate_id"],
+                "start_sec": r["start_sec"],
+                "end_sec": r["end_sec"],
+                "artifact_path": r["artifact_path"],
+                "preview_path": r["preview_path"],
+                "status": r["status"],
+                "base_rag_similarity": r["base_rag_similarity"],
+                "final_score": r["final_score"],
+            }
+            for r in rows
+        ]
+    }
+
+
 class FeedbackResponse(BaseModel):
     event_id: str
     candidate_id: str

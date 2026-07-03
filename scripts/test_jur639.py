@@ -5,11 +5,14 @@ from datetime import datetime, timezone
 
 import httpx
 
+sys.path.insert(0, '.')
+from app.services.llm_client import generate_llm_text, llm_model_name
+
 # === Config ===
 VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
 OLLAMA_BASE = "http://localhost:11434"
 VLM_MODEL = "llava:13b"
-LLM_MODEL = "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b"
+LLM_MODEL = llm_model_name()
 FRAMES_DIR = "data/frames/test_jur639"
 THUMBS_DIR = "data/thumbs"
 os.makedirs(FRAMES_DIR, exist_ok=True)
@@ -105,7 +108,7 @@ for fi, finfo in enumerate(frame_files):
 print(f"  Analyzed {len(frame_analyses)}/{len(frame_files)} frames successfully")
 
 # === Phase 3: LLM synthesize ===
-print(f"\n[3/5] Calling 9B LLM to synthesize annotations...")
+print(f"\n[3/5] Calling {LLM_MODEL} to synthesize annotations...")
 
 analyses_text = "\n\n".join(
     f"Frame {fa.get('frame_index', i+1)} (t={fa.get('timestamp', 0)}s):\n"
@@ -133,14 +136,7 @@ SYNTHESIS_PROMPT = (
 synthesis = {"_parse_error": True, "_raw": ""}
 for attempt in range(3):
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": LLM_MODEL, "prompt": SYNTHESIS_PROMPT, "stream": False, "options": {"temperature": 0.3}},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        synthesis_data = resp.json()
-        raw_text = synthesis_data.get("response", "")
+        raw_text = generate_llm_text(SYNTHESIS_PROMPT, temperature=0.3, timeout=120)
         if not raw_text or not raw_text.strip():
             print(f"  Attempt {attempt+1}: empty response, retrying...")
             continue

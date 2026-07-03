@@ -9,6 +9,7 @@ from app.db import init_db, get_connection
 from app.config import load_config
 from app.services.embedding import compute_text_summary_embedding, compute_text_embedding
 from app.services.indexer import get_index
+from app.services.llm_client import generate_llm_text, llm_model_name
 
 load_config()
 init_db()
@@ -16,7 +17,7 @@ init_db()
 VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
 OLLAMA_BASE = "http://localhost:11434"
 VLM_MODEL = "llava:13b"
-LLM_MODEL = "fredrezones55/Qwen3.5-Uncensored-HauhauCS-Aggressive:9b"
+LLM_MODEL = llm_model_name()
 EXPORT_DIR = "data/exports/rag_test"
 FRAMES_DIR = "data/frames/rag_test"
 os.makedirs(FRAMES_DIR, exist_ok=True)
@@ -187,13 +188,7 @@ synth_prompt = (
 
 for attempt in range(3):
     try:
-        resp = httpx.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={"model": LLM_MODEL, "prompt": synth_prompt, "stream": False, "options": {"temperature": 0.3, "num_think": 0}},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        raw = resp.json().get("response", "")
+        raw = generate_llm_text(synth_prompt, temperature=0.3, timeout=120)
         synthesis = parse_json(raw)
         if not synthesis.get("_parse_error"):
             break

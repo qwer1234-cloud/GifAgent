@@ -25,7 +25,7 @@ def parse_json_response(text: str) -> JsonParseResult:
 
     cleaned = text.strip()
 
-    # Strip Qwen <think>...</think> reasoning tags
+    # Strip model reasoning tags when present.
     if "</think>" in cleaned:
         cleaned = cleaned.split("</think>")[-1].strip()
     cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()

@@ -6,16 +6,17 @@ import httpx
 
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection, save_checkpoint, load_checkpoint
-from app.config import load_config
+from app.config import load_config, get
+from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.preprocess import extract_gif_frames
 
 load_config()
 init_db()
 
-OLLAMA_BASE = "http://localhost:11434"
-VLM_MODEL = "llava:13b"
-LLM_MODEL = "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M"
-EMBED_MODEL = "nomic-embed-text:latest"
+OLLAMA_BASE = get("vlm.base_url", "http://localhost:11434")
+VLM_MODEL = get("vlm.model", "llava:13b")
+LLM_MODEL = llm_model_name()
+EMBED_MODEL = get("embedding.text_model", "nomic-embed-text:latest")
 PHASE = "rag_100_vlm"
 
 N_TOTAL = 100  # Process all 100
@@ -82,7 +83,8 @@ print("Step 2: VLM analysis (llava:13b)")
 print(f"{'='*60}")
 
 # Stop LLM, wait for VLM
-subprocess.run(["wsl", "ollama", "stop", "Qwen3-14B-GGUF"], capture_output=True, timeout=30)
+if is_local_llm():
+    subprocess.run(["wsl", "ollama", "stop", LLM_MODEL.split("/")[-1].split(":")[0]], capture_output=True, timeout=30)
 time.sleep(10)
 
 # Verify VLM is ready
@@ -180,26 +182,17 @@ print(f"  VLM complete. Processed: {processed}")
 
 # ── Step 3: LLM synthesis ────────────────────────────────────────────
 print(f"\n{'='*60}")
-print("Step 3: LLM synthesis (Qwen3-14B)")
+print(f"Step 3: LLM synthesis ({LLM_MODEL})")
 print(f"{'='*60}")
 
 # Stop VLM, switch to LLM
 subprocess.run(["wsl", "ollama", "stop", "llava"], capture_output=True, timeout=30)
 time.sleep(10)
 
-for attempt in range(5):
-    try:
-        r = httpx.post(f"{OLLAMA_BASE}/api/generate",
-                       json={"model": LLM_MODEL, "prompt": "ping", "stream": False}, timeout=10)
-        if r.status_code == 200:
-            print("  LLM ready")
-            break
-    except Exception:
-        pass
-    if attempt == 4:
-        print("  ERROR: LLM not responding")
-        sys.exit(1)
-    time.sleep(5)
+if not wait_for_llm(timeout_s=30):
+    print("  ERROR: LLM not responding")
+    sys.exit(1)
+print("  LLM ready")
 
 # Get media with frames done but no annotation
 media_to_synth = conn.execute("""
@@ -235,13 +228,7 @@ for mid, fpath in media_to_synth:
 
     for attempt in range(3):
         try:
-            resp = httpx.post(
-                f"{OLLAMA_BASE}/api/generate",
-                json={"model": LLM_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.3}},
-                timeout=120,
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "") or resp.json().get("thinking", "")
+            raw = generate_llm_text(prompt, temperature=0.3, timeout=120)
             parsed = parse_json(raw)
             if parsed.get("_parse_error"):
                 if attempt < 2:
@@ -289,7 +276,8 @@ to_index = conn.execute("""
 print(f"  Media to index: {len(to_index)}")
 
 # Load embedding model
-subprocess.run(["wsl", "ollama", "stop", "Qwen3-14B-GGUF"], capture_output=True, timeout=30)
+if is_local_llm():
+    subprocess.run(["wsl", "ollama", "stop", LLM_MODEL.split("/")[-1].split(":")[0]], capture_output=True, timeout=30)
 time.sleep(5)
 
 indexed = 0

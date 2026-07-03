@@ -16,6 +16,7 @@ from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
+from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
 
 load_config()
@@ -34,7 +35,7 @@ else:
 
 OLLAMA_BASE = "http://localhost:11434"
 VLM_MODEL = "llava:13b"
-LLM_MODEL = "hf.co/unsloth/Qwen3-14B-GGUF:Q4_K_M"
+LLM_MODEL = llm_model_name()
 
 video_name = os.path.splitext(os.path.basename(VIDEO_PATH))[0]
 if args_cli.export_dir:
@@ -50,18 +51,23 @@ print(f"Export: {EXPORT_DIR}")
 
 # ── Config ────────────────────────────────────────────────────────────
 # 2026-06-21: tuned for max output to build preference memory
-SAMPLE_INTERVAL = 15       # was 20 — denser coarse sampling for more candidates
+# 2026-07-04: denser sampling + tighter merge + VLM creativity boost
+SAMPLE_INTERVAL = 10       # was 15 — denser coarse sampling for more candidates
 REFINE_INTERVAL = 10       # seconds for fine sampling around high-score regions
 REFINE_RADIUS = 20         # ±seconds around high-score frame to re-sample
 REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
 MAX_DURATION = 5.0         # max GIF duration (high quality)
 MIN_DURATION = 1.5         # min GIF duration (low quality)
 WORTHINESS_THRESHOLD = 0.2 # was 0.4 — keep more borderline frames for human scoring
-MERGE_GAP = 6              # was 10 — shorter gap = more independent clips
+MERGE_GAP = 12             # catch adjacent 10s-spaced samples for potential merging
+MERGE_SCORE_THRESHOLD = 0.55 # only merge consecutive frames when both are "good"
 EMBED_SIM_THRESHOLD = 0.95 # cosine similarity threshold for embedding dedup
 OUTPUT_RATIO = 1.0         # fraction of total extracted clips to keep as final output
 MAX_OUTPUT = 0             # was 500 — no cap, export all for preference memory
 GIF_MAX_WIDTH = 1920       # max output width (0 = use source resolution)
+
+# VLM sampling options — push llava to use full 0.0-1.0 score range
+VLM_OPTIONS = {"temperature": 0.65, "top_p": 0.95, "top_k": 60, "num_think": 0}
 
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
@@ -197,7 +203,8 @@ print(f"  Frames after dark filter: {len(sample_frames)}")
 # ── Phase 2: VLM scoring ─────────────────────────────────────────────
 print(f"\n[2/4] VLM scoring ({len(sample_frames)} frames)...")
 
-stop_model("Qwen3-14B-GGUF")
+if is_local_llm():
+    stop_model(LLM_MODEL.split("/")[-1].split(":")[0])
 stop_model("nomic-embed-text")
 time.sleep(5)
 if not wait_model(VLM_MODEL):
@@ -211,7 +218,7 @@ for fi, sf in enumerate(sample_frames):
     for attempt in range(3):
         try:
             resp = httpx.post(f"{OLLAMA_BASE}/api/generate",
-                json={"model":VLM_MODEL,"prompt":SCORE_PROMPT,"images":[img_b64],"stream":False}, timeout=120)
+                json={"model":VLM_MODEL,"prompt":SCORE_PROMPT,"images":[img_b64],"stream":False,"options":VLM_OPTIONS}, timeout=120)
             resp.raise_for_status()
             raw = resp.json().get("response","")
             parsed = parse_vlm_response(raw)
@@ -293,7 +300,7 @@ if refine_ts:
         for attempt in range(3):
             try:
                 resp = httpx.post(f"{OLLAMA_BASE}/api/generate",
-                    json={"model":VLM_MODEL,"prompt":SCORE_PROMPT,"images":[img_b64],"stream":False}, timeout=120)
+                    json={"model":VLM_MODEL,"prompt":SCORE_PROMPT,"images":[img_b64],"stream":False,"options":VLM_OPTIONS}, timeout=120)
                 resp.raise_for_status()
                 raw = resp.json().get("response","")
                 parsed = parse_vlm_response(raw)
@@ -327,7 +334,9 @@ current_group = [scored[0]]
 
 for r in scored[1:]:
     gap = r["timestamp"] - current_group[-1]["timestamp"]
-    if gap <= MERGE_GAP:
+    both_good = (r["gif_worthiness"] >= MERGE_SCORE_THRESHOLD
+                 and current_group[-1]["gif_worthiness"] >= MERGE_SCORE_THRESHOLD)
+    if gap <= MERGE_GAP and both_good:
         current_group.append(r)
     else:
         # Finalize current group: use best frame's worthiness as group score
@@ -371,7 +380,7 @@ print(f"\n[3/4] RAG + LLM synthesis...")
 # Switch to LLM
 stop_model("llava")
 time.sleep(10)
-if not wait_model(LLM_MODEL, timeout_s=180):
+if not wait_for_llm(timeout_s=180):
     print("WARNING: LLM not responding — skipping synthesis, proceeding to export")
     synthesis = {"_parse_error": True}
 
@@ -405,20 +414,21 @@ synth_prompt = (
 )
 
 synthesis = {"_parse_error": True}
-llm_available = wait_model(LLM_MODEL, timeout_s=180)
+llm_available = wait_for_llm(timeout_s=180)
 if llm_available:
     for attempt in range(3):
         try:
-            resp = httpx.post(f"{OLLAMA_BASE}/api/generate",
-                json={"model":LLM_MODEL,"prompt":synth_prompt,"stream":False,"options":{"temperature":0.3}}, timeout=180)
-            resp.raise_for_status()
-            raw = resp.json().get("response","") or resp.json().get("thinking","")
-            synthesis = parse_json(raw)
-            if not synthesis.get("_parse_error"):
+            raw = generate_llm_text(synth_prompt, temperature=0.3, timeout=180)
+            result = parse_json_response(raw)
+            if result.ok:
+                synthesis = result.data
                 print(f"  summary: {synthesis.get('summary','?')}")
                 print(f"  emotional_core: {synthesis.get('emotional_core','?')}")
                 print(f"  tags: {synthesis.get('tags',[])}")
                 break
+            else:
+                synthesis = {"_parse_error": True, "_raw": raw[:500]}
+                print(f"  Attempt {attempt+1}: JSON parse failed")
         except Exception as e:
             print(f"  Attempt {attempt+1}: {e}")
             time.sleep(5)
