@@ -47,6 +47,20 @@ dedup:
 preference_memory:
   enabled: false
 
+adaptive:
+  sample_interval: 10
+  merge_gap: 12
+  merge_score_threshold: 0.55
+  worthiness_threshold: 0.2
+  refine_threshold: 0.5
+  refine_radius: 20
+  refine_interval: 10
+  output_ratio: 1.0
+  max_output: 0
+  vlm_temperature: 0.65
+  vlm_top_p: 0.95
+  vlm_top_k: 60
+
 database:
   path: "data/library.db"
 

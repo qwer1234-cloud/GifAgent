@@ -50,24 +50,28 @@ print(f"Video: {os.path.basename(VIDEO_PATH)}")
 print(f"Export: {EXPORT_DIR}")
 
 # ── Config ────────────────────────────────────────────────────────────
-# 2026-06-21: tuned for max output to build preference memory
-# 2026-07-04: denser sampling + tighter merge + VLM creativity boost
-SAMPLE_INTERVAL = 10       # was 15 — denser coarse sampling for more candidates
-REFINE_INTERVAL = 10       # seconds for fine sampling around high-score regions
-REFINE_RADIUS = 20         # ±seconds around high-score frame to re-sample
-REFINE_THRESHOLD = 0.5     # score above which we do fine sampling
-MAX_DURATION = 5.0         # max GIF duration (high quality)
-MIN_DURATION = 1.5         # min GIF duration (low quality)
-WORTHINESS_THRESHOLD = 0.2 # was 0.4 — keep more borderline frames for human scoring
-MERGE_GAP = 12             # catch adjacent 10s-spaced samples for potential merging
-MERGE_SCORE_THRESHOLD = 0.55 # only merge consecutive frames when both are "good"
-EMBED_SIM_THRESHOLD = 0.95 # cosine similarity threshold for embedding dedup
-OUTPUT_RATIO = 1.0         # fraction of total extracted clips to keep as final output
-MAX_OUTPUT = 0             # was 500 — no cap, export all for preference memory
-GIF_MAX_WIDTH = 1920       # max output width (0 = use source resolution)
+# Read from configs/models.yaml [adaptive] section, fall back to defaults
+_adaptive = get("adaptive", {}) or {}
+SAMPLE_INTERVAL = int(_adaptive.get("sample_interval", 10))
+REFINE_INTERVAL = int(_adaptive.get("refine_interval", 10))
+REFINE_RADIUS = int(_adaptive.get("refine_radius", 20))
+REFINE_THRESHOLD = float(_adaptive.get("refine_threshold", 0.5))
+MAX_DURATION = 5.0
+MIN_DURATION = 1.5
+WORTHINESS_THRESHOLD = float(_adaptive.get("worthiness_threshold", 0.2))
+MERGE_GAP = int(_adaptive.get("merge_gap", 12))
+MERGE_SCORE_THRESHOLD = float(_adaptive.get("merge_score_threshold", 0.55))
+EMBED_SIM_THRESHOLD = 0.95
+OUTPUT_RATIO = float(_adaptive.get("output_ratio", 1.0))
+MAX_OUTPUT = int(_adaptive.get("max_output", 0))
+GIF_MAX_WIDTH = 1920
 
-# VLM sampling options — push llava to use full 0.0-1.0 score range
-VLM_OPTIONS = {"temperature": 0.65, "top_p": 0.95, "top_k": 60, "num_think": 0}
+VLM_OPTIONS = {
+    "temperature": float(_adaptive.get("vlm_temperature", 0.65)),
+    "top_p": float(_adaptive.get("vlm_top_p", 0.95)),
+    "top_k": int(_adaptive.get("vlm_top_k", 60)),
+    "num_think": 0,
+}
 
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")

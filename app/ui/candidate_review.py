@@ -5,10 +5,12 @@ import json, os, subprocess, signal, time
 
 import gradio as gr
 import httpx
+import yaml
 
 API_BASE = "http://127.0.0.1:8000"
 PID_FILE = "data/batch_pid.txt"
 CHECKPOINT_FILE = "data/batch_checkpoint.json"
+CONFIG_FILE = "configs/models.yaml"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -217,6 +219,117 @@ def build_profile():
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Config editor
+# ═══════════════════════════════════════════════════════════════════════
+
+def load_config():
+    """Load configs/models.yaml, return (llm_fields, vlm_fields, adaptive_fields, preference_field, raw_text)."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        return ([str(e)] * 6, [str(e)] * 2, [str(e)] * 5, False, "")
+
+    llm = cfg.get("llm", {}) or {}
+    vlm = cfg.get("vlm", {}) or {}
+    adaptive = cfg.get("adaptive", {}) or {}
+    pm = cfg.get("preference_memory", {}) or {}
+
+    llm_fields = [
+        llm.get("provider", ""),
+        llm.get("model", ""),
+        llm.get("api_key_env", ""),
+        llm.get("base_url", ""),
+        str(llm.get("temperature", 0.3)),
+        str(llm.get("max_tokens", 2048)),
+        str(llm.get("timeout_s", 120)),
+    ]
+    vlm_fields = [
+        vlm.get("model", ""),
+        vlm.get("base_url", ""),
+    ]
+    adaptive_fields = [
+        str(adaptive.get("sample_interval", 10)),
+        str(adaptive.get("merge_gap", 12)),
+        str(adaptive.get("merge_score_threshold", 0.55)),
+        str(adaptive.get("worthiness_threshold", 0.2)),
+        str(adaptive.get("refine_threshold", 0.5)),
+        str(adaptive.get("vlm_temperature", 0.65)),
+        str(adaptive.get("output_ratio", 1.0)),
+        str(adaptive.get("max_output", 0)),
+    ]
+    pm_enabled = bool(pm.get("enabled", False))
+    raw_text = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return llm_fields, vlm_fields, adaptive_fields, pm_enabled, raw_text
+
+
+def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
+                llm_temperature, llm_max_tokens, llm_timeout,
+                vlm_model, vlm_base_url,
+                ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
+                ad_worthiness_threshold, ad_refine_threshold,
+                ad_vlm_temperature, ad_output_ratio, ad_max_output,
+                pm_enabled, raw_text):
+    """Save edited fields back to configs/models.yaml, preserving other sections."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception:
+        cfg = {}
+
+    cfg.setdefault("llm", {})
+    cfg["llm"]["provider"] = llm_provider
+    cfg["llm"]["model"] = llm_model
+    cfg["llm"]["api_key_env"] = llm_api_key_env
+    cfg["llm"]["base_url"] = llm_base_url
+    cfg["llm"]["temperature"] = float(llm_temperature)
+    cfg["llm"]["max_tokens"] = int(llm_max_tokens)
+    cfg["llm"]["timeout_s"] = int(llm_timeout)
+
+    cfg.setdefault("vlm", {})
+    cfg["vlm"]["model"] = vlm_model
+    cfg["vlm"]["base_url"] = vlm_base_url
+
+    cfg.setdefault("adaptive", {})
+    cfg["adaptive"]["sample_interval"] = int(ad_sample_interval)
+    cfg["adaptive"]["merge_gap"] = int(ad_merge_gap)
+    cfg["adaptive"]["merge_score_threshold"] = float(ad_merge_score_threshold)
+    cfg["adaptive"]["worthiness_threshold"] = float(ad_worthiness_threshold)
+    cfg["adaptive"]["refine_threshold"] = float(ad_refine_threshold)
+    cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
+    cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
+    cfg["adaptive"]["max_output"] = int(ad_max_output)
+
+    cfg.setdefault("preference_memory", {})
+    cfg["preference_memory"]["enabled"] = bool(pm_enabled)
+
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    new_raw = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return "Saved to " + CONFIG_FILE, new_raw
+
+
+def test_llm_connection():
+    """Quick ping to the configured LLM to verify connectivity."""
+    try:
+        resp = httpx.post(f"{API_BASE}/api/status", timeout=5)
+        if resp.status_code != 200:
+            return f"API server not running (status {resp.status_code})"
+    except Exception:
+        return "API server not running at " + API_BASE
+
+    try:
+        from app.services.llm_client import generate_llm_text, get_llm_settings
+        s = get_llm_settings()
+        out = generate_llm_text("Reply OK", max_tokens=16, timeout=30)
+        return f"OK — provider={s.provider}, model={s.model}, response={out[:50]!r}"
+    except Exception as e:
+        return f"FAIL — {type(e).__name__}: {e}"
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # UI
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -335,6 +448,69 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
         refresh_btn.click(fn=refresh_status, outputs=[status_text])
 
         app.load(fn=refresh_status, outputs=[status_text])
+
+    # ── Config Tab ───────────────────────────────────────────────────────
+    with gr.Tab("Config"):
+        gr.Markdown("## Configuration Editor\nEdit values and click **Save**. Changes write to `configs/models.yaml`.")
+
+        with gr.Row():
+            with gr.Column():
+                with gr.Group():
+                    gr.Markdown("### LLM (text synthesis)")
+                    llm_provider = gr.Textbox(label="provider", value="")
+                    llm_model = gr.Textbox(label="model", value="")
+                    llm_api_key_env = gr.Textbox(label="api_key_env", value="")
+                    llm_base_url = gr.Textbox(label="base_url", value="")
+                    with gr.Row():
+                        llm_temperature = gr.Textbox(label="temperature", value="")
+                        llm_max_tokens = gr.Textbox(label="max_tokens", value="")
+                        llm_timeout = gr.Textbox(label="timeout_s", value="")
+                    test_llm_btn = gr.Button("Test LLM Connection")
+                    test_llm_output = gr.Textbox(label="LLM Test", interactive=False)
+
+            with gr.Column():
+                with gr.Group():
+                    gr.Markdown("### VLM (vision analysis)")
+                    vlm_model = gr.Textbox(label="model", value="")
+                    vlm_base_url = gr.Textbox(label="base_url", value="")
+
+                with gr.Group():
+                    gr.Markdown("### Adaptive Sampling")
+                    ad_sample_interval = gr.Textbox(label="sample_interval (s)", value="")
+                    ad_merge_gap = gr.Textbox(label="merge_gap (s)", value="")
+                    ad_merge_score_threshold = gr.Textbox(label="merge_score_threshold", value="")
+                    ad_worthiness_threshold = gr.Textbox(label="worthiness_threshold", value="")
+                    ad_refine_threshold = gr.Textbox(label="refine_threshold", value="")
+                    ad_vlm_temperature = gr.Textbox(label="vlm_temperature", value="")
+                    with gr.Row():
+                        ad_output_ratio = gr.Textbox(label="output_ratio", value="")
+                        ad_max_output = gr.Textbox(label="max_output (0=no cap)", value="")
+
+                with gr.Group():
+                    gr.Markdown("### Preference Memory")
+                    pm_enabled = gr.Checkbox(label="enabled", value=False)
+
+        with gr.Row():
+            save_btn = gr.Button("Save Config", variant="primary")
+            reload_btn = gr.Button("Reload from File")
+        config_status = gr.Textbox(label="Status", interactive=False)
+        raw_yaml = gr.Textbox(label="Raw YAML (read-only preview)", lines=15, interactive=False)
+
+        def _reload():
+            llm_f, vlm_f, ad_f, pm_f, raw = load_config()
+            return [*llm_f, *vlm_f, *ad_f, pm_f, "Loaded from " + CONFIG_FILE, raw]
+
+        all_inputs = [llm_provider, llm_model, llm_api_key_env, llm_base_url,
+                      llm_temperature, llm_max_tokens, llm_timeout,
+                      vlm_model, vlm_base_url,
+                      ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
+                      ad_worthiness_threshold, ad_refine_threshold,
+                      ad_vlm_temperature, ad_output_ratio, ad_max_output,
+                      pm_enabled, raw_yaml]
+        save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])
+        reload_btn.click(fn=_reload, outputs=all_inputs + [config_status])
+        test_llm_btn.click(fn=test_llm_connection, outputs=[test_llm_output])
+        app.load(fn=_reload, outputs=all_inputs + [config_status])
 
 if __name__ == "__main__":
     app.launch(server_name="127.0.0.1", server_port=7861)
