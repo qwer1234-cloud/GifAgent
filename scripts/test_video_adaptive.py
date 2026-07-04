@@ -65,7 +65,7 @@ EMBED_SIM_THRESHOLD = 0.95
 OUTPUT_RATIO = float(_adaptive.get("output_ratio", 1.0))
 MAX_OUTPUT = int(_adaptive.get("max_output", 0))
 GIF_FPS = int(_adaptive.get("gif_fps", 24))
-GIF_MAX_WIDTH = 1920
+GIF_MAX_WIDTH = int(_adaptive.get("gif_max_width", 720))
 
 VLM_OPTIONS = {
     "temperature": float(_adaptive.get("vlm_temperature", 0.65)),

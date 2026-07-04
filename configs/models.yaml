@@ -61,6 +61,7 @@ adaptive:
   vlm_top_p: 0.95
   vlm_top_k: 60
   gif_fps: 24
+  gif_max_width: 720
 
 database:
   path: "data/library.db"
