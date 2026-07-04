@@ -231,6 +231,7 @@ for fi, sf in enumerate(sample_frames):
             worth = safe_worth(parsed.get("gif_worthiness", 0.5))
             parsed["gif_worthiness"] = worth
             parsed["timestamp"] = sf["timestamp"]
+            parsed["path"] = sf["path"]
 
             if worth >= WORTHINESS_THRESHOLD:
                 scored.append(parsed)
@@ -313,6 +314,7 @@ if refine_ts:
                 worth = safe_worth(parsed.get("gif_worthiness", 0.5))
                 parsed["gif_worthiness"] = worth
                 parsed["timestamp"] = rf["timestamp"]
+                parsed["path"] = rf["path"]
 
                 if worth >= WORTHINESS_THRESHOLD:
                     scored.append(parsed)
