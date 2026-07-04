@@ -21,11 +21,16 @@ hiddenimports = []
 for pkg in ["gradio", "gradio_client", "gradio_templates", "safehttpx", "groovy",
             "ffmpy", "pydub", "marker", "pillow", "numpy", "pydantic", "pydantic_core",
             "fastapi", "starlette", "uvicorn", "httpx", "anyio", "h11", "yaml",
-            "imagehash", "aiofiles", "sockio"]:
+            "imagehash", "aiofiles", "sockio",
+            # pywebview desktop window (Windows uses EdgeChromium/WinForms backend)
+            "webview", "pythonnet", "clr_loader"]:
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
     hiddenimports += h
+
+# pywebview Windows backend — collect explicitly so PyInstaller finds them
+hiddenimports += ["webview.platforms.winforms", "webview.platforms.edgechromium"]
 
 # FastAPI / uvicorn / pydantic hidden imports
 hiddenimports += collect_submodules("uvicorn")
