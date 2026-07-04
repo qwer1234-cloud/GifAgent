@@ -29,7 +29,46 @@ def _setup_runtime_files(exe_dir):
             print(f"Copied default config to {writable_config}")
 
     os.makedirs(writable_config_dir, exist_ok=True)
-    os.makedirs(os.path.join(exe_dir, "data"), exist_ok=True)
+    data_dir = os.path.join(exe_dir, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    os.makedirs(os.path.join(data_dir, "faiss"), exist_ok=True)
+
+    # If exe is inside the project (dist/GifAgentUI/), link to project's data
+    # so the user sees existing candidates/exports without a 70GB copy.
+    project_data = os.path.normpath(os.path.join(exe_dir, "..", "..", "data"))
+    if os.path.exists(os.path.join(project_data, "library.db")):
+        _link_data_files(exe_dir, data_dir, project_data)
+
+
+def _link_data_files(exe_dir, data_dir, project_data):
+    """Copy small data files (DB, FAISS) and junction large dirs (exports)."""
+    import subprocess
+
+    # Copy library.db if missing
+    exe_db = os.path.join(data_dir, "library.db")
+    src_db = os.path.join(project_data, "library.db")
+    if not os.path.exists(exe_db) and os.path.exists(src_db):
+        shutil.copy2(src_db, exe_db)
+        print(f"Copied library.db ({os.path.getsize(src_db) // 1024 // 1024}MB)")
+
+    # Copy FAISS index if missing
+    src_faiss = os.path.join(project_data, "faiss")
+    exe_faiss = os.path.join(data_dir, "faiss")
+    if os.path.isdir(src_faiss) and not os.listdir(exe_faiss):
+        for f in os.listdir(src_faiss):
+            shutil.copy2(os.path.join(src_faiss, f), os.path.join(exe_faiss, f))
+        print(f"Copied FAISS index ({len(os.listdir(src_faiss))} files)")
+
+    # Junction exports (70GB — too large to copy)
+    exe_exports = os.path.join(data_dir, "exports")
+    src_exports = os.path.join(project_data, "exports")
+    if os.path.isdir(src_exports) and not os.path.exists(exe_exports):
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", exe_exports, src_exports],
+                           capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"Junction: {exe_exports} -> {src_exports}")
+        else:
+            print(f"WARNING: could not create exports junction: {r.stderr.strip()}")
 
 
 def _init_database():
@@ -106,7 +145,12 @@ def main():
 
     # Start Gradio UI (blocks)
     from app.ui.candidate_review import app as gradio_app
-    gradio_app.launch(server_name="127.0.0.1", server_port=7861, prevent_thread_lock=False)
+    gradio_app.launch(
+        server_name="127.0.0.1",
+        server_port=7861,
+        prevent_thread_lock=False,
+        allowed_paths=["data/exports", "data/thumbs", "data/frames"],
+    )
 
 
 if __name__ == "__main__":
