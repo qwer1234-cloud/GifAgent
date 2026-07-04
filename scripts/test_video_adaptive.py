@@ -10,6 +10,10 @@ import sys, os, subprocess, json, re, base64, time, argparse
 import httpx
 from PIL import Image
 
+# Windows console defaults to GBK — reconfigure to handle Unicode (💦💢💗 in filenames/captions)
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, '.')
 from app.db import init_db, get_connection
 from app.config import load_config, get

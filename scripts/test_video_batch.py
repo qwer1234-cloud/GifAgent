@@ -10,6 +10,10 @@ Usage:
 import sys, os, subprocess, json, time, glob, argparse
 from datetime import datetime
 
+# Windows console defaults to GBK — reconfigure to handle Unicode filenames (💦💢💗 etc.)
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 CHECKPOINT_FILE = "data/batch_checkpoint.json"
 
 from app.services.video_fingerprint import compute_fingerprint, find_duplicate_in_checkpoint
