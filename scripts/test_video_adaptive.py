@@ -440,6 +440,72 @@ if llm_available:
 else:
     print("  Skipping LLM synthesis — model unavailable, proceeding to GIF export")
 
+# ── Phase 3.5: 9-grid sample thumbnail (top-9 diverse frames) ──────────
+print(f"\n[3.5/4] Generating 9-grid sample thumbnail...")
+import imagehash
+from PIL import Image as PILImage
+
+GRID_SIZE = 3
+GRID_CELL_W = 480
+GRID_CELL_H = 270
+GRID_DEDUP_THRESHOLD = 10  # pHash Hamming distance — skip frames too similar to selected
+
+sample_dir = os.path.join(EXPORT_DIR, "Sample")
+os.makedirs(sample_dir, exist_ok=True)
+
+# Sort all scored frames by worthiness descending
+ranked_frames = sorted(scored, key=lambda x: x.get("gif_worthiness", 0), reverse=True)
+
+# Greedily pick top-9 with pHash dedup
+selected = []
+selected_hashes = []
+for frame in ranked_frames:
+    if len(selected) >= GRID_SIZE * GRID_SIZE:
+        break
+    fp = frame.get("path", "")
+    if not fp or not os.path.exists(fp):
+        continue
+    try:
+        with PILImage.open(fp) as img:
+            ph = imagehash.phash(img)
+    except Exception:
+        continue
+    # Skip if too similar to any already-selected frame
+    if any(ph - sh <= GRID_DEDUP_THRESHOLD for sh in selected_hashes):
+        continue
+    selected.append(frame)
+    selected_hashes.append(ph)
+
+print(f"  Selected {len(selected)} diverse frames (from {len(ranked_frames)} scored)")
+
+# Export each selected frame as individual image + compose 3x3 grid
+if selected:
+    grid = PILImage.new("RGB", (GRID_CELL_W * GRID_SIZE, GRID_CELL_H * GRID_SIZE), (0, 0, 0))
+    for i, frame in enumerate(selected):
+        fp = frame["path"]
+        ts = frame.get("timestamp", 0)
+        worth = frame.get("gif_worthiness", 0)
+        # Save individual frame
+        sample_path = os.path.join(sample_dir, f"{video_name}_sample_{i+1:02d}_{ts:.0f}s_w{worth:.2f}.jpg")
+        try:
+            with PILImage.open(fp) as img:
+                img.save(sample_path, "JPEG", quality=90)
+        except Exception as e:
+            print(f"  Warning: could not save sample {i+1}: {e}")
+        # Paste resized into grid
+        row, col = divmod(i, GRID_SIZE)
+        try:
+            with PILImage.open(fp) as img:
+                cell = img.resize((GRID_CELL_W, GRID_CELL_H), PILImage.LANCZOS)
+                grid.paste(cell, (col * GRID_CELL_W, row * GRID_CELL_H))
+        except Exception:
+            pass
+
+    grid_path = os.path.join(sample_dir, f"{video_name}_grid.jpg")
+    grid.save(grid_path, "JPEG", quality=90)
+    print(f"  Grid: {grid_path} ({len(selected)} frames)")
+    print(f"  Individual samples: {sample_dir}/{video_name}_sample_*.jpg")
+
 # ── Phase 4: Export adaptive-duration GIFs ─────────────────────────────
 # Determine output count: ratio of total deduped clips, capped at MAX_OUTPUT
 output_count = int(len(deduped_clips) * OUTPUT_RATIO)

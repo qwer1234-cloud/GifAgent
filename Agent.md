@@ -100,6 +100,7 @@ configs/
 1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter
 2. **VLM scoring**: llava:13b scores each frame (0.0-1.0) → refinement around high-score regions
 3. **RAG + LLM synthesis**: FAISS search per clip → DeepSeek synthesizes summary/tags (non-fatal)
+3.5. **9-grid thumbnail**: select top-9 scored frames with pHash dedup (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` subfolder
 4. **GIF export**: ffmpeg palette two-pass, ranked by gif_worthiness
 
 **Non-fatal LLM**: if LLM fails, GIFs still export. Synthesis metadata is skipped.
