@@ -62,6 +62,8 @@ adaptive:
   vlm_top_k: 60
   gif_fps: 24
   gif_max_width: 720
+  embedding_dedup_enabled: true
+  embedding_dedup_threshold: 0.94
 
 database:
   path: "data/library.db"

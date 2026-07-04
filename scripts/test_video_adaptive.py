@@ -61,7 +61,8 @@ MIN_DURATION = 1.5
 WORTHINESS_THRESHOLD = float(_adaptive.get("worthiness_threshold", 0.2))
 MERGE_GAP = int(_adaptive.get("merge_gap", 12))
 MERGE_SCORE_THRESHOLD = float(_adaptive.get("merge_score_threshold", 0.55))
-EMBED_SIM_THRESHOLD = 0.95
+EMBED_SIM_THRESHOLD = float(_adaptive.get("embedding_dedup_threshold", 0.94))
+EMBED_DEDUP_ENABLED = bool(_adaptive.get("embedding_dedup_enabled", True))
 OUTPUT_RATIO = float(_adaptive.get("output_ratio", 1.0))
 MAX_OUTPUT = int(_adaptive.get("max_output", 0))
 GIF_FPS = int(_adaptive.get("gif_fps", 24))
@@ -376,10 +377,74 @@ print(f"  Multi-frame clips (crossing boundaries): {multi_frame}")
 single_frame = sum(1 for c in clips if c["frame_count"] == 1)
 print(f"  Single-frame clips: {single_frame}")
 
-# ── Phase 2.7: Skip embedding dedup, pass all clips through ────────────
-deduped_clips = clips
-clusters = [{"center_emb": None, "members": [i]} for i in range(len(clips))]
-print(f"\n[2.7/4] Dedup skipped — {len(deduped_clips)} clips passed through")
+# ── Phase 2.7: Embedding dedup (caption + emotional_core + scene_type) ─
+if EMBED_DEDUP_ENABLED and len(clips) > 1:
+    print(f"\n[2.7/4] Embedding dedup (threshold={EMBED_SIM_THRESHOLD})...")
+    import numpy as np
+
+    # Compute embedding for each clip from best_frame text
+    clip_embeddings = []
+    for clip in clips:
+        bf = clip.get("best_frame", {})
+        text = " ".join(filter(None, [
+            bf.get("caption", ""),
+            bf.get("emotional_core", ""),
+            bf.get("scene_type", ""),
+        ]))
+        if not text:
+            clip_embeddings.append(None)
+            continue
+        try:
+            emb = compute_text_embedding(text)
+            clip_embeddings.append(np.array(emb, dtype=np.float32))
+        except Exception:
+            clip_embeddings.append(None)
+
+    # Greedy dedup: sort by worthiness desc, keep diverse clips
+    order = sorted(range(len(clips)), key=lambda i: clips[i]["gif_worthiness"], reverse=True)
+    kept_indices = []
+    kept_embs = []
+    duplicate_groups = []  # [{"keeper": idx, "duplicates": [idx, ...], "max_sim": float}]
+
+    for idx in order:
+        emb = clip_embeddings[idx]
+        if emb is None:
+            kept_indices.append(idx)
+            kept_embs.append(None)
+            continue
+        is_dup = False
+        for ki, ke_emb in zip(kept_indices, kept_embs):
+            if ke_emb is None:
+                continue
+            norm = np.linalg.norm(emb) * np.linalg.norm(ke_emb) + 1e-8
+            sim = float(np.dot(emb, ke_emb) / norm)
+            if sim >= EMBED_SIM_THRESHOLD:
+                is_dup = True
+                # Record in duplicate group
+                for dg in duplicate_groups:
+                    if dg["keeper"] == ki:
+                        dg["duplicates"].append(idx)
+                        dg["max_sim"] = max(dg["max_sim"], sim)
+                        break
+                else:
+                    duplicate_groups.append({"keeper": ki, "duplicates": [idx], "max_sim": sim})
+                break
+        if not is_dup:
+            kept_indices.append(idx)
+            kept_embs.append(emb)
+
+    deduped_clips = [clips[i] for i in kept_indices]
+    clusters = [{"center_emb": ki, "members": [ki] + sum([dg["duplicates"] for dg in duplicate_groups if dg["keeper"] == ki], [])} for ki in kept_indices]
+    dedup_input_clips = len(clips)
+    print(f"  Dedup: {dedup_input_clips} → {len(deduped_clips)} clips "
+          f"({len(duplicate_groups)} duplicate groups, "
+          f"{sum(len(dg['duplicates']) for dg in duplicate_groups)} clips removed)")
+else:
+    deduped_clips = clips
+    clusters = [{"center_emb": None, "members": [i]} for i in range(len(clips))]
+    duplicate_groups = []
+    dedup_input_clips = len(clips)
+    print(f"\n[2.7/4] Dedup disabled — {len(deduped_clips)} clips passed through")
 
 # ── Phase 3: RAG + LLM synthesis (non-fatal — skip if LLM unavailable) ──
 print(f"\n[3/4] RAG + LLM synthesis...")
@@ -607,9 +672,11 @@ output = {
     "output_ratio": OUTPUT_RATIO,
     "max_output": MAX_OUTPUT,
     "embed_dedup_threshold": EMBED_SIM_THRESHOLD,
-    "total_clips": len(clips),
+    "embed_dedup_enabled": EMBED_DEDUP_ENABLED,
+    "dedup_input_clips": dedup_input_clips,
     "deduped_clips": len(deduped_clips),
     "clusters_after_dedup": len(clusters),
+    "duplicate_groups": duplicate_groups,
     "output_count": output_count,
     "multi_frame_clips": sum(1 for c in clips if c["frame_count"] > 1),
     "top_clips": [
