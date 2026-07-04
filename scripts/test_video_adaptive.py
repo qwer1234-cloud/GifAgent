@@ -64,6 +64,7 @@ MERGE_SCORE_THRESHOLD = float(_adaptive.get("merge_score_threshold", 0.55))
 EMBED_SIM_THRESHOLD = 0.95
 OUTPUT_RATIO = float(_adaptive.get("output_ratio", 1.0))
 MAX_OUTPUT = int(_adaptive.get("max_output", 0))
+GIF_FPS = int(_adaptive.get("gif_fps", 24))
 GIF_MAX_WIDTH = 1920
 
 VLM_OPTIONS = {
@@ -499,7 +500,7 @@ for i, clip in enumerate(ranked_clips):
     out_gif = f"{EXPORT_DIR}/{video_name}@@@{i+1:03d}_{start_ts}s-{end_ts}s.gif"
     palette = f"{EXPORT_DIR}/pal_{i+1:03d}.png"
 
-    fps = 10 if worth > 0.6 else 8  # 10fps for 4K to keep file sizes reasonable
+    fps = GIF_FPS
 
     subprocess.run([
         "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,

@@ -60,6 +60,7 @@ adaptive:
   vlm_temperature: 0.65
   vlm_top_p: 0.95
   vlm_top_k: 60
+  gif_fps: 24
 
 database:
   path: "data/library.db"
