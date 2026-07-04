@@ -116,8 +116,11 @@ def stop_batch():
         return f"Batch stopped (PID {pid}). Checkpoint saved at {CHECKPOINT_FILE}"
 
 
-def start_batch(video_dir: str, limit: int = 0):
-    """Start batch processing in background."""
+def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
+    """Start batch processing in background.
+
+    extensions: comma-separated video extensions (e.g. ".ts,.mp4"). Empty = default.
+    """
     status = get_batch_status()
     if status["running"]:
         return f"Batch already running (PID {status['pid']}). Stop it first."
@@ -135,15 +138,28 @@ def start_batch(video_dir: str, limit: int = 0):
         cmd = ["uv", "run", "python", "-u", "scripts/test_video_batch.py", "--dir", video_dir]
     if limit > 0:
         cmd.extend(["--limit", str(limit)])
+    if extensions and extensions.strip():
+        cmd.extend(["--extensions", extensions.strip()])
+
+    # Redirect subprocess output to a log file so failures are diagnosable
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+    log_path = os.path.join(os.path.dirname(PID_FILE), "batch_subprocess.log")
+    log_file = open(log_path, "w", encoding="utf-8", errors="replace")
 
     try:
-        proc = subprocess.Popen(cmd, cwd=".", creationflags=subprocess.CREATE_NO_WINDOW)
-        os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+        proc = subprocess.Popen(
+            cmd, cwd=".",
+            stdout=log_file, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
         with open(PID_FILE, "w") as f:
             f.write(str(proc.pid))
         return f"Batch started (PID {proc.pid}) — dir: {video_dir}" + \
-               (f" limit: {limit}" if limit > 0 else "")
+               (f" limit: {limit}" if limit > 0 else "") + \
+               (f" ext: {extensions}" if extensions else "") + \
+               f" | log: {log_path}"
     except Exception as e:
+        log_file.close()
         return f"Failed to start: {e}"
 
 
@@ -678,6 +694,10 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                         value="C:/Users/sunhao/Desktop/ToWatch/CumForKate",
                         placeholder="Path to video directory...")
                     limit_input = gr.Number(label="Limit (0=all)", value=0, precision=0)
+                    ext_input = gr.Textbox(
+                        label="Extensions (comma-separated)",
+                        value=".mp4,.mkv,.avi,.mov,.webm,.ts",
+                        placeholder=".mp4,.mkv,.avi,.mov,.webm,.ts")
                     with gr.Row():
                         start_btn = gr.Button("Start", variant="primary")
                         stop_btn = gr.Button("Stop", variant="stop")
@@ -703,7 +723,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
         status_timer2 = gr.Timer(10)
         status_timer2.tick(fn=refresh_status, outputs=[status_text])
 
-        start_btn.click(fn=start_batch, inputs=[dir_input, limit_input], outputs=[control_output])\
+        start_btn.click(fn=start_batch, inputs=[dir_input, limit_input, ext_input], outputs=[control_output])\
                 .then(fn=refresh_status, outputs=[status_text])
         stop_btn.click(fn=stop_batch, outputs=[control_output])\
                 .then(fn=refresh_status, outputs=[status_text])

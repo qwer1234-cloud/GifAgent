@@ -35,7 +35,7 @@ def main():
     parser.add_argument("--dir", required=True, help="Directory containing video files")
     parser.add_argument("--limit", type=int, default=0, help="Max videos to process (0=all)")
     parser.add_argument("--dry-run", action="store_true", help="List videos without processing")
-    parser.add_argument("--extensions", default=".mp4,.mkv,.avi,.mov,.webm", help="Video extensions")
+    parser.add_argument("--extensions", default=".mp4,.mkv,.avi,.mov,.webm,.ts", help="Video extensions")
     parser.add_argument("--force", action="store_true", help="Re-process completed videos")
     args = parser.parse_args()
 
