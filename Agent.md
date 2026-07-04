@@ -79,6 +79,7 @@ app/
 │   ├── llm_client.py          # Shared LLM client (Ollama + OpenAI + Anthropic compatible)
 │   ├── json_guard.py          # Unified JSON parser (strips <think>, markdown fence)
 │   ├── quality.py             # Placeholder detection + Pydantic validation
+│   ├── video_fingerprint.py   # Duration + keyframe pHash dedup (pre-processing)
 │   ├── preference_*.py        # Preference Memory subsystem (6 tables)
 │   ├── reranker.py            # Score-gated preference reranker
 │   └── candidates.py          # Candidate GIF materialization
@@ -122,6 +123,8 @@ Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → p
 5. **VLM scoring distribution**: llava:13b tends to score everything 0.5-0.7 regardless of temperature. The `temperature=0.65` setting gives the best balance — lower (0.5) makes it too conservative (0 frames above 0.7), higher (1.0) spreads but doesn't help merge count.
 
 6. **Merge count vs threshold**: Lowering `MERGE_SCORE_THRESHOLD` from 0.6 to 0.55 barely increased merges (92→90 clips) because low-score frames (0.3-0.5) interspersed in the timeline break merge chains. The bottleneck is score distribution, not threshold.
+
+7. **Video fingerprint dedup**: `test_video_batch.py` computes a content fingerprint (duration + 5 keyframe pHashes at 10%/30%/50%/70%/90%) for each video before processing. If Hamming distance ≤ 5 vs any already-processed video, it's marked `dedup_skipped` with `duplicate_of` field. Robust to re-encode/container/filename changes; NOT robust to crop/watermark. Stored in `data/batch_checkpoint.json` under each video's `fingerprint` key. Use `--force` to bypass dedup.
 
 ## API Endpoints (18 total)
 

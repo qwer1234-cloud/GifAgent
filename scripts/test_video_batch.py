@@ -12,6 +12,8 @@ from datetime import datetime
 
 CHECKPOINT_FILE = "data/batch_checkpoint.json"
 
+from app.services.video_fingerprint import compute_fingerprint, find_duplicate_in_checkpoint
+
 
 def load_checkpoint():
     if os.path.exists(CHECKPOINT_FILE):
@@ -65,14 +67,31 @@ def main():
 
     pending = []
     skipped = 0
+    dedup_skipped = 0
     for v in videos:
         vname = os.path.splitext(os.path.basename(v))[0]
         if vname in cp["completed"] and not args.force:
             skipped += 1
         else:
+            # Content-based dedup: skip if a different-named video with same content was already processed
+            if not args.force:
+                fp = compute_fingerprint(v)
+                if fp:
+                    dup_of = find_duplicate_in_checkpoint(fp, cp)
+                    if dup_of:
+                        dedup_skipped += 1
+                        cp["completed"][vname] = {
+                            "status": "dedup_skipped",
+                            "duplicate_of": dup_of,
+                            "fingerprint": fp,
+                            "finished_at": datetime.now().isoformat(),
+                        }
+                        save_checkpoint(cp)
+                        print(f"  [dedup] {vname[:60]} == {dup_of[:60]} (skipped)")
+                        continue
             pending.append(v)
 
-    print(f"Checkpoint: {skipped} already done, {len(pending)} pending")
+    print(f"Checkpoint: {skipped} already done, {dedup_skipped} dedup-skipped, {len(pending)} pending")
 
     if args.limit and args.limit < len(pending):
         pending = pending[:args.limit]
@@ -111,6 +130,7 @@ def main():
                     "status": "ok",
                     "elapsed_s": int(time.time() - video_start),
                     "finished_at": datetime.now().isoformat(),
+                    "fingerprint": compute_fingerprint(video),
                 }
                 print(f"  [{idx+1}/{len(pending)}] OK ({time.time()-video_start:.0f}s)")
             else:
