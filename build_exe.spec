@@ -38,11 +38,37 @@ hiddenimports += collect_submodules("fastapi")
 hiddenimports += collect_submodules("pydantic")
 hiddenimports += ["httpx", "httpx._transports", "httpx._transports.default"]
 
-# App modules
+# App modules — explicitly include script-only imports that PyInstaller's
+# static analysis won't find (scripts/ are data files, not analyzed)
 hiddenimports += collect_submodules("app")
+hiddenimports += [
+    "app.services.video_fingerprint",
+    "app.services.json_guard",
+    "app.services.llm_client",
+    "app.services.quality",
+    "app.services.embedding",
+    "app.services.indexer",
+    "app.services.scanner",
+    "app.services.preprocess",
+    "app.services.scheduler",
+    "app.services.vision",
+    "app.services.llm",
+    "app.services.scorer",
+    "app.services.preference_schema",
+    "app.services.preference_events",
+    "app.services.preference_memory",
+    "app.services.preference_evaluation",
+    "app.services.preference_types",
+    "app.services.candidates",
+    "app.services.reranker",
+    "app.services.scenario",
+    "app.routers.candidates",
+    "app.routers.preference",
+]
 
-# Include config file and app package data
+# Include config file, scripts, and app package data
 datas += [("configs/models.yaml", "configs")]
+datas += [("scripts", "scripts")]
 datas += collect_data_files("app")
 
 a = Analysis(

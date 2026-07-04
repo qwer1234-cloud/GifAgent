@@ -117,12 +117,17 @@ def main():
         print(f"{'='*60}")
 
         video_start = time.time()
+        # When frozen (exe), use the exe itself with --run-script flag.
+        # When running from source, use sys.executable (python) directly.
+        if getattr(sys, "frozen", False):
+            adaptive_script = os.path.join(sys._MEIPASS, "scripts", "test_video_adaptive.py")
+            cmd = [sys.executable, "--run-script", adaptive_script, "--video", video]
+        else:
+            adaptive_script = "scripts/test_video_adaptive.py"
+            cmd = [sys.executable, "-u", adaptive_script, "--video", video]
+        cmd.extend(["--export-dir", base_export_dir])
         try:
-            result = subprocess.run([
-                sys.executable, "-u", "scripts/test_video_adaptive.py",
-                "--video", video,
-                "--export-dir", base_export_dir,
-            ], cwd=".", timeout=14400)
+            result = subprocess.run(cmd, cwd=".", timeout=14400)
 
             if result.returncode == 0:
                 succeeded += 1

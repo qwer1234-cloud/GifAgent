@@ -121,7 +121,36 @@ def _wait_for_url(url, label, timeout=30, thread=None):
     return False
 
 
+def _run_script_mode():
+    """When invoked as `GifAgentUI.exe --run-script <path> [args...]`,
+    run the given .py script via runpy instead of starting the GUI.
+
+    This is how the exe spawns batch/adaptive subprocesses — PyInstaller
+    exes can't run arbitrary .py files via sys.executable directly.
+    """
+    if "--run-script" not in sys.argv:
+        return False
+
+    idx = sys.argv.index("--run-script")
+    script_path = sys.argv[idx + 1]
+    # Reconstruct argv for the script: everything after the script path
+    script_argv = [script_path] + sys.argv[idx + 2:]
+    sys.argv = script_argv
+
+    # Set CWD to exe dir so relative paths (configs/, data/) resolve
+    if getattr(sys, "frozen", False):
+        os.chdir(os.path.dirname(sys.executable))
+
+    import runpy
+    runpy.run_path(script_path, run_name="__main__")
+    return True
+
+
 def main():
+    # Script subprocess mode: GifAgentUI.exe --run-script <path> [args...]
+    if _run_script_mode():
+        return
+
     # Determine exe/project dir and chdir FIRST so all relative paths resolve correctly
     if getattr(sys, "frozen", False):
         exe_dir = os.path.dirname(sys.executable)

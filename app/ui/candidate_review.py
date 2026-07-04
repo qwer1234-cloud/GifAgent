@@ -1,7 +1,7 @@
 """
 Gradio UI — candidate GIF review + batch process control panel.
 """
-import json, os, subprocess, signal, time
+import json, os, subprocess, signal, sys, time
 
 import gradio as gr
 import httpx
@@ -98,10 +98,14 @@ def start_batch(video_dir: str, limit: int = 0):
     if not video_dir or not os.path.isdir(video_dir):
         return f"Invalid directory: {video_dir}"
 
-    cmd = [
-        "uv", "run", "python", "-u", "scripts/test_video_batch.py",
-        "--dir", video_dir,
-    ]
+    # When frozen (exe), use the exe itself with --run-script flag (PyInstaller
+    # can't run arbitrary .py files via sys.executable directly).
+    # When running from source, use uv run + relative path.
+    if getattr(sys, "frozen", False):
+        script_path = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
+        cmd = [sys.executable, "--run-script", script_path, "--dir", video_dir]
+    else:
+        cmd = ["uv", "run", "python", "-u", "scripts/test_video_batch.py", "--dir", video_dir]
     if limit > 0:
         cmd.extend(["--limit", str(limit)])
 
