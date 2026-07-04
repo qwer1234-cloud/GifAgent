@@ -16,6 +16,13 @@ CONFIG_FILE = "configs/models.yaml"
 PAGE_SIZE = 12
 THUMB_DIR = "data/thumbs/candidates"
 STATIC_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+DEFAULT_SAMPLE_ROOT = os.path.abspath(os.path.join("data", "exports", "adaptive_test"))
+GRADIO_ALLOWED_PATHS = [
+    os.getcwd(),
+    os.path.abspath("data/exports"),
+    os.path.abspath("data/thumbs"),
+    os.path.abspath("data/frames"),
+]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -171,20 +178,82 @@ def _candidate_display_path(candidate: dict) -> str:
     return thumb_path or candidate.get("display_path") or preview_path or artifact_path
 
 
-def load_candidates(page: int, page_size: int = PAGE_SIZE, filter_status: str = "candidate"):
+def _format_api_error(resp: httpx.Response) -> str:
+    try:
+        detail = resp.json().get("detail", resp.text)
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("error") or str(detail)
+            count = detail.get("count")
+            suffix = f" ({count} item(s))" if count else ""
+            return f"{message}{suffix}"
+        return str(detail)
+    except Exception:
+        return resp.text or f"HTTP {resp.status_code}"
+
+
+def _folder_label(folder: dict) -> str:
+    relative = folder.get("relative_folder") or "."
+    depth = 0 if relative == "." else relative.count("/") + 1
+    indent = "  " * max(0, depth - 1)
+    missing = folder.get("missing_count") or 0
+    suffix = f", missing {missing}" if missing else ""
+    return f"{indent}{relative} ({folder.get('count', 0)}{suffix})"
+
+
+def load_folder_choices(root_dir: str):
+    if not root_dir or not root_dir.strip():
+        return gr.update(choices=[], value=None), "Select a data folder first.", []
+
+    try:
+        resp = httpx.get(
+            f"{API_BASE}/api/candidates/folders",
+            params={"root": root_dir.strip(), "status": "all"},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return gr.update(choices=[], value=None), f"Folder error: {_format_api_error(resp)}", []
+
+        data = resp.json()
+        folders = data.get("folders", [])
+        choices = [(_folder_label(folder), folder["folder"]) for folder in folders]
+        if not choices:
+            return (
+                gr.update(choices=[], value=None),
+                f"No candidate GIFs found under {data.get('root', root_dir)}.",
+                [],
+            )
+        return (
+            gr.update(choices=choices, value=None),
+            f"Found {len(choices)} folder(s). Choose a folder to review.",
+            folders,
+        )
+    except Exception as e:
+        return gr.update(choices=[], value=None), f"Folder error: {e}", []
+
+
+def load_candidates(
+    page: int,
+    page_size: int = PAGE_SIZE,
+    filter_status: str = "candidate",
+    folder: str | None = None,
+):
+    if not folder:
+        return [], {"error": "Choose a folder before loading candidates."}
+
     try:
         params = {
             "limit": page_size,
             "offset": max(0, page) * page_size,
             "status": filter_status or "candidate",
+            "folder": folder,
         }
         resp = httpx.get(f"{API_BASE}/api/candidates", params=params, timeout=10)
         if resp.status_code == 200:
             data = resp.json()
             return data.get("candidates", []), data
-        return [], {}
+        return [], {"error": _format_api_error(resp)}
     except Exception:
-        return [], {}
+        return [], {"error": "API unavailable"}
 
 
 RATING_ICON = {
@@ -198,15 +267,26 @@ RATING_ICON = {
 }
 
 
-def load_candidate_page(page: int, page_size: int = PAGE_SIZE, filter_status: str = "candidate"):
-    candidates, meta = load_candidates(page, page_size, filter_status)
+def load_candidate_page(
+    page: int,
+    page_size: int = PAGE_SIZE,
+    filter_status: str = "candidate",
+    folder: str | None = None,
+):
+    if not folder:
+        return [], "Choose a data folder to review.", gr.update(value=0, maximum=1), []
+
+    candidates, meta = load_candidates(page, page_size, filter_status, folder)
+    if meta.get("error"):
+        return [], f"Error: {meta['error']}", gr.update(value=0, maximum=1), []
+
     total = int(meta.get("total", len(candidates)))
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = max(0, min(page, total_pages - 1))
 
     expected_offset = page * page_size
     if meta and meta.get("offset") != expected_offset:
-        candidates, meta = load_candidates(page, page_size, filter_status)
+        candidates, meta = load_candidates(page, page_size, filter_status, folder)
 
     status_counts = meta.get("status_counts", {})
     counts_str = " | ".join(
@@ -227,7 +307,8 @@ def load_candidate_page(page: int, page_size: int = PAGE_SIZE, filter_status: st
             gallery.append((path, label))
         page_items.append(candidate)
 
-    info = f"Page {page + 1}/{total_pages} | {counts_str} | Showing: {total}"
+    folder_name = os.path.basename(folder.rstrip("\\/")) or folder
+    info = f"Folder: {folder_name} | Page {page + 1}/{total_pages} | {counts_str} | Showing: {total}"
     slider_update = gr.update(value=page, maximum=max(1, total_pages - 1))
     return gallery, info, slider_update, page_items
 
@@ -238,25 +319,29 @@ def select_candidate(evt: gr.SelectData, page_items: list[dict]):
         item = page_items[idx]
         cid = item.get("candidate_id", "")
         src = item.get("source_run_candidate_id", "?")
-        preview = item.get("artifact_path") or item.get("display_path") or item.get("preview_path")
-        return cid, f"Selected: {src[:40]}", preview
-    return "", "Selection error", None
+        artifact_path = item.get("artifact_path") or ""
+        preview = artifact_path or item.get("display_path") or item.get("preview_path")
+        return cid, f"Selected: {src[:40]}", preview, artifact_path
+    return "", "Selection error", None, ""
 
 
-def rate_candidate(candidate_id: str, rating: str, note: str = ""):
+def rate_candidate(candidate_id: str, rating: str, note: str = "", expected_artifact_path: str = ""):
     if not candidate_id or not candidate_id.strip():
         return "Error: No candidate selected"
     try:
         cid = candidate_id.strip()
+        payload = {"rating": rating, "note": note}
+        if expected_artifact_path:
+            payload["expected_artifact_path"] = expected_artifact_path
         resp = httpx.post(
             f"{API_BASE}/api/candidates/{cid}/feedback",
-            json={"rating": rating, "note": note},
+            json=payload,
             timeout=10,
         )
         if resp.status_code == 200:
             data = resp.json()
             return f"Rated: {data['status']}"
-        return f"Error: {resp.status_code}"
+        return f"Error: {resp.status_code} - {_format_api_error(resp)}"
     except Exception as e:
         return f"Error: {e}"
 
@@ -407,6 +492,19 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
     with gr.Tab("Review"):
         with gr.Row():
             with gr.Column(scale=3):
+                with gr.Row():
+                    review_root_input = gr.Textbox(
+                        label="Data Folder",
+                        value=DEFAULT_SAMPLE_ROOT,
+                        placeholder="Folder containing exported candidate GIF folders...",
+                    )
+                    load_folders_btn = gr.Button("Load Folders", variant="primary")
+                folder_dropdown = gr.Dropdown(
+                    choices=[],
+                    value=None,
+                    label="Folder to Review",
+                    interactive=True,
+                )
                 gallery = gr.Gallery(
                     label="Candidate GIFs — ❤ liked | ✕ disliked | ⬚ unrated — click to select",
                     columns=4, height=600, object_fit="contain", allow_preview=True)
@@ -442,55 +540,108 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
 
         info_text = gr.Markdown("")
         page_items_state = gr.State([])
+        folder_choices_state = gr.State([])
+        selected_artifact_path_state = gr.State("")
         status_timer = gr.Timer(10)
 
         # Review events
-        def refresh_page(page, filtr):
-            return load_candidate_page(int(page), filter_status=filtr)
-        page_slider.change(fn=refresh_page, inputs=[page_slider, filter_dropdown],
-                           outputs=[gallery, info_text, page_slider, page_items_state])
-        filter_dropdown.change(fn=lambda f: load_candidate_page(0, filter_status=f),
-                               inputs=[filter_dropdown],
-                               outputs=[gallery, info_text, page_slider, page_items_state])
+        def clear_review_message():
+            return [], gr.update(), gr.update(value=0, maximum=1), [], "", "", None, ""
+
+        load_folders_btn.click(
+            fn=load_folder_choices,
+            inputs=[review_root_input],
+            outputs=[folder_dropdown, info_text, folder_choices_state],
+        ).then(
+            fn=clear_review_message,
+            outputs=[
+                gallery, info_text, page_slider, page_items_state,
+                candidate_id_input, selected_label, selected_preview,
+                selected_artifact_path_state,
+            ],
+        )
+
+        def refresh_page(page, filtr, folder):
+            gal, info, p, page_items = load_candidate_page(int(page), filter_status=filtr, folder=folder)
+            return gal, info, p, page_items, "", "", None, ""
+
+        page_slider.change(fn=refresh_page, inputs=[page_slider, filter_dropdown, folder_dropdown],
+                           outputs=[
+                               gallery, info_text, page_slider, page_items_state,
+                               candidate_id_input, selected_label, selected_preview,
+                               selected_artifact_path_state,
+                           ])
+        filter_dropdown.change(fn=lambda f, folder: refresh_page(0, f, folder),
+                               inputs=[filter_dropdown, folder_dropdown],
+                               outputs=[
+                                   gallery, info_text, page_slider, page_items_state,
+                                   candidate_id_input, selected_label, selected_preview,
+                                   selected_artifact_path_state,
+                               ])
+        folder_dropdown.change(fn=lambda folder, f: refresh_page(0, f, folder),
+                               inputs=[folder_dropdown, filter_dropdown],
+                               outputs=[
+                                   gallery, info_text, page_slider, page_items_state,
+                                   candidate_id_input, selected_label, selected_preview,
+                                   selected_artifact_path_state,
+                               ])
         gallery.select(fn=select_candidate, inputs=[page_items_state],
-                       outputs=[candidate_id_input, selected_label, selected_preview])
-
-        def rate_and_refresh(cid, rating, note, page, filtr):
-            """Submit feedback then refresh gallery so status updates immediately."""
-            result = rate_candidate(cid, rating, note)
-            gal, info, p, page_items = load_candidate_page(int(page), filter_status=filtr)
-            return result, gal, info, p, page_items, "", "", None
-
-        like_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "like", n, p, f),
-                       inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
                        outputs=[
-                           feedback_output, gallery, info_text, page_slider,
-                           page_items_state, candidate_id_input, selected_label,
-                           selected_preview,
+                           candidate_id_input, selected_label, selected_preview,
+                           selected_artifact_path_state,
                        ])
-        neutral_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "neutral", n, p, f),
-                          inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
-                          outputs=[
-                              feedback_output, gallery, info_text, page_slider,
-                              page_items_state, candidate_id_input, selected_label,
-                              selected_preview,
-                          ])
-        dislike_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "dislike", n, p, f),
-                          inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
-                          outputs=[
-                              feedback_output, gallery, info_text, page_slider,
-                              page_items_state, candidate_id_input, selected_label,
-                              selected_preview,
-                          ])
-        skip_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "skip", n, p, f),
-                       inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
+
+        def rate_and_refresh(cid, rating, note, expected_path, page, filtr, folder):
+            """Submit feedback then refresh gallery so status updates immediately."""
+            result = rate_candidate(cid, rating, note, expected_path)
+            gal, info, p, page_items = load_candidate_page(int(page), filter_status=filtr, folder=folder)
+            return result, gal, info, p, page_items, "", "", None, ""
+
+        like_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "like", n, ep, p, f, folder),
+                       inputs=[
+                           candidate_id_input, note_input, selected_artifact_path_state,
+                           page_slider, filter_dropdown, folder_dropdown,
+                       ],
                        outputs=[
                            feedback_output, gallery, info_text, page_slider,
                            page_items_state, candidate_id_input, selected_label,
-                           selected_preview,
+                           selected_preview, selected_artifact_path_state,
+                       ])
+        neutral_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "neutral", n, ep, p, f, folder),
+                          inputs=[
+                              candidate_id_input, note_input, selected_artifact_path_state,
+                              page_slider, filter_dropdown, folder_dropdown,
+                          ],
+                          outputs=[
+                              feedback_output, gallery, info_text, page_slider,
+                              page_items_state, candidate_id_input, selected_label,
+                              selected_preview, selected_artifact_path_state,
+                          ])
+        dislike_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "dislike", n, ep, p, f, folder),
+                          inputs=[
+                              candidate_id_input, note_input, selected_artifact_path_state,
+                              page_slider, filter_dropdown, folder_dropdown,
+                          ],
+                          outputs=[
+                              feedback_output, gallery, info_text, page_slider,
+                              page_items_state, candidate_id_input, selected_label,
+                              selected_preview, selected_artifact_path_state,
+                          ])
+        skip_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "skip", n, ep, p, f, folder),
+                       inputs=[
+                           candidate_id_input, note_input, selected_artifact_path_state,
+                           page_slider, filter_dropdown, folder_dropdown,
+                       ],
+                       outputs=[
+                           feedback_output, gallery, info_text, page_slider,
+                           page_items_state, candidate_id_input, selected_label,
+                           selected_preview, selected_artifact_path_state,
                        ])
         build_btn.click(fn=build_profile, outputs=[build_output])
-        app.load(fn=lambda: load_candidate_page(0), outputs=[gallery, info_text, page_slider, page_items_state])
+        app.load(
+            fn=lambda: ([], "Choose a data folder to review.", gr.update(value=0, maximum=1), []),
+            outputs=[gallery, info_text, page_slider, page_items_state],
+        )
         status_timer.tick(fn=get_profile_status, outputs=[profile_status])
 
     # ── Control Panel Tab ──────────────────────────────────────────────
@@ -607,5 +758,5 @@ if __name__ == "__main__":
     app.launch(
         server_name="127.0.0.1",
         server_port=7861,
-        allowed_paths=["data/exports", "data/thumbs", "data/frames"],
+        allowed_paths=GRADIO_ALLOWED_PATHS,
     )

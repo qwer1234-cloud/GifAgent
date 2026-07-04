@@ -1,5 +1,8 @@
 import sqlite3
 
+import pytest
+from fastapi import HTTPException
+
 
 def _setup_conn() -> sqlite3.Connection:
     from app.services.preference_schema import apply_preference_schema
@@ -86,3 +89,106 @@ def test_list_candidates_allows_all_statuses_and_prefers_preview_path(monkeypatc
     assert payload["total"] == 2
     assert by_id["cand-preview"]["display_path"] == "data/thumbs/preview.jpg"
     assert by_id["cand-artifact"]["display_path"] == "data/exports/fallback.gif"
+
+
+def test_candidate_folders_are_discovered_recursively(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    root = tmp_path / "adaptive_test"
+    jur = root / "JUR-639"
+    nested = root / "A" / "B"
+    jur.mkdir(parents=True)
+    nested.mkdir(parents=True)
+    jur_gif = jur / "one.gif"
+    nested_gif = nested / "two.gif"
+    jur_gif.write_bytes(b"gif")
+    nested_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(conn, "cand-jur", artifact_path=str(jur_gif), preview_path=str(jur_gif))
+    _insert_candidate(conn, "cand-nested", artifact_path=str(nested_gif), preview_path=str(nested_gif))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(root=str(root), status="all")
+    rels = {folder["relative_folder"]: folder["count"] for folder in payload["folders"]}
+
+    assert rels == {"JUR-639": 1, "A/B": 1}
+
+
+def test_list_candidates_filters_to_exact_selected_folder(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    root = tmp_path / "adaptive_test"
+    jur = root / "JUR-639"
+    child = jur / "child"
+    jur.mkdir(parents=True)
+    child.mkdir()
+    jur_gif = jur / "one.gif"
+    child_gif = child / "nested.gif"
+    jur_gif.write_bytes(b"gif")
+    child_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(conn, "cand-jur", artifact_path=str(jur_gif), preview_path=str(jur_gif))
+    _insert_candidate(conn, "cand-child", artifact_path=str(child_gif), preview_path=str(child_gif))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="all",
+        limit=10,
+        offset=0,
+        folder=str(jur),
+    )
+
+    assert payload["total"] == 1
+    assert payload["candidates"][0]["candidate_id"] == "cand-jur"
+
+
+def test_list_candidates_errors_when_selected_folder_file_is_missing(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    missing_gif = folder / "missing.gif"
+
+    conn = _setup_conn()
+    _insert_candidate(conn, "cand-missing", artifact_path=str(missing_gif), preview_path=str(missing_gif))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    with pytest.raises(HTTPException) as exc:
+        candidates_router.list_candidates(
+            status="all",
+            limit=10,
+            offset=0,
+            folder=str(folder),
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"] == "candidate_path_changed_or_missing"
+
+
+def test_feedback_errors_when_candidate_path_changed_after_load(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    gif_path = folder / "one.gif"
+    other_path = folder / "other.gif"
+    gif_path.write_bytes(b"gif")
+    other_path.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(conn, "cand-one", artifact_path=str(gif_path), preview_path=str(gif_path))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    with pytest.raises(HTTPException) as exc:
+        candidates_router.submit_feedback(
+            "cand-one",
+            candidates_router.FeedbackRequest(
+                rating="like",
+                expected_artifact_path=str(other_path),
+            ),
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"] == "candidate_path_changed"

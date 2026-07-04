@@ -184,13 +184,13 @@ def main():
 
     # Start Gradio UI in a background thread (prevent_thread_lock=True makes
     # launch() return immediately; the server runs in Gradio's internal thread).
-    from app.ui.candidate_review import app as gradio_app
+    from app.ui.candidate_review import GRADIO_ALLOWED_PATHS, app as gradio_app
     try:
         gradio_app.launch(
             server_name="127.0.0.1",
             server_port=7861,
             prevent_thread_lock=True,
-            allowed_paths=["data/exports", "data/thumbs", "data/frames"],
+            allowed_paths=GRADIO_ALLOWED_PATHS,
         )
     except Exception as e:
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)

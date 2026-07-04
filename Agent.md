@@ -82,9 +82,9 @@ uv run python app/ui/review.py
 
 ```
 app/
-├── main.py                    # FastAPI app (18 endpoints)
+├── main.py                    # FastAPI app (19 endpoints)
 ├── routers/
-│   ├── candidates.py          # GET /api/candidates, POST /api/candidates/{id}/feedback
+│   ├── candidates.py          # GET /api/candidates/folders, GET /api/candidates, POST /api/candidates/{id}/feedback
 │   └── preference.py          # profile build/publish/evaluate endpoints
 ├── services/
 │   ├── llm_client.py          # Shared LLM client (Ollama + OpenAI + Anthropic compatible)
@@ -125,13 +125,23 @@ Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → p
 ### Candidate Review UI (2026-07-04)
 
 - `GET /api/candidates` is paginated and filtered server-side. Defaults:
-  `status=candidate`, `limit=24`, `offset=0`; callers can use `status=all`.
+  `status=candidate`, `limit=24`, `offset=0`; callers can use `status=all`
+  and pass `folder` for exact-folder review.
+- `GET /api/candidates/folders` discovers recursive candidate folders under a
+  selected root directory and returns per-folder totals, missing counts, and
+  status counts.
+- The Review tab does not auto-load every candidate on open. Users first choose
+  a data root, click `Load Folders`, then choose the exact folder to review from
+  the recursive folder list.
 - `candidate_review.py` uses `PAGE_SIZE=12` for the Gradio gallery.
 - Gallery items use cached static thumbnails under `data/thumbs/candidates/`;
   full animated GIFs load only in the selected preview pane.
 - Selection uses the current page's `gr.State` item list. Do not reintroduce
   index math against a freshly fetched unfiltered list, or filtered-page clicks
   can rate the wrong candidate.
+- Candidate display and feedback require the GIF file to still exist at its
+  original `artifact_path`. If the path changed or the file is missing, the API
+  returns 409 instead of showing or rating stale data.
 
 ## Known Gotchas
 
@@ -149,11 +159,13 @@ Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → p
 
 7. **Video fingerprint dedup**: `test_video_batch.py` computes a content fingerprint (duration + 5 keyframe pHashes at 10%/30%/50%/70%/90%) for each video before processing. If Hamming distance ≤ 5 vs any already-processed video, it's marked `dedup_skipped` with `duplicate_of` field. Robust to re-encode/container/filename changes; NOT robust to crop/watermark. Stored in `data/batch_checkpoint.json` under each video's `fingerprint` key. Use `--force` to bypass dedup.
 
-## API Endpoints (18 total)
+## API Endpoints (19 total)
 
 Key ones:
-- `GET /api/candidates` - paginated candidate list (`status`, `limit`, `offset`);
-  defaults to `status=candidate`
+- `GET /api/candidates/folders` - recursive candidate-folder discovery below a
+  selected root directory
+- `GET /api/candidates` - paginated candidate list (`status`, `limit`, `offset`,
+  optional exact `folder`); defaults to `status=candidate`
 - `POST /api/candidates/{id}/feedback` — rate (like/neutral/dislike/skip)
 - `GET /api/preference/profiles` — list profile builds
 - `POST /api/preference/profiles/build` — build new profile
@@ -163,7 +175,7 @@ Key ones:
 ## Test Suite
 
 ```bash
-uv run pytest tests/ -v   # 91 tests, 1 skipped
+uv run pytest tests/ -v   # 95 tests, 1 skipped
 ```
 
 Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker.

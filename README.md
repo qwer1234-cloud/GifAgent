@@ -213,13 +213,22 @@ uv run python app/ui/candidate_review.py
 ### Candidate review performance fix (2026-07-04)
 
 - `GET /api/candidates` now supports server-side pagination and filtering:
-  `status`, `limit`, and `offset`. The default status is `candidate`.
+  `status`, `limit`, `offset`, and optional exact `folder`. The default status
+  is `candidate`.
+- `GET /api/candidates/folders` discovers recursive candidate folders below a
+  selected root directory and returns per-folder counts/status counts.
+- The Review tab no longer loads candidates at page open. Choose a data root,
+  click `Load Folders`, then choose the specific folder to review from the
+  recursive folder list.
 - The candidate review UI loads only one small page at a time (`PAGE_SIZE=12`)
   instead of pulling every candidate GIF on each refresh.
 - Gallery cells use cached static thumbnails in `data/thumbs/candidates/`.
   The full animated GIF is loaded only for the currently selected candidate.
 - Selection is bound to the current page state, so `Like` / `Dislike` is sent
   to the exact candidate the user clicked, even after filtering or paging.
+- Candidate display and feedback now validate that the GIF file still exists at
+  the original `artifact_path`; moved or missing files return a path-integrity
+  error instead of silently reviewing stale data.
 - The Windows GUI bundle was rebuilt with:
   `uv run pyinstaller --noconfirm build_exe.spec`.
   Output: `dist/GifAgentUI/GifAgentUI.exe`.
@@ -242,7 +251,8 @@ uv run python app/ui/candidate_review.py
 | GET | `/api/review/next` | 获取下一条待审核媒体 |
 | GET | `/api/review/{id}` | 获取指定媒体审核数据 |
 | POST | `/api/feedback` | 提交人工反馈（like/dislike/neutral） |
-| GET | `/api/candidates` | 分页列出候选 GIF，支持 `status` / `limit` / `offset`，返回状态计数 |
+| GET | `/api/candidates/folders` | 递归列出指定根目录下包含候选 GIF 的文件夹，返回数量、缺失数和状态计数 |
+| GET | `/api/candidates` | 分页列出候选 GIF，支持 `status` / `limit` / `offset` / `folder`，返回状态计数 |
 | POST | `/api/candidates/{candidate_id}/feedback` | 提交候选 GIF 评分（like/neutral/dislike/skip） |
 | GET | `/api/preference/profiles` | 获取偏好画像列表及当前生效版本 |
 | POST | `/api/preference/profiles/build` | 构建新的偏好画像 |
