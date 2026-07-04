@@ -17,12 +17,27 @@ PAGE_SIZE = 12
 THUMB_DIR = "data/thumbs/candidates"
 STATIC_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_SAMPLE_ROOT = os.path.abspath(os.path.join("data", "exports", "adaptive_test"))
-GRADIO_ALLOWED_PATHS = [
-    os.getcwd(),
-    os.path.abspath("data/exports"),
-    os.path.abspath("data/thumbs"),
-    os.path.abspath("data/frames"),
-]
+
+
+def _build_gradio_allowed_paths() -> list[str]:
+    paths = [
+        os.getcwd(),
+        os.path.abspath("data/exports"),
+        os.path.abspath("data/thumbs"),
+        os.path.abspath("data/frames"),
+    ]
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for path in paths:
+        for candidate in (path, os.path.realpath(path)):
+            key = os.path.normcase(os.path.normpath(candidate))
+            if key not in seen:
+                allowed.append(candidate)
+                seen.add(key)
+    return allowed
+
+
+GRADIO_ALLOWED_PATHS = _build_gradio_allowed_paths()
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -196,7 +211,13 @@ def _folder_label(folder: dict) -> str:
     depth = 0 if relative == "." else relative.count("/") + 1
     indent = "  " * max(0, depth - 1)
     missing = folder.get("missing_count") or 0
-    suffix = f", missing {missing}" if missing else ""
+    unmaterialized = folder.get("unmaterialized_count") or 0
+    details = []
+    if unmaterialized:
+        details.append(f"{unmaterialized} new")
+    if missing:
+        details.append(f"{missing} missing")
+    suffix = f", {', '.join(details)}" if details else ""
     return f"{indent}{relative} ({folder.get('count', 0)}{suffix})"
 
 

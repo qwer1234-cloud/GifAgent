@@ -216,10 +216,14 @@ uv run python app/ui/candidate_review.py
   `status`, `limit`, `offset`, and optional exact `folder`. The default status
   is `candidate`.
 - `GET /api/candidates/folders` discovers recursive candidate folders below a
-  selected root directory and returns per-folder counts/status counts.
+  selected root directory and returns per-folder counts/status counts. It also
+  includes folders that contain `.gif` files not yet materialized into
+  `candidate_gifs`; these are shown as new candidates.
 - The Review tab no longer loads candidates at page open. Choose a data root,
   click `Load Folders`, then choose the specific folder to review from the
   recursive folder list.
+- When a folder contains GIF files but no `candidate_gifs` rows yet, selecting
+  that exact folder materializes only that folder's direct GIF files on demand.
 - The candidate review UI loads only one small page at a time (`PAGE_SIZE=12`)
   instead of pulling every candidate GIF on each refresh.
 - Gallery cells use cached static thumbnails in `data/thumbs/candidates/`.

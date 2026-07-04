@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -15,6 +18,11 @@ from app.services.preference_events import PreferenceEventService
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
 _LIST_STATUS_PATTERN = r"^(all|candidate|liked|disliked|neutral|promoted|rejected|archived)$"
+_GIF_SUFFIX = ".gif"
+_CLIP_FILENAME_RE = re.compile(
+    r"@@@\d+_(?P<start>\d+(?:\.\d+)?)s-(?P<end>\d+(?:\.\d+)?)s\.gif$",
+    re.IGNORECASE,
+)
 
 
 class FeedbackRequest(BaseModel):
@@ -55,6 +63,121 @@ def _path_display(path: Path) -> str:
         return str(path.relative_to(Path.cwd()))
     except ValueError:
         return str(path)
+
+
+def _iter_gif_files(folder: Path, *, recursive: bool) -> list[Path]:
+    if recursive:
+        candidates = folder.rglob("*")
+    else:
+        candidates = folder.iterdir()
+    return sorted(
+        (
+            path.resolve(strict=False)
+            for path in candidates
+            if path.is_file() and path.suffix.lower() == _GIF_SUFFIX
+        ),
+        key=lambda p: str(p).lower(),
+    )
+
+
+def _folder_info(folders: dict[Path, dict], root: Path, folder: Path) -> dict:
+    return folders.setdefault(
+        folder,
+        {
+            "folder": str(folder),
+            "relative_folder": "."
+            if folder == root
+            else folder.relative_to(root).as_posix(),
+            "count": 0,
+            "missing_count": 0,
+            "unmaterialized_count": 0,
+            "status_counts": {},
+        },
+    )
+
+
+def _add_folder_count(
+    folders: dict[Path, dict],
+    root: Path,
+    folder: Path,
+    *,
+    status: str,
+    missing: bool = False,
+    unmaterialized: bool = False,
+) -> None:
+    info = _folder_info(folders, root, folder)
+    info["count"] += 1
+    info["status_counts"][status] = info["status_counts"].get(status, 0) + 1
+    if missing:
+        info["missing_count"] += 1
+    if unmaterialized:
+        info["unmaterialized_count"] += 1
+
+
+def _parse_clip_times(path: Path) -> tuple[float, float]:
+    match = _CLIP_FILENAME_RE.search(path.name)
+    if not match:
+        return 0.0, 0.0
+    return float(match.group("start")), float(match.group("end"))
+
+
+def _materialize_filesystem_candidates_for_folder(conn, folder: Path) -> int:
+    """Create candidate rows for GIFs in the exact selected folder only."""
+    existing_paths: set[Path] = set()
+    for row in _candidate_rows(conn, status="all"):
+        artifact_path = _resolve_artifact_path(row["artifact_path"])
+        if artifact_path is not None and artifact_path.parent == folder:
+            existing_paths.add(artifact_path)
+
+    created = 0
+    now = datetime.now(timezone.utc).isoformat()
+    for gif_path in _iter_gif_files(folder, recursive=False):
+        if gif_path in existing_paths:
+            continue
+
+        artifact_path = _path_display(gif_path)
+        digest = hashlib.sha256(str(gif_path).encode("utf-8")).hexdigest()
+        candidate_id = f"cand_fs_{digest}"
+        start_sec, end_sec = _parse_clip_times(gif_path)
+        source_name = gif_path.name.split("@@@", 1)[0] if "@@@" in gif_path.name else gif_path.parent.name
+        source_video_path = str(gif_path.parent / source_name)
+        source_video_sha256 = hashlib.sha256(
+            str(gif_path.parent).encode("utf-8")
+        ).hexdigest()
+
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO candidate_gifs
+               (candidate_id, source_run_id, source_run_candidate_id,
+                source_video_sha256, source_video_path, start_sec, end_sec,
+                artifact_path, preview_path,
+                vlm_summary_json, tags_json, scenario_keys_json,
+                base_rag_similarity, final_score, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                candidate_id,
+                "filesystem-folder-import",
+                digest,
+                source_video_sha256,
+                source_video_path,
+                start_sec,
+                end_sec,
+                artifact_path,
+                artifact_path,
+                "{}",
+                "[]",
+                "[]",
+                None,
+                None,
+                "candidate",
+                now,
+                now,
+            ),
+        )
+        created += cursor.rowcount
+
+    if created:
+        conn.commit()
+    return created
 
 
 def _row_payload(row) -> dict:
@@ -109,34 +232,40 @@ def list_candidate_folders(
     root: str = Query(..., min_length=1),
     status: str = Query("all", pattern=_LIST_STATUS_PATTERN),
 ):
-    """List recursive subfolders under root that have candidate GIF rows."""
+    """List recursive subfolders under root that have candidate GIF rows or GIF files."""
     root_path = _resolve_user_folder(root)
     conn = get_connection()
     rows = _candidate_rows(conn, status=status)
 
     folders: dict[Path, dict] = {}
+    known_artifact_paths: set[Path] = set()
     for row in rows:
         folder = _folder_for_row(row, root_path)
         if folder is None:
             continue
-        info = folders.setdefault(
-            folder,
-            {
-                "folder": str(folder),
-                "relative_folder": "."
-                if folder == root_path
-                else folder.relative_to(root_path).as_posix(),
-                "count": 0,
-                "missing_count": 0,
-                "status_counts": {},
-            },
-        )
-        info["count"] += 1
         row_status = row["status"]
-        info["status_counts"][row_status] = info["status_counts"].get(row_status, 0) + 1
         artifact_path = _resolve_artifact_path(row["artifact_path"])
-        if artifact_path is None or not artifact_path.exists():
-            info["missing_count"] += 1
+        if artifact_path is not None:
+            known_artifact_paths.add(artifact_path)
+        _add_folder_count(
+            folders,
+            root_path,
+            folder,
+            status=row_status,
+            missing=artifact_path is None or not artifact_path.exists(),
+        )
+
+    if status in {"all", "candidate"}:
+        for gif_path in _iter_gif_files(root_path, recursive=True):
+            if gif_path in known_artifact_paths:
+                continue
+            _add_folder_count(
+                folders,
+                root_path,
+                gif_path.parent,
+                status="candidate",
+                unmaterialized=True,
+            )
 
     sorted_folders = sorted(
         folders.values(),
@@ -160,6 +289,7 @@ def list_candidates(
 
     if folder:
         folder_path = _resolve_user_folder(folder)
+        _materialize_filesystem_candidates_for_folder(conn, folder_path)
         rows = []
         status_counts: dict[str, int] = {}
         moved_errors: list[dict] = []

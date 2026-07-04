@@ -129,10 +129,14 @@ Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → p
   and pass `folder` for exact-folder review.
 - `GET /api/candidates/folders` discovers recursive candidate folders under a
   selected root directory and returns per-folder totals, missing counts, and
-  status counts.
+  status counts. Folders with `.gif` files but no `candidate_gifs` rows are
+  still listed with `unmaterialized_count` and treated as new candidates.
 - The Review tab does not auto-load every candidate on open. Users first choose
   a data root, click `Load Folders`, then choose the exact folder to review from
   the recursive folder list.
+- Selecting a folder with unmaterialized GIFs imports only that exact folder's
+  direct `.gif` files into `candidate_gifs`; child folders are listed separately
+  and are not imported until selected.
 - `candidate_review.py` uses `PAGE_SIZE=12` for the Gradio gallery.
 - Gallery items use cached static thumbnails under `data/thumbs/candidates/`;
   full animated GIFs load only in the selected preview pane.

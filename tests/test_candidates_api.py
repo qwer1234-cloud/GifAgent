@@ -115,6 +115,25 @@ def test_candidate_folders_are_discovered_recursively(monkeypatch, tmp_path):
     assert rels == {"JUR-639": 1, "A/B": 1}
 
 
+def test_candidate_folders_include_unmaterialized_gif_folders(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    root = tmp_path / "adaptive_test"
+    nested = root / "LapkaLu" / "SceneA"
+    nested.mkdir(parents=True)
+    (nested / "SceneA@@@001_10s-15s.gif").write_bytes(b"gif")
+
+    conn = _setup_conn()
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(root=str(root), status="all")
+    folders = {folder["relative_folder"]: folder for folder in payload["folders"]}
+
+    assert folders["LapkaLu/SceneA"]["count"] == 1
+    assert folders["LapkaLu/SceneA"]["unmaterialized_count"] == 1
+    assert folders["LapkaLu/SceneA"]["status_counts"] == {"candidate": 1}
+
+
 def test_list_candidates_filters_to_exact_selected_folder(monkeypatch, tmp_path):
     from app.routers import candidates as candidates_router
 
@@ -142,6 +161,39 @@ def test_list_candidates_filters_to_exact_selected_folder(monkeypatch, tmp_path)
 
     assert payload["total"] == 1
     assert payload["candidates"][0]["candidate_id"] == "cand-jur"
+
+
+def test_list_candidates_materializes_untracked_gifs_for_selected_folder(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "LapkaLu" / "SceneA"
+    folder.mkdir(parents=True)
+    gif_path = folder / "SceneA@@@001_10s-15s.gif"
+    gif_path.write_bytes(b"gif")
+    child = folder / "child"
+    child.mkdir()
+    (child / "nested@@@001_20s-25s.gif").write_bytes(b"gif")
+
+    conn = _setup_conn()
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="all",
+        limit=10,
+        offset=0,
+        folder=str(folder),
+    )
+
+    assert payload["total"] == 1
+    candidate = payload["candidates"][0]
+    assert candidate["status"] == "candidate"
+    assert candidate["start_sec"] == 10.0
+    assert candidate["end_sec"] == 15.0
+    assert candidates_router._resolve_artifact_path(candidate["artifact_path"]) == gif_path
+    assert conn.execute("SELECT COUNT(*) FROM candidate_gifs").fetchone()[0] == 1
+
+    candidates_router.list_candidates(status="all", limit=10, offset=0, folder=str(folder))
+    assert conn.execute("SELECT COUNT(*) FROM candidate_gifs").fetchone()[0] == 1
 
 
 def test_list_candidates_errors_when_selected_folder_file_is_missing(monkeypatch, tmp_path):
