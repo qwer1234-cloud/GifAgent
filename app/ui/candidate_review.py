@@ -228,7 +228,7 @@ def load_config():
         with open(CONFIG_FILE, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     except Exception as e:
-        return ([str(e)] * 6, [str(e)] * 2, [str(e)] * 5, False, "")
+        return ([str(e)] * 6, [str(e)] * 2, [str(e)] * 9, False, "")
 
     llm = cfg.get("llm", {}) or {}
     vlm = cfg.get("vlm", {}) or {}
@@ -257,6 +257,7 @@ def load_config():
         str(adaptive.get("vlm_temperature", 0.65)),
         str(adaptive.get("output_ratio", 1.0)),
         str(adaptive.get("max_output", 0)),
+        str(adaptive.get("gif_fps", 24)),
     ]
     pm_enabled = bool(pm.get("enabled", False))
     raw_text = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
@@ -268,7 +269,7 @@ def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
                 vlm_model, vlm_base_url,
                 ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
                 ad_worthiness_threshold, ad_refine_threshold,
-                ad_vlm_temperature, ad_output_ratio, ad_max_output,
+                ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
                 pm_enabled, raw_text):
     """Save edited fields back to configs/models.yaml, preserving other sections."""
     try:
@@ -299,6 +300,7 @@ def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
     cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
     cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
     cfg["adaptive"]["max_output"] = int(ad_max_output)
+    cfg["adaptive"]["gif_fps"] = int(ad_gif_fps)
 
     cfg.setdefault("preference_memory", {})
     cfg["preference_memory"]["enabled"] = bool(pm_enabled)
@@ -485,6 +487,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                     with gr.Row():
                         ad_output_ratio = gr.Textbox(label="output_ratio", value="")
                         ad_max_output = gr.Textbox(label="max_output (0=no cap)", value="")
+                    ad_gif_fps = gr.Textbox(label="gif_fps (frames/s)", value="")
 
                 with gr.Group():
                     gr.Markdown("### Preference Memory")
@@ -505,7 +508,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                       vlm_model, vlm_base_url,
                       ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
                       ad_worthiness_threshold, ad_refine_threshold,
-                      ad_vlm_temperature, ad_output_ratio, ad_max_output,
+                      ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
                       pm_enabled, raw_yaml]
         save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])
         reload_btn.click(fn=_reload, outputs=all_inputs + [config_status])
