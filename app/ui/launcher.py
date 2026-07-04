@@ -11,14 +11,50 @@ import sys
 import threading
 import time
 import webbrowser
+import shutil
 
 import uvicorn
 
 
+def _setup_runtime_files(exe_dir):
+    """Copy bundled read-only config to a writable location, create data dir."""
+    writable_config_dir = os.path.join(exe_dir, "configs")
+    writable_config = os.path.join(writable_config_dir, "models.yaml")
+
+    if getattr(sys, "frozen", False):
+        bundled = os.path.join(sys._MEIPASS, "configs", "models.yaml")
+        if not os.path.exists(writable_config) and os.path.exists(bundled):
+            os.makedirs(writable_config_dir, exist_ok=True)
+            shutil.copy2(bundled, writable_config)
+            print(f"Copied default config to {writable_config}")
+
+    os.makedirs(writable_config_dir, exist_ok=True)
+    os.makedirs(os.path.join(exe_dir, "data"), exist_ok=True)
+
+
+def _init_database():
+    """Load config and initialize DB with all schemas (base + preference memory)."""
+    from app.config import load_config
+    load_config()
+
+    from app.db import init_db
+    init_db(apply_preference=True)
+
+    # Explicitly apply preference schema in case init_db's lazy import was missed
+    from app.services.preference_schema import apply_preference_schema
+    from app.db import get_connection
+    conn = get_connection()
+    apply_preference_schema(conn)
+    conn.close()
+    print("Database initialized with preference schema.")
+
+
 def start_api_server():
-    """Run uvicorn in a background thread (daemon)."""
+    """Run uvicorn in a background thread (daemon). Import app object directly
+    to avoid string-based import which fails in PyInstaller frozen exe."""
+    from app.main import app as fastapi_app
     uvicorn.run(
-        "app.main:app",
+        fastapi_app,
         host="127.0.0.1",
         port=8000,
         log_level="warning",
@@ -27,11 +63,22 @@ def start_api_server():
 
 
 def main():
-    # Ensure cwd is project root (important for PyInstaller exe)
+    # Determine exe/project dir and chdir FIRST so all relative paths resolve correctly
     if getattr(sys, "frozen", False):
-        os.chdir(os.path.dirname(sys.executable))
+        exe_dir = os.path.dirname(sys.executable)
     else:
-        os.chdir(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        exe_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    os.chdir(exe_dir)
+    print(f"Working dir: {exe_dir}")
+
+    # Copy config, create data dir
+    _setup_runtime_files(exe_dir)
+
+    # Init DB (config must be loadable now that CWD is set)
+    try:
+        _init_database()
+    except Exception as e:
+        print(f"WARNING: DB init failed: {e}")
 
     # Start API server in background thread
     api_thread = threading.Thread(target=start_api_server, daemon=True)
