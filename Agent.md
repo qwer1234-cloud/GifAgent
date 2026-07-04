@@ -55,6 +55,17 @@ uv run python scripts/test_video_batch.py --dir "<video_dir>" --extensions ".ts,
 
 Output structure: `data/exports/adaptive_test/{input_folder_name}/{video_name}@@@{seq}_{start}s-{end}s.gif`
 
+### Packaged GUI
+
+```bash
+uv run pyinstaller --noconfirm build_exe.spec
+```
+
+Output: `dist/GifAgentUI/GifAgentUI.exe`. If an older packaged GUI is running,
+stop it before rebuilding because it holds `dist/GifAgentUI/data/library.db`.
+Preserve `dist/GifAgentUI/data/` when replacing the package; it contains the
+local runtime DB and the `exports` junction.
+
 ### Services
 ```bash
 # FastAPI (port 8000)
@@ -111,6 +122,17 @@ configs/
 
 Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → profile build (7 gates) → holdout evaluation → explicit publish → reranker (behind `preference_memory.enabled` flag, default false)
 
+### Candidate Review UI (2026-07-04)
+
+- `GET /api/candidates` is paginated and filtered server-side. Defaults:
+  `status=candidate`, `limit=24`, `offset=0`; callers can use `status=all`.
+- `candidate_review.py` uses `PAGE_SIZE=12` for the Gradio gallery.
+- Gallery items use cached static thumbnails under `data/thumbs/candidates/`;
+  full animated GIFs load only in the selected preview pane.
+- Selection uses the current page's `gr.State` item list. Do not reintroduce
+  index math against a freshly fetched unfiltered list, or filtered-page clicks
+  can rate the wrong candidate.
+
 ## Known Gotchas
 
 1. **`safe_worth()` vs `validate_frame_analysis`**: VLM sometimes returns string labels ("AVERAGE - ...") instead of numbers for `gif_worthiness`. `safe_worth()` handles this, but `validate_frame_analysis()` in quality.py tries `float()` first and can raise. The exception is caught (frame skipped after 3 retries), but it's not clean.
@@ -130,7 +152,8 @@ Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → p
 ## API Endpoints (18 total)
 
 Key ones:
-- `GET /api/candidates` — list all candidate GIFs
+- `GET /api/candidates` - paginated candidate list (`status`, `limit`, `offset`);
+  defaults to `status=candidate`
 - `POST /api/candidates/{id}/feedback` — rate (like/neutral/dislike/skip)
 - `GET /api/preference/profiles` — list profile builds
 - `POST /api/preference/profiles/build` — build new profile
@@ -140,7 +163,7 @@ Key ones:
 ## Test Suite
 
 ```bash
-uv run pytest tests/ -v   # 89 tests, 1 skipped
+uv run pytest tests/ -v   # 91 tests, 1 skipped
 ```
 
 Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker.
@@ -155,4 +178,6 @@ Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candi
 | VLM temperature | default (~0.8) | 0.65 | consistent scoring |
 | LLM provider | anthropic_compatible (Ark) | openai_compatible (DeepSeek) | native DeepSeek API |
 | parse_json bug | broken | fixed | LLM synthesis works |
+| Candidate review loading | full candidate list + full GIF gallery | paged API + cached static thumbnails | much faster Web/GUI review |
+| Candidate click mapping | page index remapped into unfiltered list | current-page `gr.State` item list | Like/Dislike updates the clicked candidate |
 | **GIF output per 3 videos** | **5** | **306** | **61x increase** |

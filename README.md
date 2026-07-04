@@ -210,6 +210,20 @@ uv run python app/ui/review.py
 uv run python app/ui/candidate_review.py
 ```
 
+### Candidate review performance fix (2026-07-04)
+
+- `GET /api/candidates` now supports server-side pagination and filtering:
+  `status`, `limit`, and `offset`. The default status is `candidate`.
+- The candidate review UI loads only one small page at a time (`PAGE_SIZE=12`)
+  instead of pulling every candidate GIF on each refresh.
+- Gallery cells use cached static thumbnails in `data/thumbs/candidates/`.
+  The full animated GIF is loaded only for the currently selected candidate.
+- Selection is bound to the current page state, so `Like` / `Dislike` is sent
+  to the exact candidate the user clicked, even after filtering or paging.
+- The Windows GUI bundle was rebuilt with:
+  `uv run pyinstaller --noconfirm build_exe.spec`.
+  Output: `dist/GifAgentUI/GifAgentUI.exe`.
+
 ---
 
 ## API 参考
@@ -228,7 +242,7 @@ uv run python app/ui/candidate_review.py
 | GET | `/api/review/next` | 获取下一条待审核媒体 |
 | GET | `/api/review/{id}` | 获取指定媒体审核数据 |
 | POST | `/api/feedback` | 提交人工反馈（like/dislike/neutral） |
-| GET | `/api/candidates` | 列出所有候选 GIF（含状态、相似度、评分） |
+| GET | `/api/candidates` | 分页列出候选 GIF，支持 `status` / `limit` / `offset`，返回状态计数 |
 | POST | `/api/candidates/{candidate_id}/feedback` | 提交候选 GIF 评分（like/neutral/dislike/skip） |
 | GET | `/api/preference/profiles` | 获取偏好画像列表及当前生效版本 |
 | POST | `/api/preference/profiles/build` | 构建新的偏好画像 |
@@ -420,7 +434,8 @@ uv run python scripts/preference_memory.py status --json
 
 ```bash
 uv run pytest tests/ -v
-# 89 tests（1 skipped）: JSON 解析、placeholder 检测、emotional_core 归一化、
+# Current suite: 91 tests, 1 skipped.
+# 91 tests（1 skipped）: JSON 解析、placeholder 检测、emotional_core 归一化、
 # FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序
 ```
 

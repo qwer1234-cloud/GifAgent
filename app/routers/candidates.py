@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db import get_connection
@@ -11,6 +11,8 @@ from app.services.preference_events import PreferenceEventService
 
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
+_LIST_STATUS_PATTERN = r"^(all|candidate|liked|disliked|neutral|promoted|rejected|archived)$"
+
 
 class FeedbackRequest(BaseModel):
     rating: str = Field(..., pattern=r"^(like|neutral|dislike|quality_reject|skip)$")
@@ -18,16 +20,50 @@ class FeedbackRequest(BaseModel):
 
 
 @router.get("")
-def list_candidates():
-    """List all candidate GIFs with their details."""
+def list_candidates(
+    status: str = Query("candidate", pattern=_LIST_STATUS_PATTERN),
+    limit: int = Query(24, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List candidate GIFs with server-side pagination and status filtering."""
     conn = get_connection()
-    rows = conn.execute("""
+
+    where_sql = ""
+    params: list[object] = []
+    if status != "all":
+        where_sql = "WHERE status=?"
+        params.append(status)
+
+    total = conn.execute(
+        f"SELECT COUNT(*) FROM candidate_gifs {where_sql}",
+        params,
+    ).fetchone()[0]
+
+    status_rows = conn.execute(
+        "SELECT status, COUNT(*) AS count FROM candidate_gifs GROUP BY status"
+    ).fetchall()
+    status_counts = {r["status"]: r["count"] for r in status_rows}
+
+    rows = conn.execute(
+        f"""
         SELECT candidate_id, source_run_id, source_run_candidate_id,
                start_sec, end_sec, artifact_path, preview_path,
+               COALESCE(preview_path, artifact_path) AS display_path,
                status, base_rag_similarity, final_score
-        FROM candidate_gifs ORDER BY created_at DESC
-    """).fetchall()
+        FROM candidate_gifs
+        {where_sql}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (*params, limit, offset),
+    ).fetchall()
+
     return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(rows) < total,
+        "status_counts": status_counts,
         "candidates": [
             {
                 "candidate_id": r["candidate_id"],
@@ -37,6 +73,7 @@ def list_candidates():
                 "end_sec": r["end_sec"],
                 "artifact_path": r["artifact_path"],
                 "preview_path": r["preview_path"],
+                "display_path": r["display_path"],
                 "status": r["status"],
                 "base_rag_similarity": r["base_rag_similarity"],
                 "final_score": r["final_score"],

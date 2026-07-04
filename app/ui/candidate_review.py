@@ -2,15 +2,20 @@
 Gradio UI — candidate GIF review + batch process control panel.
 """
 import json, os, subprocess, signal, sys, time
+from pathlib import Path
 
 import gradio as gr
 import httpx
 import yaml
+from PIL import Image
 
 API_BASE = "http://127.0.0.1:8000"
 PID_FILE = "data/batch_pid.txt"
 CHECKPOINT_FILE = "data/batch_checkpoint.json"
 CONFIG_FILE = "configs/models.yaml"
+PAGE_SIZE = 12
+THUMB_DIR = "data/thumbs/candidates"
+STATIC_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -124,61 +129,118 @@ def start_batch(video_dir: str, limit: int = 0):
 # Candidate review functions
 # ═══════════════════════════════════════════════════════════════════════
 
-def load_candidates():
+def _safe_float(value, default: float = 0.0) -> float:
     try:
-        resp = httpx.get(f"{API_BASE}/api/candidates", timeout=10)
-        if resp.status_code == 200:
-            return resp.json().get("candidates", [])
-        return []
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _ensure_candidate_thumbnail(candidate_id: str, artifact_path: str) -> str | None:
+    if not candidate_id or not artifact_path or not os.path.exists(artifact_path):
+        return None
+
+    thumb_path = os.path.join(THUMB_DIR, f"{candidate_id}.jpg")
+    if os.path.exists(thumb_path):
+        return thumb_path
+
+    try:
+        os.makedirs(THUMB_DIR, exist_ok=True)
+        with Image.open(artifact_path) as img:
+            img.seek(0)
+            frame = img.convert("RGB")
+            frame.thumbnail((360, 240), Image.Resampling.LANCZOS)
+            frame.save(thumb_path, "JPEG", quality=82, optimize=True)
+        return thumb_path
     except Exception:
-        return []
+        return None
 
 
-RATING_ICON = {"liked": "❤", "disliked": "✕", "neutral": "○", "candidate": "⬚"}
+def _candidate_display_path(candidate: dict) -> str:
+    preview_path = candidate.get("preview_path") or ""
+    artifact_path = candidate.get("artifact_path") or ""
+
+    for path in (preview_path, artifact_path):
+        if path and Path(path).suffix.lower() in STATIC_IMAGE_EXTS and os.path.exists(path):
+            return path
+
+    thumb_path = _ensure_candidate_thumbnail(
+        candidate.get("candidate_id", ""),
+        artifact_path,
+    )
+    return thumb_path or candidate.get("display_path") or preview_path or artifact_path
 
 
-def load_candidate_page(page: int, page_size: int = 20, filter_status: str = "all"):
-    candidates = load_candidates()
-    if filter_status != "all":
-        candidates = [c for c in candidates if c.get("status", "candidate") == filter_status]
-    total = len(candidates)
+def load_candidates(page: int, page_size: int = PAGE_SIZE, filter_status: str = "candidate"):
+    try:
+        params = {
+            "limit": page_size,
+            "offset": max(0, page) * page_size,
+            "status": filter_status or "candidate",
+        }
+        resp = httpx.get(f"{API_BASE}/api/candidates", params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("candidates", []), data
+        return [], {}
+    except Exception:
+        return [], {}
+
+
+RATING_ICON = {
+    "candidate": "todo",
+    "liked": "like",
+    "disliked": "dislike",
+    "neutral": "neutral",
+    "rejected": "reject",
+    "promoted": "promoted",
+    "archived": "archived",
+}
+
+
+def load_candidate_page(page: int, page_size: int = PAGE_SIZE, filter_status: str = "candidate"):
+    candidates, meta = load_candidates(page, page_size, filter_status)
+    total = int(meta.get("total", len(candidates)))
     total_pages = max(1, (total + page_size - 1) // page_size)
-    page = min(page, total_pages - 1)
-    start = page * page_size
-    end = min(start + page_size, total)
-    page_items = candidates[start:end]
+    page = max(0, min(page, total_pages - 1))
 
-    status_counts = {}
-    for c in candidates:
-        s = c.get("status", "candidate")
-        status_counts[s] = status_counts.get(s, 0) + 1
-    counts_str = " | ".join(f"{RATING_ICON.get(k,k)} {v}" for k, v in sorted(status_counts.items()))
+    expected_offset = page * page_size
+    if meta and meta.get("offset") != expected_offset:
+        candidates, meta = load_candidates(page, page_size, filter_status)
+
+    status_counts = meta.get("status_counts", {})
+    counts_str = " | ".join(
+        f"{RATING_ICON.get(k, k)} {v}" for k, v in sorted(status_counts.items())
+    ) or "no candidates"
 
     gallery = []
-    for c in page_items:
-        path = c.get("artifact_path", "")
-        cid = c.get("candidate_id", "")
-        status = c.get("status", "candidate")
+    page_items = []
+    for candidate in candidates:
+        path = _candidate_display_path(candidate)
+        cid = candidate.get("candidate_id", "")
+        status = candidate.get("status", "candidate")
         icon = RATING_ICON.get(status, "?")
-        start_s = c.get("start_sec", 0)
-        end_s = c.get("end_sec", 0)
+        start_s = _safe_float(candidate.get("start_sec"), 0.0)
+        end_s = _safe_float(candidate.get("end_sec"), 0.0)
         label = f"{icon} [{status}] {start_s:.0f}s-{end_s:.0f}s | {cid[:16]}"
         if path:
             gallery.append((path, label))
+        page_items.append(candidate)
 
-    info = f"Page {page+1}/{total_pages} | {counts_str} | Total: {total}"
-    return gallery, info, page
+    info = f"Page {page + 1}/{total_pages} | {counts_str} | Showing: {total}"
+    slider_update = gr.update(value=page, maximum=max(1, total_pages - 1))
+    return gallery, info, slider_update, page_items
 
 
-def select_candidate(evt: gr.SelectData, page: int, page_size: int = 20):
-    candidates = load_candidates()
-    start = page * page_size
-    idx = start + evt.index
-    if idx < len(candidates):
-        cid = candidates[idx].get("candidate_id", "")
-        src = candidates[idx].get("source_run_candidate_id", "?")
-        return cid, f"Selected: {src[:40]}"
-    return "", "Selection error"
+def select_candidate(evt: gr.SelectData, page_items: list[dict]):
+    idx = evt.index
+    if 0 <= idx < len(page_items):
+        item = page_items[idx]
+        cid = item.get("candidate_id", "")
+        src = item.get("source_run_candidate_id", "?")
+        preview = item.get("artifact_path") or item.get("display_path") or item.get("preview_path")
+        return cid, f"Selected: {src[:40]}", preview
+    return "", "Selection error", None
 
 
 def rate_candidate(candidate_id: str, rating: str, note: str = ""):
@@ -350,14 +412,20 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                     columns=4, height=600, object_fit="contain", allow_preview=True)
                 with gr.Row():
                     filter_dropdown = gr.Dropdown(
-                        choices=["all", "candidate", "liked", "disliked", "neutral"],
-                        value="all", label="Filter by status")
-                    page_slider = gr.Slider(minimum=0, maximum=50, value=0, step=1, label="Page")
+                        choices=["candidate", "all", "liked", "disliked", "neutral", "rejected"],
+                        value="candidate", label="Filter by status")
+                    page_slider = gr.Slider(minimum=0, maximum=1, value=0, step=1, label="Page")
 
             with gr.Column(scale=1):
                 gr.Markdown("## Rate")
                 selected_label = gr.Textbox(label="Selected", interactive=False)
                 candidate_id_input = gr.Textbox(label="Candidate ID", placeholder="Click GIF to select...")
+                selected_preview = gr.Image(
+                    label="Selected GIF",
+                    interactive=False,
+                    type="filepath",
+                    height=300,
+                )
                 with gr.Row():
                     like_btn = gr.Button("❤ Like", variant="primary")
                     neutral_btn = gr.Button("○ Neutral")
@@ -373,40 +441,56 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                 build_output = gr.Textbox(label="Build Result")
 
         info_text = gr.Markdown("")
+        page_items_state = gr.State([])
         status_timer = gr.Timer(10)
 
         # Review events
         def refresh_page(page, filtr):
             return load_candidate_page(int(page), filter_status=filtr)
         page_slider.change(fn=refresh_page, inputs=[page_slider, filter_dropdown],
-                           outputs=[gallery, info_text, page_slider])
+                           outputs=[gallery, info_text, page_slider, page_items_state])
         filter_dropdown.change(fn=lambda f: load_candidate_page(0, filter_status=f),
                                inputs=[filter_dropdown],
-                               outputs=[gallery, info_text, page_slider])
-        after_rate = lambda page, filtr: load_candidate_page(int(page), filter_status=filtr)
-        gallery.select(fn=select_candidate, inputs=[page_slider],
-                       outputs=[candidate_id_input, selected_label])
+                               outputs=[gallery, info_text, page_slider, page_items_state])
+        gallery.select(fn=select_candidate, inputs=[page_items_state],
+                       outputs=[candidate_id_input, selected_label, selected_preview])
 
         def rate_and_refresh(cid, rating, note, page, filtr):
             """Submit feedback then refresh gallery so status updates immediately."""
             result = rate_candidate(cid, rating, note)
-            gal, info, p = load_candidate_page(int(page), filter_status=filtr)
-            return result, gal, info, p
+            gal, info, p, page_items = load_candidate_page(int(page), filter_status=filtr)
+            return result, gal, info, p, page_items, "", "", None
 
         like_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "like", n, p, f),
                        inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
-                       outputs=[feedback_output, gallery, info_text, page_slider])
+                       outputs=[
+                           feedback_output, gallery, info_text, page_slider,
+                           page_items_state, candidate_id_input, selected_label,
+                           selected_preview,
+                       ])
         neutral_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "neutral", n, p, f),
                           inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
-                          outputs=[feedback_output, gallery, info_text, page_slider])
+                          outputs=[
+                              feedback_output, gallery, info_text, page_slider,
+                              page_items_state, candidate_id_input, selected_label,
+                              selected_preview,
+                          ])
         dislike_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "dislike", n, p, f),
                           inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
-                          outputs=[feedback_output, gallery, info_text, page_slider])
+                          outputs=[
+                              feedback_output, gallery, info_text, page_slider,
+                              page_items_state, candidate_id_input, selected_label,
+                              selected_preview,
+                          ])
         skip_btn.click(fn=lambda c, n, p, f: rate_and_refresh(c, "skip", n, p, f),
                        inputs=[candidate_id_input, note_input, page_slider, filter_dropdown],
-                       outputs=[feedback_output, gallery, info_text, page_slider])
+                       outputs=[
+                           feedback_output, gallery, info_text, page_slider,
+                           page_items_state, candidate_id_input, selected_label,
+                           selected_preview,
+                       ])
         build_btn.click(fn=build_profile, outputs=[build_output])
-        app.load(fn=lambda: load_candidate_page(0), outputs=[gallery, info_text, page_slider])
+        app.load(fn=lambda: load_candidate_page(0), outputs=[gallery, info_text, page_slider, page_items_state])
         status_timer.tick(fn=get_profile_status, outputs=[profile_status])
 
     # ── Control Panel Tab ──────────────────────────────────────────────
