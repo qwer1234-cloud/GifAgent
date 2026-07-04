@@ -100,6 +100,27 @@ def start_api_server():
     )
 
 
+def _wait_for_url(url, label, timeout=30, thread=None):
+    """Poll a URL until it returns 200 or timeout. Returns True if ready.
+
+    If `thread` is provided and dies before the URL is ready, exit immediately
+    (the backend won't come up if its thread crashed).
+    """
+    import httpx
+    for _ in range(timeout):
+        if thread is not None and not thread.is_alive():
+            print(f"ERROR: {label} thread died.", flush=True)
+            os._exit(1)
+        try:
+            if httpx.get(url, timeout=2).status_code == 200:
+                print(f"{label} ready.")
+                return True
+        except Exception:
+            time.sleep(1)
+    print(f"WARNING: {label} did not become ready in {timeout}s.")
+    return False
+
+
 def main():
     # Determine exe/project dir and chdir FIRST so all relative paths resolve correctly
     if getattr(sys, "frozen", False):
@@ -123,54 +144,59 @@ def main():
     api_thread.start()
     print("Starting FastAPI on http://127.0.0.1:8000 ...")
 
-    # Wait for API to be ready (max 30s)
-    import httpx
-    for _ in range(30):
-        try:
-            r = httpx.get("http://127.0.0.1:8000/api/status", timeout=2)
-            if r.status_code == 200:
-                print("API ready.")
-                break
-        except Exception:
-            time.sleep(1)
-    else:
-        print("WARNING: API did not become ready in 30s, UI may not work properly.")
+    # Wait for API to be ready (max 30s). Exit fast if the thread dies —
+    # uvicorn won't come up if its thread crashed (port in use, missing dep, etc.).
+    _wait_for_url(
+        "http://127.0.0.1:8000/api/status",
+        "API",
+        timeout=30,
+        thread=api_thread,
+    )
 
     # Start Gradio UI in a background thread (prevent_thread_lock=True makes
     # launch() return immediately; the server runs in Gradio's internal thread).
     from app.ui.candidate_review import app as gradio_app
-    gradio_app.launch(
-        server_name="127.0.0.1",
-        server_port=7861,
-        prevent_thread_lock=True,
-        allowed_paths=["data/exports", "data/thumbs", "data/frames"],
-    )
+    try:
+        gradio_app.launch(
+            server_name="127.0.0.1",
+            server_port=7861,
+            prevent_thread_lock=True,
+            allowed_paths=["data/exports", "data/thumbs", "data/frames"],
+        )
+    except Exception as e:
+        print(f"ERROR: Gradio failed to launch: {e}", flush=True)
+        os._exit(1)
     print("Starting Gradio on http://127.0.0.1:7861 ...")
 
-    # Wait for Gradio to be ready before opening the window (max 30s)
-    for _ in range(30):
+    # Wait for Gradio to be ready before opening the window. If it doesn't come
+    # up in 30s, exit instead of opening a window to a dead URL.
+    if not _wait_for_url("http://127.0.0.1:7861", "Gradio", timeout=30):
+        print("ERROR: Gradio did not become ready, exiting.", flush=True)
         try:
-            r = httpx.get("http://127.0.0.1:7861", timeout=2)
-            if r.status_code == 200:
-                print("Gradio ready.")
-                break
+            gradio_app.close()
         except Exception:
-            time.sleep(1)
-    else:
-        print("WARNING: Gradio did not become ready in 30s, window may show an error page.")
+            pass
+        os._exit(1)
 
     # Open a pywebview desktop window in the main thread. webview.start() blocks
     # until the user closes the window. On Windows the GUI message loop must run
     # on the main thread, so this has to be the last thing main() does.
     import webview
     webview.create_window("GifAgent", "http://127.0.0.1:7861", width=1400, height=900)
-    webview.start()
-
-    # Window closed — exit cleanly. FastAPI and Gradio run in daemon threads,
-    # so they are killed when the main process exits.
-    print("Window closed, exiting.", flush=True)
-    sys.stdout.flush()
-    os._exit(0)
+    try:
+        webview.start()
+    except Exception as e:
+        print(f"ERROR: webview failed to start: {e}", flush=True)
+    finally:
+        # Window closed (or start failed) — shut down Gradio cleanly, then exit.
+        # FastAPI runs in a daemon thread and is killed when the process exits.
+        # os._exit() avoids hanging on Gradio's non-daemon internal threads.
+        print("Window closed, shutting down servers...", flush=True)
+        try:
+            gradio_app.close()
+        except Exception:
+            pass
+        os._exit(0)
 
 
 if __name__ == "__main__":
