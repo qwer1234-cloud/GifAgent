@@ -73,6 +73,10 @@ def reencode_gif(gif_path: str, target_width: int) -> bool:
 
 
 def main():
+    # Windows console defaults to GBK — reconfigure to handle Unicode filenames
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Batch re-encode GIFs to target width")
     parser.add_argument("--dir", default="data/exports/adaptive_test",
                         help="Root directory to scan for GIFs")
