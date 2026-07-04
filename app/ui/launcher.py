@@ -10,7 +10,6 @@ import os
 import sys
 import threading
 import time
-import webbrowser
 import shutil
 
 import uvicorn
@@ -137,20 +136,41 @@ def main():
     else:
         print("WARNING: API did not become ready in 30s, UI may not work properly.")
 
-    # Open browser after a short delay (let Gradio start)
-    def _open_browser():
-        time.sleep(3)
-        webbrowser.open("http://127.0.0.1:7861")
-    threading.Thread(target=_open_browser, daemon=True).start()
-
-    # Start Gradio UI (blocks)
+    # Start Gradio UI in a background thread (prevent_thread_lock=True makes
+    # launch() return immediately; the server runs in Gradio's internal thread).
     from app.ui.candidate_review import app as gradio_app
     gradio_app.launch(
         server_name="127.0.0.1",
         server_port=7861,
-        prevent_thread_lock=False,
+        prevent_thread_lock=True,
         allowed_paths=["data/exports", "data/thumbs", "data/frames"],
     )
+    print("Starting Gradio on http://127.0.0.1:7861 ...")
+
+    # Wait for Gradio to be ready before opening the window (max 30s)
+    for _ in range(30):
+        try:
+            r = httpx.get("http://127.0.0.1:7861", timeout=2)
+            if r.status_code == 200:
+                print("Gradio ready.")
+                break
+        except Exception:
+            time.sleep(1)
+    else:
+        print("WARNING: Gradio did not become ready in 30s, window may show an error page.")
+
+    # Open a pywebview desktop window in the main thread. webview.start() blocks
+    # until the user closes the window. On Windows the GUI message loop must run
+    # on the main thread, so this has to be the last thing main() does.
+    import webview
+    webview.create_window("GifAgent", "http://127.0.0.1:7861", width=1400, height=900)
+    webview.start()
+
+    # Window closed — exit cleanly. FastAPI and Gradio run in daemon threads,
+    # so they are killed when the main process exits.
+    print("Window closed, exiting.", flush=True)
+    sys.stdout.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
