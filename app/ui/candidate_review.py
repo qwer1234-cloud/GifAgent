@@ -321,17 +321,27 @@ def load_folder_choices(root_dir: str):
 
         data = resp.json()
         folders = data.get("folders", [])
-        choices = [(_folder_label(folder), folder["folder"]) for folder in folders]
+        # Filter out folders where every candidate is already rated
+        # (status != "candidate"). Keep folders with at least one unrated.
+        reviewable = [
+            folder for folder in folders
+            if (folder.get("status_counts", {}).get("candidate", 0) > 0
+                or folder.get("unmaterialized_count", 0) > 0)
+        ]
+        fully_rated = len(folders) - len(reviewable)
+        choices = [(_folder_label(folder), folder["folder"]) for folder in reviewable]
         if not choices:
+            extra = f" ({fully_rated} folder(s) fully rated, hidden)" if fully_rated else ""
             return (
                 gr.update(choices=[], value=None),
-                f"No candidate GIFs found under {data.get('root', root_dir)}.",
+                f"No reviewable folders under {data.get('root', root_dir)}{extra}.",
                 [],
             )
+        extra = f" ({fully_rated} fully rated, hidden)" if fully_rated else ""
         return (
             gr.update(choices=choices, value=None),
-            f"Found {len(choices)} folder(s). Choose a folder to review.",
-            folders,
+            f"Found {len(choices)} reviewable folder(s){extra}. Choose a folder to review.",
+            reviewable,
         )
     except Exception as e:
         return gr.update(choices=[], value=None), f"Folder error: {e}", []
