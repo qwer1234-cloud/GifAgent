@@ -1,5 +1,5 @@
 """
-Gradio UI — candidate GIF review + batch process control panel.
+Gradio UI - candidate GIF review + batch process control panel.
 """
 import json, os, subprocess, signal, sys, time
 from pathlib import Path
@@ -40,9 +40,77 @@ def _build_gradio_allowed_paths() -> list[str]:
 GRADIO_ALLOWED_PATHS = _build_gradio_allowed_paths()
 
 
-# ═══════════════════════════════════════════════════════════════════════
+def summarize_checkpoint_status(cp: dict) -> dict:
+    run = cp.get("last_run")
+    if isinstance(run, dict):
+        return {
+            "completed": int(run.get("succeeded", 0)) + int(run.get("dedup_skipped", 0)),
+            "failed": int(run.get("failed", 0)),
+            "total": int(run.get("planned", 0)),
+            "current_video": run.get("current_video", "") or "",
+        }
+
+    completed = 0
+    for info in cp.get("completed", {}).values():
+        item_status = info.get("status") if isinstance(info, dict) else None
+        if item_status in {"ok", "dedup_skipped"}:
+            completed += 1
+    return {
+        "completed": completed,
+        "failed": 0,
+        "total": completed,
+        "current_video": "",
+    }
+
+
 # Process manager
-# ═══════════════════════════════════════════════════════════════════════
+def is_batch_command_line(command_line: str | None) -> bool:
+    if not command_line:
+        return False
+    normalized = command_line.replace("\\", "/").lower()
+    return "test_video_batch.py" in normalized
+
+
+def get_process_command_line(pid: int) -> str | None:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+
+    try:
+        if os.name == "nt":
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                creationflags=flags,
+            )
+        else:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "args="],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+    except Exception:
+        return None
+
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def is_batch_process(pid: int) -> bool:
+    return is_batch_command_line(get_process_command_line(pid))
+
 
 def get_batch_status():
     """Check current batch processing status."""
@@ -50,6 +118,7 @@ def get_batch_status():
         "running": False,
         "pid": None,
         "completed": 0,
+        "failed": 0,
         "total": 0,
         "current_video": "",
         "gpu_model": "",
@@ -60,25 +129,30 @@ def get_batch_status():
         try:
             with open(PID_FILE) as f:
                 pid = int(f.read().strip())
-            os.kill(pid, 0)  # signal 0 just checks existence
-            status["running"] = True
-            status["pid"] = pid
+            if is_batch_process(pid):
+                status["running"] = True
+                status["pid"] = pid
+            else:
+                os.remove(PID_FILE)
         except (ValueError, OSError, ProcessLookupError):
             status["running"] = False
+            try:
+                os.remove(PID_FILE)
+            except OSError:
+                pass
 
     # Check checkpoint
     if os.path.exists(CHECKPOINT_FILE):
         try:
-            with open(CHECKPOINT_FILE, encoding="utf-8") as f:
+            with open(CHECKPOINT_FILE, encoding="utf-8-sig") as f:
                 cp = json.load(f)
-            status["completed"] = len(cp.get("completed", {}))
-            status["total"] = status["completed"]  # estimate
+            status.update(summarize_checkpoint_status(cp))
         except Exception:
             pass
 
     # Check Ollama GPU
     try:
-        r = httpx.get("http://localhost:11434/api/ps", timeout=5)
+        r = httpx.get("http://127.0.0.1:11434/api/ps", timeout=5)
         models = r.json().get("models", [])
         if models:
             status["gpu_model"] = models[0].get("name", "?")
@@ -107,13 +181,11 @@ def stop_batch():
     time.sleep(2)
 
     # Verify stopped
-    try:
-        os.kill(pid, 0)
+    if is_batch_process(pid):
         return f"WARNING: Process {pid} may still be running. Try manual kill."
-    except OSError:
-        if os.path.exists(PID_FILE):
-            os.remove(PID_FILE)
-        return f"Batch stopped (PID {pid}). Checkpoint saved at {CHECKPOINT_FILE}"
+    if os.path.exists(PID_FILE):
+        os.remove(PID_FILE)
+    return f"Batch stopped (PID {pid}). Checkpoint saved at {CHECKPOINT_FILE}"
 
 
 def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
@@ -154,7 +226,7 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
         )
         with open(PID_FILE, "w") as f:
             f.write(str(proc.pid))
-        return f"Batch started (PID {proc.pid}) — dir: {video_dir}" + \
+        return f"Batch started (PID {proc.pid}) - dir: {video_dir}" + \
                (f" limit: {limit}" if limit > 0 else "") + \
                (f" ext: {extensions}" if extensions else "") + \
                f" | log: {log_path}"
@@ -163,10 +235,7 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
         return f"Failed to start: {e}"
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Candidate review functions
-# ═══════════════════════════════════════════════════════════════════════
-
 def _safe_float(value, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -406,10 +475,7 @@ def build_profile():
         return str(e)
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # Config editor
-# ═══════════════════════════════════════════════════════════════════════
-
 def load_config():
     """Load configs/models.yaml, return (llm_fields, vlm_fields, adaptive_fields, preference_field, raw_text)."""
     try:
@@ -442,6 +508,7 @@ def load_config():
         str(adaptive.get("merge_score_threshold", 0.55)),
         str(adaptive.get("worthiness_threshold", 0.2)),
         str(adaptive.get("refine_threshold", 0.5)),
+        str(adaptive.get("max_duration", 10)),
         str(adaptive.get("vlm_temperature", 0.65)),
         str(adaptive.get("output_ratio", 1.0)),
         str(adaptive.get("max_output", 0)),
@@ -457,6 +524,7 @@ def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
                 vlm_model, vlm_base_url,
                 ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
                 ad_worthiness_threshold, ad_refine_threshold,
+                ad_max_duration,
                 ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
                 pm_enabled, raw_text):
     """Save edited fields back to configs/models.yaml, preserving other sections."""
@@ -485,6 +553,7 @@ def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
     cfg["adaptive"]["merge_score_threshold"] = float(ad_merge_score_threshold)
     cfg["adaptive"]["worthiness_threshold"] = float(ad_worthiness_threshold)
     cfg["adaptive"]["refine_threshold"] = float(ad_refine_threshold)
+    cfg["adaptive"]["max_duration"] = float(ad_max_duration)
     cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
     cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
     cfg["adaptive"]["max_output"] = int(ad_max_output)
@@ -514,21 +583,18 @@ def test_llm_connection():
         from app.services.llm_client import generate_llm_text, get_llm_settings
         s = get_llm_settings()
         out = generate_llm_text("Reply OK", max_tokens=16, timeout=30)
-        return f"OK — provider={s.provider}, model={s.model}, response={out[:50]!r}"
+        return f"OK - provider={s.provider}, model={s.model}, response={out[:50]!r}"
     except Exception as e:
-        return f"FAIL — {type(e).__name__}: {e}"
+        return f"FAIL - {type(e).__name__}: {e}"
 
 
-# ═══════════════════════════════════════════════════════════════════════
 # UI
-# ═══════════════════════════════════════════════════════════════════════
-
 with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
-    gr.Markdown("# GifAgent — Preference Memory")
+    gr.Markdown("# GifAgent - Preference Memory")
 
     with gr.Tab("Review"):
         with gr.Row():
-            with gr.Column(scale=3):
+            with gr.Column(scale=1):
                 with gr.Row():
                     review_root_input = gr.Textbox(
                         label="Data Folder",
@@ -543,15 +609,15 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                     interactive=True,
                 )
                 gallery = gr.Gallery(
-                    label="Candidate GIFs — ❤ liked | ✕ disliked | ⬚ unrated — click to select",
-                    columns=4, height=600, object_fit="contain", allow_preview=True)
+                    label="Candidate GIFs - liked | disliked | unrated - click to select",
+                    columns=2, height=600, object_fit="contain", allow_preview=True)
                 with gr.Row():
                     filter_dropdown = gr.Dropdown(
                         choices=["candidate", "all", "liked", "disliked", "neutral", "rejected"],
                         value="candidate", label="Filter by status")
                     page_slider = gr.Slider(minimum=0, maximum=1, value=0, step=1, label="Page")
 
-            with gr.Column(scale=1):
+            with gr.Column(scale=3):
                 gr.Markdown("## Rate")
                 selected_label = gr.Textbox(label="Selected", interactive=False)
                 candidate_id_input = gr.Textbox(label="Candidate ID", placeholder="Click GIF to select...")
@@ -562,9 +628,9 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                     height=300,
                 )
                 with gr.Row():
-                    like_btn = gr.Button("❤ Like", variant="primary")
-                    neutral_btn = gr.Button("○ Neutral")
-                    dislike_btn = gr.Button("✕ Dislike", variant="stop")
+                    like_btn = gr.Button("Like", variant="primary")
+                    neutral_btn = gr.Button("Neutral")
+                    dislike_btn = gr.Button("Dislike", variant="stop")
                     skip_btn = gr.Button("Skip")
                 note_input = gr.Textbox(label="Note (optional)")
                 feedback_output = gr.Textbox(label="Result")
@@ -680,8 +746,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
             outputs=[gallery, info_text, page_slider, page_items_state],
         )
         status_timer.tick(fn=get_profile_status, outputs=[profile_status])
-
-    # ── Control Panel Tab ──────────────────────────────────────────────
+    # Control Panel Tab
     with gr.Tab("Control"):
         gr.Markdown("## Batch Processing Control")
 
@@ -716,6 +781,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                 f"Running: {'YES' if s['running'] else 'NO'}",
                 f"PID: {s['pid'] or 'N/A'}",
                 f"Completed: {s['completed']}",
+                f"Run Failed: {s['failed']}",
                 f"GPU Model: {s['gpu_model']}",
             ]
             return "\n".join(lines)
@@ -730,8 +796,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
         refresh_btn.click(fn=refresh_status, outputs=[status_text])
 
         app.load(fn=refresh_status, outputs=[status_text])
-
-    # ── Config Tab ───────────────────────────────────────────────────────
+    # Config Tab
     with gr.Tab("Config"):
         gr.Markdown("## Configuration Editor\nEdit values and click **Save**. Changes write to `configs/models.yaml`.")
 
@@ -763,6 +828,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                     ad_merge_score_threshold = gr.Textbox(label="merge_score_threshold", value="")
                     ad_worthiness_threshold = gr.Textbox(label="worthiness_threshold", value="")
                     ad_refine_threshold = gr.Textbox(label="refine_threshold", value="")
+                    ad_max_duration = gr.Textbox(label="max_duration (s)", value="")
                     ad_vlm_temperature = gr.Textbox(label="vlm_temperature", value="")
                     with gr.Row():
                         ad_output_ratio = gr.Textbox(label="output_ratio", value="")
@@ -788,7 +854,7 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                       vlm_model, vlm_base_url,
                       ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
                       ad_worthiness_threshold, ad_refine_threshold,
-                      ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
+                      ad_max_duration, ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
                       pm_enabled, raw_yaml]
         save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])
         reload_btn.click(fn=_reload, outputs=all_inputs + [config_status])
