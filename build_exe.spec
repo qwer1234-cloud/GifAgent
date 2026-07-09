@@ -62,6 +62,10 @@ hiddenimports += [
     "app.services.candidates",
     "app.services.reranker",
     "app.services.scenario",
+    "app.services.clip_dedup",
+    "app.services.export_cleanup",
+    "app.services.candidate_vectors",
+    "app.services.potplayer_bookmarks",
     "app.routers.candidates",
     "app.routers.preference",
 ]

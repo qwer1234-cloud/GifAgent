@@ -27,7 +27,7 @@ from app.services.preprocess import extract_gif_frames
 load_config()
 init_db()
 
-OLLAMA_BASE = get("vlm.base_url", "http://localhost:11434")
+OLLAMA_BASE = get("vlm.base_url", "http://127.0.0.1:11434")
 VLM_MODEL = get("vlm.model", "llava:13b")
 LLM_MODEL = llm_model_name()
 BATCH_SIZE = 10  # GIFs per batch (not frames)

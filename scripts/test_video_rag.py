@@ -15,7 +15,7 @@ load_config()
 init_db()
 
 VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = "http://127.0.0.1:11434"
 VLM_MODEL = "llava:13b"
 LLM_MODEL = llm_model_name()
 EXPORT_DIR = "data/exports/rag_test"

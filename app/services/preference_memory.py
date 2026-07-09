@@ -132,6 +132,19 @@ class PreferenceMemoryService:
         vectors_exist = model_row is not None
         model_ok = vectors_exist and model_row["embedding_model"] == embedding_model
         dim_ok = vectors_exist and model_row["embedding_dim"] == embedding_dim
+        effective_target_ids = sorted(set(e["target_id"] for e in effective_list))
+        candidate_vector_count = 0
+        if effective_target_ids and model_ok and dim_ok:
+            placeholders = ",".join(["?"] * len(effective_target_ids))
+            candidate_vector_count = self.conn.execute(
+                f"""SELECT COUNT(DISTINCT candidate_id)
+                    FROM candidate_vectors
+                    WHERE candidate_id IN ({placeholders})
+                      AND vector_type='clip'
+                      AND embedding_model=?
+                      AND embedding_dim=?""",
+                (*effective_target_ids, embedding_model, embedding_dim),
+            ).fetchone()[0]
 
         # ---- 4. Evaluate gates
         gate_reasons: list[str] = []
@@ -164,6 +177,11 @@ class PreferenceMemoryService:
                 gate_reasons.append(
                     f"embedding_dim mismatch: "
                     f"found={model_row['embedding_dim']} required={embedding_dim}"
+                )
+            if model_ok and dim_ok and candidate_vector_count < effective_count:
+                gate_reasons.append(
+                    f"candidate_vector_count={candidate_vector_count} "
+                    f"< effective_feedback_count={effective_count}"
                 )
 
         # ---- 5. Event watermark

@@ -24,7 +24,7 @@ from app.db import init_db, get_connection
 from app.services.json_guard import parse_json_response
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = "http://127.0.0.1:11434"
 VLM_MODEL = "llava:13b"
 LOG_FILE = "data/vlm_loop.log"
 BATCH_SIZE = 200

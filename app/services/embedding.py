@@ -15,7 +15,7 @@ import httpx
 from app.db import get_connection
 from app.config import get
 
-EMBED_BASE = get("embedding.base_url", "http://localhost:11434")
+EMBED_BASE = get("embedding.base_url", "http://127.0.0.1:11434")
 EMBED_TEXT_MODEL = get("embedding.text_model")
 EMBED_IMAGE_MODEL = get("embedding.image_model")
 

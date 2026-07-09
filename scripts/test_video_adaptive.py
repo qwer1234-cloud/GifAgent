@@ -18,9 +18,12 @@ sys.path.insert(0, '.')
 from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
+from app.services.clip_dedup import temporal_dedup_clips
+from app.services.export_cleanup import cleanup_adaptive_export_dir
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
+from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
 
 load_config()
@@ -37,7 +40,7 @@ if args_cli.video:
 else:
     VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = "http://127.0.0.1:11434"
 VLM_MODEL = "llava:13b"
 LLM_MODEL = llm_model_name()
 
@@ -60,17 +63,21 @@ SAMPLE_INTERVAL = int(_adaptive.get("sample_interval", 10))
 REFINE_INTERVAL = int(_adaptive.get("refine_interval", 10))
 REFINE_RADIUS = int(_adaptive.get("refine_radius", 20))
 REFINE_THRESHOLD = float(_adaptive.get("refine_threshold", 0.5))
-MAX_DURATION = 5.0
+MAX_DURATION = float(_adaptive.get("max_duration", 10))
 MIN_DURATION = 1.5
 WORTHINESS_THRESHOLD = float(_adaptive.get("worthiness_threshold", 0.2))
 MERGE_GAP = int(_adaptive.get("merge_gap", 12))
 MERGE_SCORE_THRESHOLD = float(_adaptive.get("merge_score_threshold", 0.55))
 EMBED_SIM_THRESHOLD = float(_adaptive.get("embedding_dedup_threshold", 0.94))
 EMBED_DEDUP_ENABLED = bool(_adaptive.get("embedding_dedup_enabled", True))
+TEMPORAL_DEDUP_ENABLED = bool(_adaptive.get("temporal_dedup_enabled", True))
+TEMPORAL_DEDUP_MIN_GAP_S = float(_adaptive.get("temporal_dedup_min_gap_s", 12))
 OUTPUT_RATIO = float(_adaptive.get("output_ratio", 1.0))
 MAX_OUTPUT = int(_adaptive.get("max_output", 0))
 GIF_FPS = int(_adaptive.get("gif_fps", 24))
 GIF_MAX_WIDTH = int(_adaptive.get("gif_max_width", 720))
+CLEAR_OUTPUT_DIR = bool(_adaptive.get("clear_output_dir", True))
+POTPLAYER_PBF_ENABLED = bool(_adaptive.get("potplayer_pbf_enabled", True))
 
 VLM_OPTIONS = {
     "temperature": float(_adaptive.get("vlm_temperature", 0.65)),
@@ -82,6 +89,11 @@ VLM_OPTIONS = {
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
 print("=" * 60)
+
+if CLEAR_OUTPUT_DIR:
+    removed_outputs = cleanup_adaptive_export_dir(EXPORT_DIR, video_name=video_name)
+    if removed_outputs:
+        print(f"Cleaned previous export artifacts: {removed_outputs}")
 
 # ── Helpers ───────────────────────────────────────────────────────────
 
@@ -450,6 +462,20 @@ else:
     dedup_input_clips = len(clips)
     print(f"\n[2.7/4] Dedup disabled — {len(deduped_clips)} clips passed through")
 
+embedding_deduped_clips = len(deduped_clips)
+if TEMPORAL_DEDUP_ENABLED and len(deduped_clips) > 1:
+    before_temporal = len(deduped_clips)
+    deduped_clips = temporal_dedup_clips(
+        deduped_clips,
+        min_gap_s=TEMPORAL_DEDUP_MIN_GAP_S,
+    )
+    print(
+        f"  Temporal dedup: {before_temporal} → {len(deduped_clips)} clips "
+        f"(min_gap={TEMPORAL_DEDUP_MIN_GAP_S:.1f}s)"
+    )
+elif not TEMPORAL_DEDUP_ENABLED:
+    print(f"  Temporal dedup disabled — {len(deduped_clips)} clips passed through")
+
 # ── Phase 3: RAG + LLM synthesis (non-fatal — skip if LLM unavailable) ──
 print(f"\n[3/4] RAG + LLM synthesis...")
 
@@ -616,6 +642,9 @@ if get("preference_memory.enabled", False):
                 pass  # reranking is best-effort, not critical path
 
 
+exported_bookmarks = []
+potplayer_pbf_path = None
+
 for i, clip in enumerate(ranked_clips):
     worth = clip["gif_worthiness"]
     r = clip["best_frame"]
@@ -658,8 +687,25 @@ for i, clip in enumerate(ranked_clips):
     if os.path.exists(out_gif):
         sz = os.path.getsize(out_gif)
         merged = "merged" if clip["frame_count"] > 1 else "single"
+        exported_bookmarks.append(
+            PotPlayerBookmark(
+                start_s=start,
+                end_s=start + duration,
+                rank=i + 1,
+                score=worth,
+                merged=clip["frame_count"] > 1,
+                caption=r.get("caption") or r.get("reason") or r.get("emotional_core") or "",
+            )
+        )
         print(f"  #{i+1:2d} w={worth:.2f} dur={duration:.1f}s [{merged}:{clip['frame_count']}fr] "
               f"{sz//1024:4d}KB t={int(ts)}s {r.get('emotional_core','?')}")
+
+if POTPLAYER_PBF_ENABLED and exported_bookmarks:
+    potplayer_pbf_path = write_pbf_file(
+        os.path.join(EXPORT_DIR, f"{video_name}.pbf"),
+        exported_bookmarks,
+    )
+    print(f"  PotPlayer bookmarks: {potplayer_pbf_path}")
 
 # ── Save results ──────────────────────────────────────────────────────
 output = {
@@ -677,9 +723,14 @@ output = {
     "max_output": MAX_OUTPUT,
     "embed_dedup_threshold": EMBED_SIM_THRESHOLD,
     "embed_dedup_enabled": EMBED_DEDUP_ENABLED,
+    "temporal_dedup_enabled": TEMPORAL_DEDUP_ENABLED,
+    "temporal_dedup_min_gap_s": TEMPORAL_DEDUP_MIN_GAP_S,
+    "potplayer_pbf_enabled": POTPLAYER_PBF_ENABLED,
+    "potplayer_pbf_path": potplayer_pbf_path,
     "dedup_input_clips": dedup_input_clips,
+    "embedding_deduped_clips": embedding_deduped_clips,
     "deduped_clips": len(deduped_clips),
-    "clusters_after_dedup": len(clusters),
+    "clusters_after_dedup": len(deduped_clips),
     "duplicate_groups": duplicate_groups,
     "output_count": output_count,
     "multi_frame_clips": sum(1 for c in clips if c["frame_count"] > 1),
@@ -714,7 +765,10 @@ print(f"  Sampling: every {SAMPLE_INTERVAL}s, refine {REFINE_RADIUS}s radius @ {
 print(f"  Pass 1: {len(sample_frames)} coarse frames scored")
 print(f"  Pass 2: {len(refine_ts)} refinement frames around {len(high_ts)} high-score regions")
 print(f"  Clips: {len(clips)} total ({multi_frame} merged, merge_gap={MERGE_GAP}s)")
-print(f"  Plan D dedup: {len(clips)} → {len(deduped_clips)} clips ({len(clusters)} clusters)")
+print(
+    f"  Dedup: {len(clips)} → {embedding_deduped_clips} embedding "
+    f"→ {len(deduped_clips)} temporal"
+)
 print(f"  Output: {output_count} GIFs @ max {GIF_MAX_WIDTH}px (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
 print(f"  Duration: {min(durations):.1f}s - {max(durations):.1f}s")
 print(f"  Worthiness: {min(c['gif_worthiness'] for c in ranked_clips):.2f} - {max(c['gif_worthiness'] for c in ranked_clips):.2f}")

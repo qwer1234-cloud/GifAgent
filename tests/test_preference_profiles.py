@@ -131,6 +131,22 @@ def test_profile_build_blocks_when_vectors_are_missing(seeded_db):
     assert any("no_vectors_found" in r for r in reasons)
 
 
+def test_profile_build_blocks_when_effective_vectors_are_incomplete(seeded_db_with_vectors):
+    from app.services.preference_memory import PreferenceMemoryService
+
+    seeded_db_with_vectors.execute(
+        "DELETE FROM candidate_vectors WHERE candidate_id=?",
+        ("cand-like-0",),
+    )
+    seeded_db_with_vectors.commit()
+
+    memory = PreferenceMemoryService(seeded_db_with_vectors)
+    result = memory.build_profile(dry_run=False)
+
+    assert result["status"] == "blocked"
+    assert any("candidate_vector_count=39 < effective_feedback_count=40" in r for r in result["gate_reasons"])
+
+
 def test_profile_build_completes_with_sufficient_data(seeded_db_with_vectors):
     from app.services.preference_memory import PreferenceMemoryService
 

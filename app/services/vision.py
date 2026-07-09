@@ -1,4 +1,4 @@
-"""VLM Vision Service — analyze individual frames using the VLM model."""
+"""VLM Vision Service -analyze individual frames using the VLM model."""
 import base64
 import json
 import re
@@ -12,7 +12,7 @@ from app.services.json_guard import parse_json_response
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
 from app.config import get
 
-VLM_BASE = get("vlm.base_url", "http://localhost:11434")
+VLM_BASE = get("vlm.base_url", "http://127.0.0.1:11434")
 VLM_MODEL = get("vlm.model", "llava:13b")
 
 FRAME_PROMPT = """You are analyzing a single frame from a movie or TV show. Focus on CINEMATIC and AESTHETIC qualities.

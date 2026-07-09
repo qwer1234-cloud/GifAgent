@@ -20,7 +20,7 @@ load_config()
 init_db()
 
 VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
-OLLAMA_BASE = get("vlm.base_url", "http://localhost:11434")
+OLLAMA_BASE = get("vlm.base_url", "http://127.0.0.1:11434")
 VLM_MODEL = get("vlm.model", "llava:13b")
 LLM_MODEL = llm_model_name()
 FRAMES_DIR = "data/frames/rag_v2_test"

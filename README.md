@@ -237,6 +237,29 @@ uv run python app/ui/candidate_review.py
   `uv run pyinstaller --noconfirm build_exe.spec`.
   Output: `dist/GifAgentUI/GifAgentUI.exe`.
 
+### Adaptive duplicate reduction tuning (2026-07-05)
+
+- Adaptive export now clears generated artifacts in the target video output
+  folder before reprocessing, preventing stale GIFs from earlier runs from
+  mixing with the new run.
+- The default adaptive config is stricter: `worthiness_threshold=0.50`,
+  `refine_threshold=0.65`, `output_ratio=0.45`, `max_output=40`.
+- Embedding dedup is enabled at `embedding_dedup_threshold=0.90`, then a
+  temporal dedup pass keeps only the highest-scored clip within a 12s peak-time
+  window.
+- Result JSON records both `embedding_deduped_clips` and final `deduped_clips`
+  so each run shows how much was removed.
+
+### PotPlayer bookmark export (2026-07-08)
+
+- Adaptive GIF export now writes `{video_name}.pbf` beside the generated GIFs
+  when `adaptive.potplayer_pbf_enabled=true`.
+- The `.pbf` file contains one bookmark per successfully exported GIF, using
+  the same screenshot interval used for GIF generation. Bookmark titles include
+  rank, interval, score, merge type, and caption summary.
+- Reprocessing the same video clears the previous generated `.pbf` together
+  with old GIFs and palette files.
+
 ---
 
 ## API 参考
@@ -514,9 +537,25 @@ uv run python scripts/preference_memory.py status --json
 # 构建偏好画像
 uv run python scripts/preference_memory.py build
 
+# Backfill candidate vectors required by profile builds.
+# Default scope is effective like/dislike feedback targets.
+uv run python scripts/backfill_candidate_vectors.py --db dist/GifAgentUI/data/library.db
+
 # 发布画像
 uv run python scripts/preference_memory.py publish --profile-version <version>
 ```
+
+GUI 发布入口：Candidate Review 页面的 `Profile` 区域中，先点击
+`Refresh Profiles`，选择已完成构建的 profile version，再点击
+`Publish Selected Profile`。发布后会写入 `preference_profile_current`，
+后续重排序只使用已发布版本。
+
+发布接口会为每次请求使用独立数据库连接，并设置 30s SQLite
+`busy_timeout`。如果 GUI 或后台任务正在占用数据库，接口会返回可重试的
+503，而不是把锁表冒泡成 500。
+
+构建画像前需要确保所有有效 like/dislike 反馈目标都有对应
+`candidate_vectors`；如果向量覆盖不完整，Build Profile 会被门禁拦截。
 
 ### Holdout 评估
 

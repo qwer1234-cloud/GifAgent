@@ -10,7 +10,7 @@ from app.services.llm_client import generate_llm_text, llm_model_name
 
 # === Config ===
 VIDEO_PATH = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = "http://127.0.0.1:11434"
 VLM_MODEL = "llava:13b"
 LLM_MODEL = llm_model_name()
 FRAMES_DIR = "data/frames/test_jur639"

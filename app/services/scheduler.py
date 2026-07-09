@@ -1,4 +1,4 @@
-"""Model Scheduler — manage ollama model lifecycle for VLM <-> text model swaps."""
+"""Model Scheduler -manage ollama model lifecycle for VLM <-> text model swaps."""
 import time
 import subprocess
 from typing import Optional, List, Dict, Any, Callable
@@ -15,7 +15,7 @@ class ModelScheduler:
     def __init__(self):
         self.vlm_model = get("vlm.model", "llava:13b")
         self.llm_model = get("llm.model")
-        self.base_url = get("vlm.base_url", "http://localhost:11434")
+        self.base_url = get("vlm.base_url", "http://127.0.0.1:11434")
         self.switch_wait = get("scheduler.model_switch_wait", 10)
         self.max_retries = get("scheduler.max_retries", 3)
 

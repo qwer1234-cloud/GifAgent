@@ -22,18 +22,31 @@ Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/video
 
 ```python
 SAMPLE_INTERVAL = 10          # coarse sampling every N seconds
-MERGE_GAP = 12                # max gap to merge adjacent frames
-MERGE_SCORE_THRESHOLD = 0.55  # only merge when BOTH frames >= this
-WORTHINESS_THRESHOLD = 0.2    # min score to keep a frame
-REFINE_THRESHOLD = 0.5        # min score to trigger refinement sampling
-REFINE_RADIUS = 20            # ±seconds around high-score frame
+MERGE_GAP = 15                # max gap to merge adjacent frames
+MERGE_SCORE_THRESHOLD = 0.50  # only merge when BOTH frames >= this
+WORTHINESS_THRESHOLD = 0.50   # min score to keep a frame
+REFINE_THRESHOLD = 0.65       # min score to trigger refinement sampling
+REFINE_RADIUS = 10            # seconds around high-score frame
 REFINE_INTERVAL = 10          # fine sampling interval
-OUTPUT_RATIO = 1.0            # fraction of clips to export (1.0 = all)
-MAX_OUTPUT = 0                # 0 = no cap
-VLM_OPTIONS = {"temperature": 0.65, "top_p": 0.95, "top_k": 60}
+OUTPUT_RATIO = 0.45           # fraction of deduped clips to export
+MAX_OUTPUT = 40               # hard cap per video
+EMBED_SIM_THRESHOLD = 0.90    # text embedding duplicate threshold
+TEMPORAL_DEDUP_MIN_GAP_S = 12 # keep highest score within peak-time window
+POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
+VLM_OPTIONS = {"temperature": 0.50, "top_p": 0.90, "top_k": 40}
 ```
 
 **Score-gated merge logic**: adjacent frames merge only when `gap <= MERGE_GAP` AND both frames' `gif_worthiness >= MERGE_SCORE_THRESHOLD`. This produces a mix of long multi-frame GIFs (sustained good moments) + short single-frame GIFs (isolated moments).
+
+**Duplicate reduction**: each adaptive run clears the target video output
+folder before exporting new GIFs, then applies text-embedding dedup followed by
+temporal dedup. The result JSON records `embedding_deduped_clips` and final
+`deduped_clips`.
+
+**PotPlayer bookmarks**: adaptive export writes `{video_name}.pbf` in the same
+export folder when `potplayer_pbf_enabled=true`. Each successful GIF contributes
+one bookmark at the GIF start time, with the title carrying rank, interval,
+score, merge type, and caption summary.
 
 ## How to Run
 
@@ -53,7 +66,9 @@ uv run python scripts/test_video_adaptive.py --video <path>
 uv run python scripts/test_video_batch.py --dir "<video_dir>" --extensions ".ts,.mp4,.mkv"
 ```
 
-Output structure: `data/exports/adaptive_test/{input_folder_name}/{video_name}@@@{seq}_{start}s-{end}s.gif`
+Output structure: `data/exports/adaptive_test/{input_folder_name}/{video_name}/`
+contains GIFs named `{video_name}@@@{seq}_{start}s-{end}s.gif` and a
+PotPlayer bookmark file named `{video_name}.pbf`.
 
 ### Packaged GUI
 
@@ -121,6 +136,28 @@ configs/
 6 tables: `candidate_gifs`, `candidate_vectors`, `preference_events`, `preference_profile_builds`, `preference_profiles`, `preference_profile_current`
 
 Flow: candidate materialize → human feedback (like/dislike/neutral/skip) → profile build (7 gates) → holdout evaluation → explicit publish → reranker (behind `preference_memory.enabled` flag, default false)
+
+Candidate vectors are required before profile builds can pass. Backfill existing
+reviewed candidates with:
+
+```bash
+uv run python scripts/backfill_candidate_vectors.py --db dist/GifAgentUI/data/library.db
+```
+
+By default the script embeds only candidates with effective like/dislike
+feedback. Use `--all-candidates` to fill every `candidate_gifs` row and
+`--dry-run` to count missing vectors without calling Ollama.
+
+Profile publishing is available in the Candidate Review Profile panel. Click
+`Refresh Profiles`, choose a completed profile version, then click
+`Publish Selected Profile`. The panel calls
+`POST /api/preference/profiles/{version}/publish` and updates
+`preference_profile_current`; reranking uses only this published version.
+Preference API endpoints use short-lived SQLite connections with a 30s
+`busy_timeout`; publish lock contention is surfaced as retryable 503 instead of
+an internal 500.
+Profile builds require matching `candidate_vectors` for every effective
+like/dislike feedback target; partial vector coverage blocks the build.
 
 ### Candidate Review UI (2026-07-04)
 

@@ -14,7 +14,7 @@ from app.db import init_db, get_connection
 init_db()
 conn = get_connection()
 
-OLLAMA_BASE = "http://localhost:11434"
+OLLAMA_BASE = "http://127.0.0.1:11434"
 VLM_MODEL = "llava:13b"
 
 FRAME_PROMPT = (

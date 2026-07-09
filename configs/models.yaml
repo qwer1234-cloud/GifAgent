@@ -8,7 +8,7 @@ media:
 vlm:
   provider: "ollama"
   model: "llava:13b"
-  base_url: "http://localhost:11434"
+  base_url: "http://127.0.0.1:11434"
   batch_size: 50
   max_batch_size: 100
 
@@ -27,7 +27,7 @@ embedding:
   provider: "ollama"
   image_model: "llava:13b"
   text_model: "nomic-embed-text:latest"
-  base_url: "http://localhost:11434"
+  base_url: "http://127.0.0.1:11434"
 
 scheduler:
   model_switch_wait: 10
@@ -49,21 +49,26 @@ preference_memory:
 
 adaptive:
   sample_interval: 10
-  merge_gap: 12
-  merge_score_threshold: 0.55
-  worthiness_threshold: 0.2
-  refine_threshold: 0.5
-  refine_radius: 20
+  merge_gap: 15
+  merge_score_threshold: 0.50
+  worthiness_threshold: 0.50
+  refine_threshold: 0.65
+  refine_radius: 10
   refine_interval: 10
-  output_ratio: 1.0
-  max_output: 0
-  vlm_temperature: 0.65
-  vlm_top_p: 0.95
-  vlm_top_k: 60
+  max_duration: 10
+  output_ratio: 0.45
+  max_output: 40
+  vlm_temperature: 0.50
+  vlm_top_p: 0.90
+  vlm_top_k: 40
   gif_fps: 24
   gif_max_width: 720
+  clear_output_dir: true
+  potplayer_pbf_enabled: true
   embedding_dedup_enabled: true
-  embedding_dedup_threshold: 0.94
+  embedding_dedup_threshold: 0.90
+  temporal_dedup_enabled: true
+  temporal_dedup_min_gap_s: 12
 
 database:
   path: "data/library.db"

@@ -139,7 +139,9 @@ def _run_script_mode():
 
     # Set CWD to exe dir so relative paths (configs/, data/) resolve
     if getattr(sys, "frozen", False):
-        os.chdir(os.path.dirname(sys.executable))
+        exe_dir = os.path.dirname(sys.executable)
+        os.chdir(exe_dir)
+        _setup_runtime_files(exe_dir)
 
     import runpy
     runpy.run_path(script_path, run_name="__main__")

@@ -46,7 +46,7 @@ def get_llm_settings() -> LLMSettings:
         )
         api_key_env = str(get("llm.api_key_env", "OPENAI_API_KEY"))
     else:
-        base_url = str(get("llm.base_url", "http://localhost:11434"))
+        base_url = str(get("llm.base_url", "http://127.0.0.1:11434"))
         api_key_env = str(get("llm.api_key_env", ""))
 
     return LLMSettings(

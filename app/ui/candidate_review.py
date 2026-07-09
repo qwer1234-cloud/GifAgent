@@ -477,12 +477,65 @@ def get_profile_status():
     return "API unavailable"
 
 
+def profile_publish_choices(payload: dict) -> tuple[list[str], str | None]:
+    profiles = payload.get("profiles", []) or []
+    choices = [
+        profile["profile_version"]
+        for profile in profiles
+        if profile.get("status") in {"completed", "built"}
+    ]
+    return choices, (choices[0] if choices else None)
+
+
+def load_profile_publish_choices():
+    try:
+        resp = httpx.get(f"{API_BASE}/api/preference/profiles", timeout=10)
+        if resp.status_code != 200:
+            return gr.update(choices=[], value=None), f"Error: {resp.status_code} - {_format_api_error(resp)}"
+        choices, value = profile_publish_choices(resp.json())
+        status = get_profile_status()
+        return gr.update(choices=choices, value=value), status
+    except Exception as e:
+        return gr.update(choices=[], value=None), f"API unavailable: {e}"
+
+
 def build_profile():
     try:
-        resp = httpx.post(f"{API_BASE}/api/preference/profiles/build", timeout=30)
+        resp = httpx.post(
+            f"{API_BASE}/api/preference/profiles/build",
+            json={"dry_run": False},
+            timeout=30,
+        )
         return json.dumps(resp.json(), indent=2)
     except Exception as e:
         return str(e)
+
+
+def build_profile_and_refresh():
+    result = build_profile()
+    dropdown, status = load_profile_publish_choices()
+    return result, dropdown, status
+
+
+def publish_profile_version(profile_version: str | None):
+    if not profile_version:
+        return "Select a completed profile_version first."
+    try:
+        resp = httpx.post(
+            f"{API_BASE}/api/preference/profiles/{profile_version}/publish",
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            return json.dumps(resp.json(), indent=2)
+        return f"Error: {resp.status_code} - {_format_api_error(resp)}"
+    except Exception as e:
+        return str(e)
+
+
+def publish_profile_and_refresh(profile_version: str | None):
+    result = publish_profile_version(profile_version)
+    dropdown, status = load_profile_publish_choices()
+    return result, dropdown, status
 
 
 # Config editor
@@ -648,8 +701,18 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                 gr.Markdown("---")
                 gr.Markdown("## Profile")
                 profile_status = gr.Textbox(label="Status", value="Loading...")
-                build_btn = gr.Button("Build Profile")
+                with gr.Row():
+                    build_btn = gr.Button("Build Profile", variant="primary")
+                    refresh_profiles_btn = gr.Button("Refresh Profiles")
+                publish_profile_dropdown = gr.Dropdown(
+                    choices=[],
+                    value=None,
+                    label="Profile Version to Publish",
+                    interactive=True,
+                )
+                publish_btn = gr.Button("Publish Selected Profile")
                 build_output = gr.Textbox(label="Build Result")
+                publish_output = gr.Textbox(label="Publish Result")
 
         info_text = gr.Markdown("")
         page_items_state = gr.State([])
@@ -750,10 +813,26 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
                            page_items_state, candidate_id_input, selected_label,
                            selected_preview, selected_artifact_path_state,
                        ])
-        build_btn.click(fn=build_profile, outputs=[build_output])
+        build_btn.click(
+            fn=build_profile_and_refresh,
+            outputs=[build_output, publish_profile_dropdown, profile_status],
+        )
+        refresh_profiles_btn.click(
+            fn=load_profile_publish_choices,
+            outputs=[publish_profile_dropdown, profile_status],
+        )
+        publish_btn.click(
+            fn=publish_profile_and_refresh,
+            inputs=[publish_profile_dropdown],
+            outputs=[publish_output, publish_profile_dropdown, profile_status],
+        )
         app.load(
             fn=lambda: ([], "Choose a data folder to review.", gr.update(value=0, maximum=1), []),
             outputs=[gallery, info_text, page_slider, page_items_state],
+        )
+        app.load(
+            fn=load_profile_publish_choices,
+            outputs=[publish_profile_dropdown, profile_status],
         )
         status_timer.tick(fn=get_profile_status, outputs=[profile_status])
     # Control Panel Tab
