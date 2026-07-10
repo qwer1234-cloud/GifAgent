@@ -642,6 +642,14 @@ CONFIG_TOOLTIP_CSS = """
 .config-tooltip-icon:focus .config-tooltip-text {
     display: block;
 }
+.config-checkbox-row {
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.45rem;
+}
+.config-checkbox-row > * {
+    flex-grow: 0;
+}
 """
 
 
@@ -649,22 +657,30 @@ def config_field_name(key: str) -> str:
     return CONFIG_FIELD_LABELS.get(key, key.rsplit(".", 1)[-1])
 
 
+def config_tooltip_icon(key: str) -> str:
+    """Render the shared accessible hover tooltip icon."""
+    help_text = html.escape(CONFIG_FIELD_HELP[key])
+    return (
+        f'<span class="config-tooltip-icon" tabindex="0" aria-label="{help_text}">?'
+        f'<span class="config-tooltip-text" role="tooltip">{help_text}</span>'
+        "</span>"
+    )
+
+
 def config_field_label(key: str) -> str:
     """Render a non-persistent label with an accessible hover tooltip icon."""
     name = html.escape(config_field_name(key))
-    help_text = html.escape(CONFIG_FIELD_HELP[key])
-    return (
-        '<div class="config-field-label">'
-        f'<span>{name}</span>'
-        f'<span class="config-tooltip-icon" tabindex="0" aria-label="{help_text}">?'
-        f'<span class="config-tooltip-text" role="tooltip">{help_text}</span>'
-        "</span></div>"
-    )
+    return f'<div class="config-field-label"><span>{name}</span>{config_tooltip_icon(key)}</div>'
 
 
 def config_field_kwargs(key: str) -> dict[str, str | bool]:
     """Hide Gradio's persistent help text in favor of the HTML tooltip icon."""
     return {"label": config_field_name(key), "show_label": False}
+
+
+def config_checkbox_kwargs(key: str) -> dict[str, str | bool]:
+    """Keep a Checkbox's native, clickable label visible beside the tooltip."""
+    return {"label": config_field_name(key), "container": False}
 
 
 def config_textbox(key: str, **kwargs):
@@ -673,9 +689,21 @@ def config_textbox(key: str, **kwargs):
 
 
 def config_checkbox(key: str, **kwargs):
-    gr.HTML(config_field_label(key), sanitize_html=False)
-    checkbox_kwargs = {**config_field_kwargs(key), **kwargs, "label": ""}
-    return gr.Checkbox(**checkbox_kwargs)
+    with gr.Row(equal_height=True, elem_classes="config-checkbox-row"):
+        checkbox_kwargs = {
+            **config_checkbox_kwargs(key),
+            **kwargs,
+            "scale": 0,
+            "min_width": 0,
+        }
+        checkbox = gr.Checkbox(**checkbox_kwargs)
+        gr.HTML(
+            config_tooltip_icon(key),
+            sanitize_html=False,
+            scale=0,
+            min_width=0,
+        )
+    return checkbox
 
 
 def launch_kwargs() -> dict:
