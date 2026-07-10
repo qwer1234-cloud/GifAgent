@@ -9,6 +9,10 @@ import httpx
 import yaml
 from PIL import Image
 
+from app.db import get_connection
+from app.services.candidate_vectors import backfill_candidate_vectors
+from app.services.embedding import compute_text_embedding
+
 API_BASE = "http://127.0.0.1:8000"
 PID_FILE = "data/batch_pid.txt"
 CHECKPOINT_FILE = "data/batch_checkpoint.json"
@@ -538,6 +542,24 @@ def publish_profile_and_refresh(profile_version: str | None):
     return result, dropdown, status
 
 
+def backfill_profile_vectors():
+    """Create missing vectors only for candidates with effective feedback."""
+    conn = None
+    try:
+        conn = get_connection()
+        result = backfill_candidate_vectors(
+            conn,
+            embed_fn=compute_text_embedding,
+            only_feedback=True,
+        )
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": f"{type(e).__name__}: {e}"}, indent=2)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 # Config editor
 CONFIG_FIELD_KEYS = (
     "llm.provider",
@@ -859,6 +881,7 @@ with gr.Blocks(title="GifAgent") as app:
                 profile_status = gr.Textbox(label="Status", value="Loading...")
                 with gr.Row():
                     build_btn = gr.Button("Build Profile", variant="primary")
+                    backfill_vectors_btn = gr.Button("Backfill Missing Vectors")
                     refresh_profiles_btn = gr.Button("Refresh Profiles")
                 publish_profile_dropdown = gr.Dropdown(
                     choices=[],
@@ -868,6 +891,7 @@ with gr.Blocks(title="GifAgent") as app:
                 )
                 publish_btn = gr.Button("Publish Selected Profile")
                 build_output = gr.Textbox(label="Build Result")
+                backfill_vectors_output = gr.Textbox(label="Vector Backfill", interactive=False)
                 publish_output = gr.Textbox(label="Publish Result")
 
         info_text = gr.Markdown("")
@@ -972,6 +996,13 @@ with gr.Blocks(title="GifAgent") as app:
         build_btn.click(
             fn=build_profile_and_refresh,
             outputs=[build_output, publish_profile_dropdown, profile_status],
+        )
+        backfill_vectors_btn.click(
+            fn=backfill_profile_vectors,
+            outputs=[backfill_vectors_output],
+        ).then(
+            fn=load_profile_publish_choices,
+            outputs=[publish_profile_dropdown, profile_status],
         )
         refresh_profiles_btn.click(
             fn=load_profile_publish_choices,

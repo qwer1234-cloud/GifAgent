@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import json
 
 
 def test_profile_publish_choices_prefers_latest_completed_profile():
@@ -49,3 +50,30 @@ def test_publish_profile_version_requires_selection():
     from app.ui.candidate_review import publish_profile_version
 
     assert publish_profile_version("") == "Select a completed profile_version first."
+
+
+def test_backfill_profile_vectors_only_embeds_feedback_targets(monkeypatch):
+    from app.ui import candidate_review
+
+    class FakeConnection:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    conn = FakeConnection()
+    calls = []
+
+    def fake_backfill(connection, *, embed_fn, only_feedback):
+        calls.append((connection, embed_fn, only_feedback))
+        return {"scanned": 12, "missing": 5, "inserted": 5, "failed": 0}
+
+    monkeypatch.setattr(candidate_review, "get_connection", lambda: conn)
+    monkeypatch.setattr(candidate_review, "backfill_candidate_vectors", fake_backfill)
+    monkeypatch.setattr(candidate_review, "compute_text_embedding", lambda text: [0.0] * 768)
+
+    result = json.loads(candidate_review.backfill_profile_vectors())
+
+    assert result["inserted"] == 5
+    assert calls == [(conn, candidate_review.compute_text_embedding, True)]
+    assert conn.closed is True
