@@ -539,6 +539,59 @@ def publish_profile_and_refresh(profile_version: str | None):
 
 
 # Config editor
+CONFIG_FIELD_KEYS = (
+    "llm.provider",
+    "llm.model",
+    "llm.api_key_env",
+    "llm.base_url",
+    "llm.temperature",
+    "llm.max_tokens",
+    "llm.timeout_s",
+    "vlm.model",
+    "vlm.base_url",
+    "adaptive.sample_interval",
+    "adaptive.merge_gap",
+    "adaptive.merge_score_threshold",
+    "adaptive.worthiness_threshold",
+    "adaptive.refine_threshold",
+    "adaptive.max_duration",
+    "adaptive.vlm_temperature",
+    "adaptive.output_ratio",
+    "adaptive.max_output",
+    "adaptive.gif_fps",
+    "preference_memory.enabled",
+)
+
+CONFIG_FIELD_HELP = {
+    "llm.provider": "文本合成使用的模型服务类型，例如 openai_compatible。",
+    "llm.model": "用于生成摘要、标签和描述的语言模型名称。",
+    "llm.api_key_env": "从环境变量读取云端模型 API Key 的变量名。",
+    "llm.base_url": "语言模型兼容 API 的服务地址。",
+    "llm.temperature": "文本生成随机性；数值越高越有变化，越低越稳定。",
+    "llm.max_tokens": "单次文本生成允许输出的最大 token 数。",
+    "llm.timeout_s": "等待语言模型响应的最长时间，单位为秒。",
+    "vlm.model": "用于分析视频帧和评分的视觉语言模型名称。",
+    "vlm.base_url": "视觉语言模型服务的访问地址。",
+    "adaptive.sample_interval": "粗采样相邻帧的时间间隔，单位为秒；越小越密集。",
+    "adaptive.merge_gap": "相邻高分帧允许合并的最大时间间隔，单位为秒。",
+    "adaptive.merge_score_threshold": "只有两帧评分都达到此值时才允许合并。",
+    "adaptive.worthiness_threshold": "帧被认为值得导出为 GIF 的最低评分。",
+    "adaptive.refine_threshold": "达到此评分的帧会触发周边时间段的细采样。",
+    "adaptive.max_duration": "单个导出 GIF 的最长时长，单位为秒。",
+    "adaptive.vlm_temperature": "视觉模型评分时的随机性；较低值通常更稳定。",
+    "adaptive.output_ratio": "从去重后的候选片段中导出的比例，范围通常为 0 到 1。",
+    "adaptive.max_output": "每个视频最多导出的 GIF 数量；填写 0 表示不设上限。",
+    "adaptive.gif_fps": "导出 GIF 的播放帧率，单位为每秒帧数。",
+    "preference_memory.enabled": "是否启用基于用户反馈构建偏好画像并参与后续排序。",
+}
+
+
+def config_field_kwargs(key: str) -> dict[str, str]:
+    """Return a consistent label and Chinese help tooltip for a Config field."""
+    label = key.rsplit(".", 1)[-1]
+    return {"label": f"{label} ?", "info": CONFIG_FIELD_HELP[key]}
+
+
 def load_config():
     """Load configs/models.yaml, return (llm_fields, vlm_fields, adaptive_fields, preference_field, raw_text)."""
     try:
@@ -893,40 +946,40 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
             with gr.Column():
                 with gr.Group():
                     gr.Markdown("### LLM (text synthesis)")
-                    llm_provider = gr.Textbox(label="provider", value="")
-                    llm_model = gr.Textbox(label="model", value="")
-                    llm_api_key_env = gr.Textbox(label="api_key_env", value="")
-                    llm_base_url = gr.Textbox(label="base_url", value="")
+                    llm_provider = gr.Textbox(value="", **config_field_kwargs("llm.provider"))
+                    llm_model = gr.Textbox(value="", **config_field_kwargs("llm.model"))
+                    llm_api_key_env = gr.Textbox(value="", **config_field_kwargs("llm.api_key_env"))
+                    llm_base_url = gr.Textbox(value="", **config_field_kwargs("llm.base_url"))
                     with gr.Row():
-                        llm_temperature = gr.Textbox(label="temperature", value="")
-                        llm_max_tokens = gr.Textbox(label="max_tokens", value="")
-                        llm_timeout = gr.Textbox(label="timeout_s", value="")
+                        llm_temperature = gr.Textbox(value="", **config_field_kwargs("llm.temperature"))
+                        llm_max_tokens = gr.Textbox(value="", **config_field_kwargs("llm.max_tokens"))
+                        llm_timeout = gr.Textbox(value="", **config_field_kwargs("llm.timeout_s"))
                     test_llm_btn = gr.Button("Test LLM Connection")
                     test_llm_output = gr.Textbox(label="LLM Test", interactive=False)
 
             with gr.Column():
                 with gr.Group():
                     gr.Markdown("### VLM (vision analysis)")
-                    vlm_model = gr.Textbox(label="model", value="")
-                    vlm_base_url = gr.Textbox(label="base_url", value="")
+                    vlm_model = gr.Textbox(value="", **config_field_kwargs("vlm.model"))
+                    vlm_base_url = gr.Textbox(value="", **config_field_kwargs("vlm.base_url"))
 
                 with gr.Group():
                     gr.Markdown("### Adaptive Sampling")
-                    ad_sample_interval = gr.Textbox(label="sample_interval (s)", value="")
-                    ad_merge_gap = gr.Textbox(label="merge_gap (s)", value="")
-                    ad_merge_score_threshold = gr.Textbox(label="merge_score_threshold", value="")
-                    ad_worthiness_threshold = gr.Textbox(label="worthiness_threshold", value="")
-                    ad_refine_threshold = gr.Textbox(label="refine_threshold", value="")
-                    ad_max_duration = gr.Textbox(label="max_duration (s)", value="")
-                    ad_vlm_temperature = gr.Textbox(label="vlm_temperature", value="")
+                    ad_sample_interval = gr.Textbox(value="", **config_field_kwargs("adaptive.sample_interval"))
+                    ad_merge_gap = gr.Textbox(value="", **config_field_kwargs("adaptive.merge_gap"))
+                    ad_merge_score_threshold = gr.Textbox(value="", **config_field_kwargs("adaptive.merge_score_threshold"))
+                    ad_worthiness_threshold = gr.Textbox(value="", **config_field_kwargs("adaptive.worthiness_threshold"))
+                    ad_refine_threshold = gr.Textbox(value="", **config_field_kwargs("adaptive.refine_threshold"))
+                    ad_max_duration = gr.Textbox(value="", **config_field_kwargs("adaptive.max_duration"))
+                    ad_vlm_temperature = gr.Textbox(value="", **config_field_kwargs("adaptive.vlm_temperature"))
                     with gr.Row():
-                        ad_output_ratio = gr.Textbox(label="output_ratio", value="")
-                        ad_max_output = gr.Textbox(label="max_output (0=no cap)", value="")
-                    ad_gif_fps = gr.Textbox(label="gif_fps (frames/s)", value="")
+                        ad_output_ratio = gr.Textbox(value="", **config_field_kwargs("adaptive.output_ratio"))
+                        ad_max_output = gr.Textbox(value="", **config_field_kwargs("adaptive.max_output"))
+                    ad_gif_fps = gr.Textbox(value="", **config_field_kwargs("adaptive.gif_fps"))
 
                 with gr.Group():
                     gr.Markdown("### Preference Memory")
-                    pm_enabled = gr.Checkbox(label="enabled", value=False)
+                    pm_enabled = gr.Checkbox(value=False, **config_field_kwargs("preference_memory.enabled"))
 
         with gr.Row():
             save_btn = gr.Button("Save Config", variant="primary")
