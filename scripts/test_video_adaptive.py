@@ -20,6 +20,7 @@ from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
 from app.services.export_cleanup import cleanup_adaptive_export_dir
+from app.services.export_ranking import rank_clips_for_export
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
@@ -59,6 +60,7 @@ print(f"Export: {EXPORT_DIR}")
 # ── Config ────────────────────────────────────────────────────────────
 # Read from configs/models.yaml [adaptive] section, fall back to defaults
 _adaptive = get("adaptive", {}) or {}
+_preference_memory = get("preference_memory", {}) or {}
 SAMPLE_INTERVAL = int(_adaptive.get("sample_interval", 10))
 REFINE_INTERVAL = int(_adaptive.get("refine_interval", 10))
 REFINE_RADIUS = int(_adaptive.get("refine_radius", 20))
@@ -78,6 +80,9 @@ GIF_FPS = int(_adaptive.get("gif_fps", 24))
 GIF_MAX_WIDTH = int(_adaptive.get("gif_max_width", 720))
 CLEAR_OUTPUT_DIR = bool(_adaptive.get("clear_output_dir", True))
 POTPLAYER_PBF_ENABLED = bool(_adaptive.get("potplayer_pbf_enabled", True))
+PREFERENCE_MEMORY_ENABLED = bool(_preference_memory.get("enabled", False))
+BASE_SCORE_WEIGHT = float(_preference_memory.get("base_score_weight", 0.50))
+PREFERENCE_SCORE_WEIGHT = float(_preference_memory.get("preference_score_weight", 0.50))
 
 VLM_OPTIONS = {
     "temperature": float(_adaptive.get("vlm_temperature", 0.65)),
@@ -613,33 +618,56 @@ output_count = max(1, output_count)
 print(f"\n[4/4] Exporting {output_count}/{len(deduped_clips)} GIFs (4K) "
       f"({OUTPUT_RATIO*100:.0f}% ratio, cap={MAX_OUTPUT})...")
 
-# Rank clips by gif_worthiness, take top N
-ranked_clips = sorted(deduped_clips, key=lambda x: x["gif_worthiness"], reverse=True)[:output_count]
+# Preference Memory reranking happens before Top-N selection so it can change
+# the exported set rather than merely attach scores to already selected clips.
+if PREFERENCE_MEMORY_ENABLED:
+    from app.services.reranker import PreferenceReranker, blend_export_scores
 
-# Optional: Preference Memory reranking
-if get("preference_memory.enabled", False):
-    from app.services.reranker import PreferenceReranker
-    reranker = PreferenceReranker(get_connection())
-    for clip in ranked_clips:
+    reranker_conn = get_connection()
+    reranker = PreferenceReranker(reranker_conn)
+
+    def score_clip_with_preference(clip):
         caption = clip["best_frame"].get("caption", "")
-        if caption:
-            try:
-                vec = compute_text_embedding(caption)
-                if vec is not None:
-                    emo = clip["best_frame"].get("emotional_core", "")
-                    scenario_keys = [f"emotion:{emo}"] if (emo and emo != "?") else []
-                    breakdown = reranker.score(
-                        candidate_vector=vec,
-                        base_rag_similarity=clip["gif_worthiness"],
-                        scenario_keys=scenario_keys,
-                        profile_version=None,
-                        enabled=True,
-                    )
-                    clip["final_score"] = breakdown["final_score"]
-                    clip["profile_score"] = breakdown.get("profile_score")
-                    clip["score_profile_version"] = breakdown.get("preference_profile_version")
-            except Exception:
-                pass  # reranking is best-effort, not critical path
+        if not caption:
+            return None
+        vec = compute_text_embedding(caption)
+        if vec is None:
+            return None
+        emo = clip["best_frame"].get("emotional_core", "")
+        scenario_keys = [f"emotion:{emo}"] if (emo and emo != "?") else []
+        breakdown = reranker.score(
+            candidate_vector=vec,
+            base_rag_similarity=clip["gif_worthiness"],
+            scenario_keys=scenario_keys,
+            profile_version=None,
+            enabled=True,
+        )
+        profile_score = breakdown.get("profile_score")
+        if profile_score is None:
+            return None
+        return {
+            "final_score": blend_export_scores(
+                clip["gif_worthiness"],
+                profile_score,
+                BASE_SCORE_WEIGHT,
+                PREFERENCE_SCORE_WEIGHT,
+            ),
+            "profile_score": profile_score,
+            "score_profile_version": breakdown.get("preference_profile_version"),
+        }
+
+    try:
+        all_ranked_clips = rank_clips_for_export(deduped_clips, score_clip_with_preference)
+    finally:
+        reranker_conn.close()
+    print(
+        "Preference Memory: ranked all candidates with "
+        f"base={BASE_SCORE_WEIGHT:.2f}, preference={PREFERENCE_SCORE_WEIGHT:.2f}"
+    )
+else:
+    all_ranked_clips = rank_clips_for_export(deduped_clips, lambda _clip: None)
+
+ranked_clips = all_ranked_clips[:output_count]
 
 
 exported_bookmarks = []
@@ -733,11 +761,17 @@ output = {
     "clusters_after_dedup": len(deduped_clips),
     "duplicate_groups": duplicate_groups,
     "output_count": output_count,
+    "preference_memory_enabled": PREFERENCE_MEMORY_ENABLED,
+    "base_score_weight": BASE_SCORE_WEIGHT,
+    "preference_score_weight": PREFERENCE_SCORE_WEIGHT,
     "multi_frame_clips": sum(1 for c in clips if c["frame_count"] > 1),
     "top_clips": [
         {"rank":i+1,"timestamp":clip["best_frame"]["timestamp"],
          "start_ts":clip["start_ts"],"end_ts":clip["end_ts"],
          "gif_worthiness":clip["gif_worthiness"],
+         "final_score":clip.get("final_score", clip["gif_worthiness"]),
+         "profile_score":clip.get("profile_score"),
+         "score_profile_version":clip.get("score_profile_version"),
          "duration":min(clip["end_ts"]-clip["start_ts"]+3.0, MAX_DURATION+2.0) if clip["frame_count"]>1 else MIN_DURATION+(MAX_DURATION-MIN_DURATION)*clip["gif_worthiness"],
          "frame_count":clip["frame_count"],"merged":clip["frame_count"]>1,
          "caption":clip["best_frame"].get("caption"),

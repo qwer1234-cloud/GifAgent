@@ -13,7 +13,9 @@ from app.ui.candidate_review import (
 
 def test_every_config_field_has_non_empty_chinese_tooltip_label():
     assert set(CONFIG_FIELD_HELP) == set(CONFIG_FIELD_KEYS)
-    assert len(CONFIG_FIELD_KEYS) == 20
+    assert len(CONFIG_FIELD_KEYS) == 22
+    assert "preference_memory.base_score_weight" in CONFIG_FIELD_KEYS
+    assert "preference_memory.preference_score_weight" in CONFIG_FIELD_KEYS
 
     for key in CONFIG_FIELD_KEYS:
         if key == "preference_memory.enabled":

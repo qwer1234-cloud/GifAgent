@@ -7,6 +7,18 @@ import numpy as np
 import pytest
 
 
+def test_blend_export_scores_uses_equal_base_and_preference_weights():
+    from app.services.reranker import blend_export_scores
+
+    assert blend_export_scores(0.80, 0.20, 0.50, 0.50) == pytest.approx(0.50)
+
+
+def test_blend_export_scores_normalizes_configured_weights():
+    from app.services.reranker import blend_export_scores
+
+    assert blend_export_scores(0.80, 0.20, 2.0, 2.0) == pytest.approx(0.50)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

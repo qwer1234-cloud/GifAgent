@@ -582,6 +582,8 @@ CONFIG_FIELD_KEYS = (
     "adaptive.max_output",
     "adaptive.gif_fps",
     "preference_memory.enabled",
+    "preference_memory.base_score_weight",
+    "preference_memory.preference_score_weight",
 )
 
 CONFIG_FIELD_HELP = {
@@ -605,6 +607,8 @@ CONFIG_FIELD_HELP = {
     "adaptive.max_output": "每个视频最多导出的 GIF 数量；填写 0 表示不设上限。",
     "adaptive.gif_fps": "导出 GIF 的播放帧率，单位为每秒帧数。",
     "preference_memory.enabled": "是否启用基于用户反馈构建偏好画像并参与后续排序。",
+    "preference_memory.base_score_weight": "导出排序中原始 VLM gif_worthiness 评分的权重；与偏好权重按比例归一化。",
+    "preference_memory.preference_score_weight": "导出排序中已发布偏好画像评分的权重；与原始评分权重按比例归一化。",
 }
 
 CONFIG_FIELD_LABELS = {
@@ -723,7 +727,7 @@ def load_config():
         with open(CONFIG_FILE, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     except Exception as e:
-        return ([str(e)] * 6, [str(e)] * 2, [str(e)] * 9, False, "")
+        return ([str(e)] * 7, [str(e)] * 2, [str(e)] * 10, [False, "0.50", "0.50"], "")
 
     llm = cfg.get("llm", {}) or {}
     vlm = cfg.get("vlm", {}) or {}
@@ -755,9 +759,13 @@ def load_config():
         str(adaptive.get("max_output", 0)),
         str(adaptive.get("gif_fps", 24)),
     ]
-    pm_enabled = bool(pm.get("enabled", False))
+    pm_fields = [
+        bool(pm.get("enabled", False)),
+        str(pm.get("base_score_weight", 0.50)),
+        str(pm.get("preference_score_weight", 0.50)),
+    ]
     raw_text = yaml.dump(cfg, default_flow_style=False, allow_unicode=True, sort_keys=False)
-    return llm_fields, vlm_fields, adaptive_fields, pm_enabled, raw_text
+    return llm_fields, vlm_fields, adaptive_fields, pm_fields, raw_text
 
 
 def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
@@ -767,7 +775,7 @@ def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
                 ad_worthiness_threshold, ad_refine_threshold,
                 ad_max_duration,
                 ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
-                pm_enabled, raw_text):
+                pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_text):
     """Save edited fields back to configs/models.yaml, preserving other sections."""
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
@@ -802,6 +810,8 @@ def save_config(llm_provider, llm_model, llm_api_key_env, llm_base_url,
 
     cfg.setdefault("preference_memory", {})
     cfg["preference_memory"]["enabled"] = bool(pm_enabled)
+    cfg["preference_memory"]["base_score_weight"] = float(pm_base_score_weight)
+    cfg["preference_memory"]["preference_score_weight"] = float(pm_preference_score_weight)
 
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -1119,6 +1129,11 @@ with gr.Blocks(title="GifAgent") as app:
                 with gr.Group():
                     gr.Markdown("### Preference Memory")
                     pm_enabled = config_checkbox("preference_memory.enabled", value=False)
+                    with gr.Row():
+                        with gr.Column(min_width=180):
+                            pm_base_score_weight = config_textbox("preference_memory.base_score_weight", value="0.50")
+                        with gr.Column(min_width=180):
+                            pm_preference_score_weight = config_textbox("preference_memory.preference_score_weight", value="0.50")
 
         with gr.Row():
             save_btn = gr.Button("Save Config", variant="primary")
@@ -1128,7 +1143,7 @@ with gr.Blocks(title="GifAgent") as app:
 
         def _reload():
             llm_f, vlm_f, ad_f, pm_f, raw = load_config()
-            return [*llm_f, *vlm_f, *ad_f, pm_f, "Loaded from " + CONFIG_FILE, raw]
+            return [*llm_f, *vlm_f, *ad_f, *pm_f, raw, "Loaded from " + CONFIG_FILE]
 
         all_inputs = [llm_provider, llm_model, llm_api_key_env, llm_base_url,
                       llm_temperature, llm_max_tokens, llm_timeout,
@@ -1136,7 +1151,7 @@ with gr.Blocks(title="GifAgent") as app:
                       ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
                       ad_worthiness_threshold, ad_refine_threshold,
                       ad_max_duration, ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
-                      pm_enabled, raw_yaml]
+                      pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_yaml]
         save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])
         reload_btn.click(fn=_reload, outputs=all_inputs + [config_status])
         test_llm_btn.click(fn=test_llm_connection, outputs=[test_llm_output])

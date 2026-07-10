@@ -46,6 +46,8 @@ dedup:
 
 preference_memory:
   enabled: false
+  base_score_weight: 0.50
+  preference_score_weight: 0.50
 
 adaptive:
   sample_interval: 10
