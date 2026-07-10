@@ -1,7 +1,7 @@
 """
 Gradio UI - candidate GIF review + batch process control panel.
 """
-import json, os, subprocess, signal, sys, time
+import html, json, os, subprocess, signal, sys, time
 from pathlib import Path
 
 import gradio as gr
@@ -585,11 +585,107 @@ CONFIG_FIELD_HELP = {
     "preference_memory.enabled": "是否启用基于用户反馈构建偏好画像并参与后续排序。",
 }
 
+CONFIG_FIELD_LABELS = {
+    "adaptive.sample_interval": "sample_interval (s)",
+    "adaptive.merge_gap": "merge_gap (s)",
+    "adaptive.max_duration": "max_duration (s)",
+    "adaptive.max_output": "max_output (0=no cap)",
+    "adaptive.gif_fps": "gif_fps (frames/s)",
+}
 
-def config_field_kwargs(key: str) -> dict[str, str]:
-    """Return a consistent label and Chinese help tooltip for a Config field."""
-    label = key.rsplit(".", 1)[-1]
-    return {"label": f"{label} ?", "info": CONFIG_FIELD_HELP[key]}
+CONFIG_TOOLTIP_CSS = """
+.config-field-label {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-height: 1.35rem;
+    margin: 0 0 0.2rem 0;
+    color: var(--body-text-color);
+    font-size: var(--text-sm);
+    font-weight: 500;
+}
+.config-tooltip-icon {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    border: 1px solid var(--border-color-primary);
+    border-radius: 50%;
+    color: var(--body-text-color-subdued);
+    cursor: help;
+    font-size: 0.72rem;
+    font-weight: 700;
+    line-height: 1;
+}
+.config-tooltip-text {
+    position: absolute;
+    z-index: 1000;
+    left: 50%;
+    bottom: calc(100% + 0.45rem);
+    display: none;
+    width: max-content;
+    max-width: min(20rem, 70vw);
+    padding: 0.45rem 0.6rem;
+    border-radius: 0.4rem;
+    background: var(--background-fill-primary);
+    box-shadow: 0 0.3rem 1rem rgba(0, 0, 0, 0.22);
+    color: var(--body-text-color);
+    font-size: 0.8rem;
+    font-weight: 400;
+    line-height: 1.4;
+    transform: translateX(-50%);
+    white-space: normal;
+}
+.config-tooltip-icon:hover .config-tooltip-text,
+.config-tooltip-icon:focus .config-tooltip-text {
+    display: block;
+}
+"""
+
+
+def config_field_name(key: str) -> str:
+    return CONFIG_FIELD_LABELS.get(key, key.rsplit(".", 1)[-1])
+
+
+def config_field_label(key: str) -> str:
+    """Render a non-persistent label with an accessible hover tooltip icon."""
+    name = html.escape(config_field_name(key))
+    help_text = html.escape(CONFIG_FIELD_HELP[key])
+    return (
+        '<div class="config-field-label">'
+        f'<span>{name}</span>'
+        f'<span class="config-tooltip-icon" tabindex="0" aria-label="{help_text}">?'
+        f'<span class="config-tooltip-text" role="tooltip">{help_text}</span>'
+        "</span></div>"
+    )
+
+
+def config_field_kwargs(key: str) -> dict[str, str | bool]:
+    """Hide Gradio's persistent help text in favor of the HTML tooltip icon."""
+    return {"label": config_field_name(key), "show_label": False}
+
+
+def config_textbox(key: str, **kwargs):
+    gr.HTML(config_field_label(key), sanitize_html=False)
+    return gr.Textbox(**config_field_kwargs(key), **kwargs)
+
+
+def config_checkbox(key: str, **kwargs):
+    gr.HTML(config_field_label(key), sanitize_html=False)
+    checkbox_kwargs = {**config_field_kwargs(key), **kwargs, "label": ""}
+    return gr.Checkbox(**checkbox_kwargs)
+
+
+def launch_kwargs() -> dict:
+    return {
+        "server_name": "127.0.0.1",
+        "server_port": 7861,
+        "allowed_paths": GRADIO_ALLOWED_PATHS,
+        "theme": gr.themes.Soft(),
+        "css": CONFIG_TOOLTIP_CSS,
+    }
 
 
 def load_config():
@@ -705,7 +801,7 @@ def test_llm_connection():
 
 
 # UI
-with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
+with gr.Blocks(title="GifAgent") as app:
     gr.Markdown("# GifAgent - Preference Memory")
 
     with gr.Tab("Review"):
@@ -946,40 +1042,45 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
             with gr.Column():
                 with gr.Group():
                     gr.Markdown("### LLM (text synthesis)")
-                    llm_provider = gr.Textbox(value="", **config_field_kwargs("llm.provider"))
-                    llm_model = gr.Textbox(value="", **config_field_kwargs("llm.model"))
-                    llm_api_key_env = gr.Textbox(value="", **config_field_kwargs("llm.api_key_env"))
-                    llm_base_url = gr.Textbox(value="", **config_field_kwargs("llm.base_url"))
+                    llm_provider = config_textbox("llm.provider", value="")
+                    llm_model = config_textbox("llm.model", value="")
+                    llm_api_key_env = config_textbox("llm.api_key_env", value="")
+                    llm_base_url = config_textbox("llm.base_url", value="")
                     with gr.Row():
-                        llm_temperature = gr.Textbox(value="", **config_field_kwargs("llm.temperature"))
-                        llm_max_tokens = gr.Textbox(value="", **config_field_kwargs("llm.max_tokens"))
-                        llm_timeout = gr.Textbox(value="", **config_field_kwargs("llm.timeout_s"))
+                        with gr.Column(min_width=160):
+                            llm_temperature = config_textbox("llm.temperature", value="")
+                        with gr.Column(min_width=160):
+                            llm_max_tokens = config_textbox("llm.max_tokens", value="")
+                        with gr.Column(min_width=160):
+                            llm_timeout = config_textbox("llm.timeout_s", value="")
                     test_llm_btn = gr.Button("Test LLM Connection")
                     test_llm_output = gr.Textbox(label="LLM Test", interactive=False)
 
             with gr.Column():
                 with gr.Group():
                     gr.Markdown("### VLM (vision analysis)")
-                    vlm_model = gr.Textbox(value="", **config_field_kwargs("vlm.model"))
-                    vlm_base_url = gr.Textbox(value="", **config_field_kwargs("vlm.base_url"))
+                    vlm_model = config_textbox("vlm.model", value="")
+                    vlm_base_url = config_textbox("vlm.base_url", value="")
 
                 with gr.Group():
                     gr.Markdown("### Adaptive Sampling")
-                    ad_sample_interval = gr.Textbox(value="", **config_field_kwargs("adaptive.sample_interval"))
-                    ad_merge_gap = gr.Textbox(value="", **config_field_kwargs("adaptive.merge_gap"))
-                    ad_merge_score_threshold = gr.Textbox(value="", **config_field_kwargs("adaptive.merge_score_threshold"))
-                    ad_worthiness_threshold = gr.Textbox(value="", **config_field_kwargs("adaptive.worthiness_threshold"))
-                    ad_refine_threshold = gr.Textbox(value="", **config_field_kwargs("adaptive.refine_threshold"))
-                    ad_max_duration = gr.Textbox(value="", **config_field_kwargs("adaptive.max_duration"))
-                    ad_vlm_temperature = gr.Textbox(value="", **config_field_kwargs("adaptive.vlm_temperature"))
+                    ad_sample_interval = config_textbox("adaptive.sample_interval", value="")
+                    ad_merge_gap = config_textbox("adaptive.merge_gap", value="")
+                    ad_merge_score_threshold = config_textbox("adaptive.merge_score_threshold", value="")
+                    ad_worthiness_threshold = config_textbox("adaptive.worthiness_threshold", value="")
+                    ad_refine_threshold = config_textbox("adaptive.refine_threshold", value="")
+                    ad_max_duration = config_textbox("adaptive.max_duration", value="")
+                    ad_vlm_temperature = config_textbox("adaptive.vlm_temperature", value="")
                     with gr.Row():
-                        ad_output_ratio = gr.Textbox(value="", **config_field_kwargs("adaptive.output_ratio"))
-                        ad_max_output = gr.Textbox(value="", **config_field_kwargs("adaptive.max_output"))
-                    ad_gif_fps = gr.Textbox(value="", **config_field_kwargs("adaptive.gif_fps"))
+                        with gr.Column(min_width=160):
+                            ad_output_ratio = config_textbox("adaptive.output_ratio", value="")
+                        with gr.Column(min_width=160):
+                            ad_max_output = config_textbox("adaptive.max_output", value="")
+                    ad_gif_fps = config_textbox("adaptive.gif_fps", value="")
 
                 with gr.Group():
                     gr.Markdown("### Preference Memory")
-                    pm_enabled = gr.Checkbox(value=False, **config_field_kwargs("preference_memory.enabled"))
+                    pm_enabled = config_checkbox("preference_memory.enabled", value=False)
 
         with gr.Row():
             save_btn = gr.Button("Save Config", variant="primary")
@@ -1004,8 +1105,4 @@ with gr.Blocks(title="GifAgent", theme=gr.themes.Soft()) as app:
         app.load(fn=_reload, outputs=all_inputs + [config_status])
 
 if __name__ == "__main__":
-    app.launch(
-        server_name="127.0.0.1",
-        server_port=7861,
-        allowed_paths=GRADIO_ALLOWED_PATHS,
-    )
+    app.launch(**launch_kwargs())
