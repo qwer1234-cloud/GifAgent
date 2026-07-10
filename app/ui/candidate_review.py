@@ -619,36 +619,8 @@ CONFIG_TOOLTIP_CSS = """
     font-weight: 700;
     line-height: 1;
 }
-.config-tooltip-text {
-    position: absolute;
-    z-index: 1000;
-    left: 50%;
-    bottom: calc(100% + 0.45rem);
-    display: none;
-    width: max-content;
-    max-width: min(20rem, 70vw);
-    padding: 0.45rem 0.6rem;
-    border-radius: 0.4rem;
-    background: var(--background-fill-primary);
-    box-shadow: 0 0.3rem 1rem rgba(0, 0, 0, 0.22);
-    color: var(--body-text-color);
-    font-size: 0.8rem;
-    font-weight: 400;
-    line-height: 1.4;
-    transform: translateX(-50%);
-    white-space: normal;
-}
-.config-tooltip-icon:hover .config-tooltip-text,
-.config-tooltip-icon:focus .config-tooltip-text {
-    display: block;
-}
-.config-checkbox-row {
-    align-items: center;
-    justify-content: flex-start;
-    gap: 0.45rem;
-}
-.config-checkbox-row > * {
-    flex-grow: 0;
+.preference-tooltip-icon {
+    margin-left: 0.35rem;
 }
 """
 
@@ -659,12 +631,8 @@ def config_field_name(key: str) -> str:
 
 def config_tooltip_icon(key: str) -> str:
     """Render the shared accessible hover tooltip icon."""
-    help_text = html.escape(CONFIG_FIELD_HELP[key])
-    return (
-        f'<span class="config-tooltip-icon" tabindex="0" aria-label="{help_text}">?'
-        f'<span class="config-tooltip-text" role="tooltip">{help_text}</span>'
-        "</span>"
-    )
+    help_text = html.escape(CONFIG_FIELD_HELP[key], quote=True)
+    return f'<span class="config-tooltip-icon" tabindex="0" title="{help_text}" aria-label="{help_text}">?</span>'
 
 
 def config_field_label(key: str) -> str:
@@ -680,7 +648,11 @@ def config_field_kwargs(key: str) -> dict[str, str | bool]:
 
 def config_checkbox_kwargs(key: str) -> dict[str, str | bool]:
     """Keep a Checkbox's native, clickable label visible beside the tooltip."""
-    return {"label": config_field_name(key), "container": False}
+    return {
+        "label": config_field_name(key),
+        "container": False,
+        "elem_id": "preference-memory-enabled",
+    }
 
 
 def config_textbox(key: str, **kwargs):
@@ -689,21 +661,27 @@ def config_textbox(key: str, **kwargs):
 
 
 def config_checkbox(key: str, **kwargs):
-    with gr.Row(equal_height=True, elem_classes="config-checkbox-row"):
-        checkbox_kwargs = {
-            **config_checkbox_kwargs(key),
-            **kwargs,
-            "scale": 0,
-            "min_width": 0,
-        }
-        checkbox = gr.Checkbox(**checkbox_kwargs)
-        gr.HTML(
-            config_tooltip_icon(key),
-            sanitize_html=False,
-            scale=0,
-            min_width=0,
-        )
-    return checkbox
+    return gr.Checkbox(**config_checkbox_kwargs(key), **kwargs)
+
+
+CONFIG_TOOLTIP_JS = f"""
+(() => {{
+    const attach = () => {{
+        const label = document.querySelector('#preference-memory-enabled label');
+        if (!label || label.querySelector('.preference-tooltip-icon')) return;
+        const icon = document.createElement('span');
+        icon.className = 'config-tooltip-icon preference-tooltip-icon';
+        icon.tabIndex = 0;
+        icon.textContent = '?';
+        icon.title = {json.dumps(CONFIG_FIELD_HELP['preference_memory.enabled'], ensure_ascii=False)};
+        icon.setAttribute('aria-label', icon.title);
+        label.append(icon);
+    }};
+    requestAnimationFrame(attach);
+    setTimeout(attach, 250);
+    setTimeout(attach, 1000);
+}})();
+"""
 
 
 def launch_kwargs() -> dict:
@@ -713,6 +691,7 @@ def launch_kwargs() -> dict:
         "allowed_paths": GRADIO_ALLOWED_PATHS,
         "theme": gr.themes.Soft(),
         "css": CONFIG_TOOLTIP_CSS,
+        "js": CONFIG_TOOLTIP_JS,
     }
 
 
