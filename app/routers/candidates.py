@@ -488,5 +488,5 @@ def favorite_candidate(candidate_id: str, body: FavoriteRequest):
                 },
             )
 
-    result = FavoriteService(conn).favorite(candidate_id, _path_display(artifact_path))
+    result = FavoriteService(conn).favorite(candidate_id, str(artifact_path))
     return FavoriteResponse(**result)
