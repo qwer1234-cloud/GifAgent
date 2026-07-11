@@ -83,6 +83,17 @@ else
   exit 1
 fi
 
+# Verify that the bundled adaptive exporter is from the current source.  An
+# EXE-only replacement can leave a stale _internal/scripts copy behind, which
+# silently restores the legacy seconds-based filename format.
+RUNTIME_ADAPTIVE="$EXE_DIR/_internal/scripts/test_video_adaptive.py"
+if [[ -f "$RUNTIME_ADAPTIVE" ]] && grep -Fq "from app.services.gif_naming import build_gif_filename" "$RUNTIME_ADAPTIVE"; then
+  echo "✓ bundled adaptive exporter uses millisecond filenames"
+else
+  echo "✗ FAIL: bundled adaptive exporter is missing millisecond naming code"
+  exit 1
+fi
+
 if [[ -d "$DATA_DIR" ]]; then
   echo "✓ data/ preserved: $DATA_DIR"
   # Show what's in data/

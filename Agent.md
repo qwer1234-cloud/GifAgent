@@ -67,7 +67,7 @@ uv run python scripts/test_video_batch.py --dir "<video_dir>" --extensions ".ts,
 ```
 
 Output structure: `data/exports/adaptive_test/{input_folder_name}/{video_name}/`
-contains GIFs named `{video_name}@@@{seq}_{start}s-{end}s.gif` and a
+contains GIFs named `{video_name}@@@{seq}_{start_ms}ms-{end_ms}ms.gif` and a
 PotPlayer bookmark file named `{video_name}.pbf`.
 
 ### Packaged GUI

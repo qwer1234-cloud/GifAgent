@@ -160,7 +160,7 @@ uv run python scripts/test_video_batch.py --dir "C:/path/to/videos"
 输出：
 - `data/exports/adaptive_test/{video_name}/`：每个视频的候选 GIF 片段（merge_gap=6s 合并）
 - `data/exports/adaptive_test/{video_name}/Sample/`：9 宫格缩略图（`{video_name}_grid.jpg`）+ 9 张独立帧图（`{video_name}_sample_*.jpg`）
-- GIF 命名格式：`{video_name}@@@{seq}_{start_s}s-{end_s}s.gif`
+- GIF 命名格式：`{video_name}@@@{seq}_{start_ms}ms-{end_ms}ms.gif`（旧的秒格式仅用于兼容读取）
 - `data/batch_checkpoint.json`：批量处理断点文件（含视频指纹，用于跨文件名去重）
 
 **视频去重**：批量处理时自动计算每个视频的内容指纹（时长 + 5 个关键帧 pHash）。如果新视频与已处理视频指纹匹配（Hamming distance ≤ 5），自动跳过并记录 `duplicate_of`。抗重编码、换容器、改名，不抗裁剪/水印。
