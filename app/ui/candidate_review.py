@@ -433,16 +433,54 @@ def load_candidate_page(
     return gallery, info, slider_update, page_items
 
 
+def selection_values(item: dict):
+    """Return component values for one candidate, regardless of selection source."""
+    cid = item.get("candidate_id", "")
+    src = item.get("source_run_candidate_id", "?")
+    artifact_path = item.get("artifact_path") or ""
+    preview = artifact_path or item.get("display_path") or item.get("preview_path")
+    return cid, f"Selected: {src[:40]}", preview, artifact_path
+
+
 def select_candidate(evt: gr.SelectData, page_items: list[dict]):
     idx = evt.index
     if 0 <= idx < len(page_items):
-        item = page_items[idx]
-        cid = item.get("candidate_id", "")
-        src = item.get("source_run_candidate_id", "?")
-        artifact_path = item.get("artifact_path") or ""
-        preview = artifact_path or item.get("display_path") or item.get("preview_path")
-        return cid, f"Selected: {src[:40]}", preview, artifact_path
+        return selection_values(page_items[idx])
     return "", "Selection error", None, ""
+
+
+def select_first_candidate(page_items: list[dict]):
+    """Select the first refreshed candidate so the next GIF preview is visible."""
+    if page_items:
+        return selection_values(page_items[0])
+    return "", "", None, ""
+
+
+def next_reviewable_folder(
+    previous_folders: list[dict],
+    refreshed_folders: list[dict],
+    current_folder: str | None,
+) -> str | None:
+    """Choose the next remaining folder in the loaded order, wrapping if needed."""
+    remaining = {folder.get("folder") for folder in refreshed_folders if folder.get("folder")}
+    if not remaining:
+        return None
+
+    previous_paths = [folder.get("folder") for folder in previous_folders if folder.get("folder")]
+    try:
+        current_index = previous_paths.index(current_folder)
+    except ValueError:
+        current_index = -1
+
+    ordered_paths = previous_paths[current_index + 1:] + previous_paths[:current_index + 1]
+    for path in ordered_paths:
+        if path in remaining and path != current_folder:
+            return path
+    for folder in refreshed_folders:
+        path = folder.get("folder")
+        if path in remaining and path != current_folder:
+            return path
+    return None
 
 
 def rate_candidate(candidate_id: str, rating: str, note: str = "", expected_artifact_path: str = ""):
@@ -464,6 +502,57 @@ def rate_candidate(candidate_id: str, rating: str, note: str = "", expected_arti
         return f"Error: {resp.status_code} - {_format_api_error(resp)}"
     except Exception as e:
         return f"Error: {e}"
+
+
+def rate_and_advance(
+    candidate_id: str,
+    rating: str,
+    note: str,
+    expected_artifact_path: str,
+    page: int,
+    filter_status: str,
+    folder: str | None,
+    root_dir: str,
+    previous_folders: list[dict],
+):
+    """Rate a GIF, select the next item, and advance folders when necessary."""
+    result = rate_candidate(candidate_id, rating, note, expected_artifact_path)
+    if not result.startswith("Rated:"):
+        return (
+            result, gr.update(), gr.update(), gr.update(), gr.update(),
+            candidate_id, "Rating failed; selection kept", expected_artifact_path or None,
+            expected_artifact_path, gr.update(), previous_folders,
+        )
+
+    gallery, info, page_update, page_items = load_candidate_page(
+        int(page), filter_status=filter_status, folder=folder
+    )
+    if page_items:
+        cid, label, preview, artifact_path = select_first_candidate(page_items)
+        return (
+            result, gallery, info, page_update, page_items,
+            cid, label, preview, artifact_path,
+            gr.update(value=folder), previous_folders,
+        )
+
+    _folder_update, folder_info, refreshed_folders = load_folder_choices(root_dir)
+    next_folder = next_reviewable_folder(previous_folders, refreshed_folders, folder)
+    folder_choices = [(_folder_label(item), item["folder"]) for item in refreshed_folders]
+    if next_folder:
+        gallery, next_info, page_update, page_items = load_candidate_page(
+            0, filter_status=filter_status, folder=next_folder
+        )
+        cid, label, preview, artifact_path = select_first_candidate(page_items)
+        return (
+            result, gallery, f"Auto-advanced to next folder. {next_info}", page_update, page_items,
+            cid, label, preview, artifact_path,
+            gr.update(choices=folder_choices, value=next_folder), refreshed_folders,
+        )
+
+    return (
+        result, [], folder_info, page_update, [], "", "All reviewable folders are complete.", None, "",
+        gr.update(choices=folder_choices, value=None), refreshed_folders,
+    )
 
 
 def get_profile_status():
@@ -957,51 +1046,45 @@ with gr.Blocks(title="GifAgent") as app:
                            selected_artifact_path_state,
                        ])
 
-        def rate_and_refresh(cid, rating, note, expected_path, page, filtr, folder):
-            """Submit feedback then refresh gallery so status updates immediately."""
-            result = rate_candidate(cid, rating, note, expected_path)
-            gal, info, p, page_items = load_candidate_page(int(page), filter_status=filtr, folder=folder)
-            return result, gal, info, p, page_items, "", "", None, ""
-
-        like_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "like", n, ep, p, f, folder),
+        like_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "like", n, ep, p, f, folder, root, folders),
                        inputs=[
                            candidate_id_input, note_input, selected_artifact_path_state,
-                           page_slider, filter_dropdown, folder_dropdown,
+                           page_slider, filter_dropdown, folder_dropdown, review_root_input, folder_choices_state,
                        ],
                        outputs=[
                            feedback_output, gallery, info_text, page_slider,
                            page_items_state, candidate_id_input, selected_label,
-                           selected_preview, selected_artifact_path_state,
+                           selected_preview, selected_artifact_path_state, folder_dropdown, folder_choices_state,
                        ])
-        neutral_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "neutral", n, ep, p, f, folder),
+        neutral_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "neutral", n, ep, p, f, folder, root, folders),
                           inputs=[
                               candidate_id_input, note_input, selected_artifact_path_state,
-                              page_slider, filter_dropdown, folder_dropdown,
+                              page_slider, filter_dropdown, folder_dropdown, review_root_input, folder_choices_state,
                           ],
                           outputs=[
                               feedback_output, gallery, info_text, page_slider,
                               page_items_state, candidate_id_input, selected_label,
-                              selected_preview, selected_artifact_path_state,
+                              selected_preview, selected_artifact_path_state, folder_dropdown, folder_choices_state,
                           ])
-        dislike_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "dislike", n, ep, p, f, folder),
+        dislike_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "dislike", n, ep, p, f, folder, root, folders),
                           inputs=[
                               candidate_id_input, note_input, selected_artifact_path_state,
-                              page_slider, filter_dropdown, folder_dropdown,
+                              page_slider, filter_dropdown, folder_dropdown, review_root_input, folder_choices_state,
                           ],
                           outputs=[
                               feedback_output, gallery, info_text, page_slider,
                               page_items_state, candidate_id_input, selected_label,
-                              selected_preview, selected_artifact_path_state,
+                              selected_preview, selected_artifact_path_state, folder_dropdown, folder_choices_state,
                           ])
-        skip_btn.click(fn=lambda c, n, ep, p, f, folder: rate_and_refresh(c, "skip", n, ep, p, f, folder),
+        skip_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "skip", n, ep, p, f, folder, root, folders),
                        inputs=[
                            candidate_id_input, note_input, selected_artifact_path_state,
-                           page_slider, filter_dropdown, folder_dropdown,
+                           page_slider, filter_dropdown, folder_dropdown, review_root_input, folder_choices_state,
                        ],
                        outputs=[
                            feedback_output, gallery, info_text, page_slider,
                            page_items_state, candidate_id_input, selected_label,
-                           selected_preview, selected_artifact_path_state,
+                           selected_preview, selected_artifact_path_state, folder_dropdown, folder_choices_state,
                        ])
         build_btn.click(
             fn=build_profile_and_refresh,
