@@ -3,6 +3,7 @@ from app.ui.candidate_review import (
     CONFIG_FIELD_KEYS,
     CONFIG_TOOLTIP_CSS,
     CONFIG_TOOLTIP_JS,
+    REVIEW_LAYOUT_CSS,
     config_checkbox_kwargs,
     config_field_kwargs,
     config_field_label,
@@ -40,7 +41,7 @@ def test_every_config_field_has_non_empty_chinese_tooltip_label():
 
 def test_launch_injects_tooltip_css():
     kwargs = launch_kwargs()
-    assert kwargs["css"] == CONFIG_TOOLTIP_CSS
+    assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS
     assert ".config-tooltip-icon" in kwargs["css"]
     assert kwargs["js"] == CONFIG_TOOLTIP_JS
     assert "preference-memory-enabled" in kwargs["js"]

@@ -456,6 +456,14 @@ def select_first_candidate(page_items: list[dict]):
     return "", "", None, ""
 
 
+def load_folder_page(folder: str | None, filter_status: str = "candidate"):
+    """Load folder page zero and select its first GIF for immediate preview."""
+    gallery, info, page_update, page_items = load_candidate_page(
+        0, filter_status=filter_status, folder=folder
+    )
+    return gallery, info, page_update, page_items, *select_first_candidate(page_items)
+
+
 def next_reviewable_folder(
     previous_folders: list[dict],
     refreshed_folders: list[dict],
@@ -739,6 +747,40 @@ CONFIG_TOOLTIP_CSS = """
 }
 """
 
+REVIEW_LAYOUT_CSS = """
+#candidate-gallery .grid-wrap {
+    display: flex;
+    justify-content: center;
+}
+#candidate-gallery img {
+    object-fit: contain;
+    object-position: center;
+    margin: auto;
+}
+#selected-gif-preview {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 340px;
+}
+#selected-gif-preview .image-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 300px;
+}
+#selected-gif-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 300px;
+    margin: auto;
+    object-fit: contain;
+    object-position: center;
+}
+"""
+
 
 def config_field_name(key: str) -> str:
     return CONFIG_FIELD_LABELS.get(key, key.rsplit(".", 1)[-1])
@@ -805,7 +847,7 @@ def launch_kwargs() -> dict:
         "server_port": 7861,
         "allowed_paths": GRADIO_ALLOWED_PATHS,
         "theme": gr.themes.Soft(),
-        "css": CONFIG_TOOLTIP_CSS,
+        "css": CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS,
         "js": CONFIG_TOOLTIP_JS,
     }
 
@@ -950,7 +992,8 @@ with gr.Blocks(title="GifAgent") as app:
                 )
                 gallery = gr.Gallery(
                     label="Candidate GIFs - liked | disliked | unrated - click to select",
-                    columns=2, height=600, object_fit="contain", allow_preview=True)
+                    columns=2, height=600, object_fit="contain", allow_preview=True,
+                    elem_id="candidate-gallery")
                 with gr.Row():
                     filter_dropdown = gr.Dropdown(
                         choices=["candidate", "all", "liked", "disliked", "neutral", "rejected"],
@@ -966,6 +1009,7 @@ with gr.Blocks(title="GifAgent") as app:
                     interactive=False,
                     type="filepath",
                     height=300,
+                    elem_id="selected-gif-preview",
                 )
                 with gr.Row():
                     like_btn = gr.Button("Like", variant="primary")
@@ -974,24 +1018,6 @@ with gr.Blocks(title="GifAgent") as app:
                     skip_btn = gr.Button("Skip")
                 note_input = gr.Textbox(label="Note (optional)")
                 feedback_output = gr.Textbox(label="Result")
-
-                gr.Markdown("---")
-                gr.Markdown("## Profile")
-                profile_status = gr.Textbox(label="Status", value="Loading...")
-                with gr.Row():
-                    build_btn = gr.Button("Build Profile", variant="primary")
-                    backfill_vectors_btn = gr.Button("Backfill Missing Vectors")
-                    refresh_profiles_btn = gr.Button("Refresh Profiles")
-                publish_profile_dropdown = gr.Dropdown(
-                    choices=[],
-                    value=None,
-                    label="Profile Version to Publish",
-                    interactive=True,
-                )
-                publish_btn = gr.Button("Publish Selected Profile")
-                build_output = gr.Textbox(label="Build Result")
-                backfill_vectors_output = gr.Textbox(label="Vector Backfill", interactive=False)
-                publish_output = gr.Textbox(label="Publish Result")
 
         info_text = gr.Markdown("")
         page_items_state = gr.State([])
@@ -1018,7 +1044,7 @@ with gr.Blocks(title="GifAgent") as app:
 
         def refresh_page(page, filtr, folder):
             gal, info, p, page_items = load_candidate_page(int(page), filter_status=filtr, folder=folder)
-            return gal, info, p, page_items, "", "", None, ""
+            return gal, info, p, page_items, *select_first_candidate(page_items)
 
         page_slider.change(fn=refresh_page, inputs=[page_slider, filter_dropdown, folder_dropdown],
                            outputs=[
@@ -1033,7 +1059,7 @@ with gr.Blocks(title="GifAgent") as app:
                                    candidate_id_input, selected_label, selected_preview,
                                    selected_artifact_path_state,
                                ])
-        folder_dropdown.change(fn=lambda folder, f: refresh_page(0, f, folder),
+        folder_dropdown.change(fn=lambda folder, f: load_folder_page(folder, f),
                                inputs=[folder_dropdown, filter_dropdown],
                                outputs=[
                                    gallery, info_text, page_slider, page_items_state,
@@ -1086,6 +1112,29 @@ with gr.Blocks(title="GifAgent") as app:
                            page_items_state, candidate_id_input, selected_label,
                            selected_preview, selected_artifact_path_state, folder_dropdown, folder_choices_state,
                        ])
+        app.load(
+            fn=lambda: ([], "Choose a data folder to review.", gr.update(value=0, maximum=1), []),
+            outputs=[gallery, info_text, page_slider, page_items_state],
+        )
+
+    with gr.Tab("Profile"):
+        gr.Markdown("## Preference Profile")
+        profile_status = gr.Textbox(label="Status", value="Loading...", interactive=False)
+        with gr.Row():
+            build_btn = gr.Button("Build Profile", variant="primary")
+            backfill_vectors_btn = gr.Button("Backfill Missing Vectors")
+            refresh_profiles_btn = gr.Button("Refresh Profiles")
+        publish_profile_dropdown = gr.Dropdown(
+            choices=[],
+            value=None,
+            label="Profile Version to Publish",
+            interactive=True,
+        )
+        publish_btn = gr.Button("Publish Selected Profile")
+        build_output = gr.Textbox(label="Build Result")
+        backfill_vectors_output = gr.Textbox(label="Vector Backfill", interactive=False)
+        publish_output = gr.Textbox(label="Publish Result")
+
         build_btn.click(
             fn=build_profile_and_refresh,
             outputs=[build_output, publish_profile_dropdown, profile_status],
@@ -1107,14 +1156,11 @@ with gr.Blocks(title="GifAgent") as app:
             outputs=[publish_output, publish_profile_dropdown, profile_status],
         )
         app.load(
-            fn=lambda: ([], "Choose a data folder to review.", gr.update(value=0, maximum=1), []),
-            outputs=[gallery, info_text, page_slider, page_items_state],
-        )
-        app.load(
             fn=load_profile_publish_choices,
             outputs=[publish_profile_dropdown, profile_status],
         )
-        status_timer.tick(fn=get_profile_status, outputs=[profile_status])
+        profile_status_timer = gr.Timer(10)
+        profile_status_timer.tick(fn=get_profile_status, outputs=[profile_status])
     # Control Panel Tab
     with gr.Tab("Control"):
         gr.Markdown("## Batch Processing Control")
