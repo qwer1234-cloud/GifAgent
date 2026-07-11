@@ -82,6 +82,15 @@ def test_favorite_candidate_records_path_and_hides_it_from_unrated_list(monkeypa
     assert response.status == "favorited"
     assert response.full_path == str(gif_path)
     assert payload["total"] == 0
+    event = conn.execute(
+        "SELECT rating FROM preference_events WHERE target_id=? ORDER BY created_at DESC LIMIT 1",
+        ("cand-favorite",),
+    ).fetchone()
+    candidate_status = conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id=?", ("cand-favorite",)
+    ).fetchone()[0]
+    assert event["rating"] == "like"
+    assert candidate_status == "candidate"
 
 
 def test_list_candidates_allows_all_statuses_and_prefers_preview_path(monkeypatch):

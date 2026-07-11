@@ -30,6 +30,7 @@ class PreferenceEventService:
         source_video_sha256: str,
         scenario_keys: list[str],
         note: str | None = None,
+        update_candidate_status: bool = True,
     ) -> FeedbackEvent:
         if rating not in _VALID_RATINGS:
             raise ValueError(
@@ -56,8 +57,9 @@ class PreferenceEventService:
             ),
         )
 
-        # Update candidate_gifs.status unless rating is 'skip'
-        if rating != "skip":
+        # Some positive events (such as Favorite) must not change the review
+        # status even though they should still contribute to preference memory.
+        if update_candidate_status and rating in RATING_TO_STATUS:
             new_status = RATING_TO_STATUS[rating]
             self.conn.execute(
                 "UPDATE candidate_gifs SET status=?, updated_at=? WHERE candidate_id=?",

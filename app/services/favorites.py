@@ -13,7 +13,7 @@ class FavoriteService:
 
     def favorite(self, candidate_id: str, full_path: str) -> dict[str, str]:
         now = datetime.now(timezone.utc).isoformat()
-        self.conn.execute(
+        cursor = self.conn.execute(
             """INSERT OR IGNORE INTO favorite_gifs
                (favorite_id, candidate_id, full_path, created_at)
                VALUES (?, ?, ?, ?)""",
@@ -28,4 +28,5 @@ class FavoriteService:
             "candidate_id": candidate_id,
             "status": "favorited",
             "full_path": row["full_path"] if row else full_path,
+            "created": bool(cursor.rowcount),
         }

@@ -458,7 +458,8 @@ def submit_feedback(candidate_id: str, body: FeedbackRequest):
 def favorite_candidate(candidate_id: str, body: FavoriteRequest):
     conn = get_connection()
     row = conn.execute(
-        "SELECT candidate_id, artifact_path FROM candidate_gifs WHERE candidate_id=?",
+        "SELECT candidate_id, source_video_sha256, artifact_path, scenario_keys_json "
+        "FROM candidate_gifs WHERE candidate_id=?",
         (candidate_id,),
     ).fetchone()
     if row is None:
@@ -489,4 +490,16 @@ def favorite_candidate(candidate_id: str, body: FavoriteRequest):
             )
 
     result = FavoriteService(conn).favorite(candidate_id, str(artifact_path))
+    if result.get("created"):
+        import json
+
+        PreferenceEventService(conn).record_feedback(
+            target_type="candidate_gif",
+            target_id=candidate_id,
+            rating="like",
+            source_video_sha256=row["source_video_sha256"],
+            scenario_keys=json.loads(row["scenario_keys_json"] or "[]"),
+            note="favorite",
+            update_candidate_status=False,
+        )
     return FavoriteResponse(**result)
