@@ -63,7 +63,10 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             scenario_keys_json TEXT NOT NULL DEFAULT '[]',
             corrected_tags_json TEXT,
             note TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            previous_status TEXT,
+            undone_at TEXT,
+            undone_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS preference_profile_builds (
@@ -114,4 +117,12 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             ON preference_events(source_video_sha256, created_at);
         """
     )
+    event_columns = {row[1] for row in conn.execute("PRAGMA table_info(preference_events)").fetchall()}
+    for column, ddl in (
+        ("previous_status", "TEXT"),
+        ("undone_at", "TEXT"),
+        ("undone_reason", "TEXT"),
+    ):
+        if column not in event_columns:
+            conn.execute(f"ALTER TABLE preference_events ADD COLUMN {column} {ddl}")
     conn.commit()

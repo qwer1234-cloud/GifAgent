@@ -533,6 +533,16 @@ def favorite_candidate(candidate_id: str, expected_artifact_path: str = ""):
         return f"Error: {e}"
 
 
+def undo_last_action():
+    try:
+        resp = httpx.post(f"{API_BASE}/api/candidates/undo-last", json={}, timeout=10)
+        if resp.status_code == 200:
+            return f"Undo: {resp.json().get('status', 'unknown')}"
+        return f"Error: {resp.status_code} - {_format_api_error(resp)}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
 def submit_review_action(candidate_id: str, action: str, note: str = "", expected_artifact_path: str = ""):
     if action == "favorite":
         return favorite_candidate(candidate_id, expected_artifact_path)
@@ -588,6 +598,16 @@ def rate_and_advance(
         result, [], folder_info, page_update, [], "", "All reviewable folders are complete.", None, "",
         gr.update(choices=folder_choices, value=None), refreshed_folders,
     )
+
+
+def undo_and_refresh(page: int, filter_status: str, folder: str | None):
+    result = undo_last_action()
+    if result != "Undo: undone":
+        return result, gr.update(), gr.update(), gr.update(), gr.update(), "", "", None, ""
+    gallery, info, page_update, page_items = load_candidate_page(
+        int(page), filter_status=filter_status, folder=folder
+    )
+    return result, gallery, info, page_update, page_items, *select_first_candidate(page_items)
 
 
 def get_profile_status():
@@ -879,6 +899,14 @@ REVIEW_SHORTCUTS_JS = """
     document.addEventListener('keydown', (event) => {
         const active = document.activeElement;
         if (['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName) || active?.isContentEditable) return;
+        if (event.ctrlKey && event.key.toLowerCase() === 'z') {
+            const undoButton = document.querySelector('#undo-btn button') || document.querySelector('#undo-btn');
+            if (undoButton) {
+                event.preventDefault();
+                undoButton.click();
+            }
+            return;
+        }
         const elemId = buttonByKey[event.key];
         if (!elemId) return;
         const button = document.querySelector(`#${elemId} button`) || document.querySelector(`#${elemId}`);
@@ -1067,6 +1095,7 @@ with gr.Blocks(title="GifAgent") as app:
                     skip_btn = gr.Button("Favorite", elem_id="favorite-btn")
                 note_input = gr.Textbox(label="Note (optional)")
                 feedback_output = gr.Textbox(label="Result")
+                undo_btn = gr.Button("Undo Last (Ctrl+Z)", elem_id="undo-btn")
 
         info_text = gr.Markdown("")
         page_items_state = gr.State([])
@@ -1120,6 +1149,16 @@ with gr.Blocks(title="GifAgent") as app:
                            candidate_id_input, selected_label, selected_preview,
                            selected_artifact_path_state,
                        ])
+
+        undo_btn.click(
+            fn=undo_and_refresh,
+            inputs=[page_slider, filter_dropdown, folder_dropdown],
+            outputs=[
+                feedback_output, gallery, info_text, page_slider,
+                page_items_state, candidate_id_input, selected_label,
+                selected_preview, selected_artifact_path_state,
+            ],
+        )
 
         like_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "like", n, ep, p, f, folder, root, folders),
                        inputs=[

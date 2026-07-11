@@ -367,6 +367,7 @@ class PreferenceMemoryService:
             """SELECT event_id, target_type, target_id, rating,
                       source_video_sha256, scenario_keys_json, created_at
                FROM preference_events
+               WHERE undone_at IS NULL
                ORDER BY created_at ASC"""
         ).fetchall()
 

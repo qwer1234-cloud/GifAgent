@@ -45,4 +45,7 @@ def test_review_shortcuts_include_like_neutral_dislike_and_favorite():
     assert "'2': 'neutral-btn'" in REVIEW_SHORTCUTS_JS
     assert "'3': 'dislike-btn'" in REVIEW_SHORTCUTS_JS
     assert "'4': 'favorite-btn'" in REVIEW_SHORTCUTS_JS
+    assert "'z'" in REVIEW_SHORTCUTS_JS
+    assert "undo-btn" in REVIEW_SHORTCUTS_JS
+    assert "ctrlKey" in REVIEW_SHORTCUTS_JS
     assert "INPUT" in REVIEW_SHORTCUTS_JS

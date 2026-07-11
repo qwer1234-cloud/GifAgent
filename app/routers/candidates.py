@@ -503,3 +503,10 @@ def favorite_candidate(candidate_id: str, body: FavoriteRequest):
             update_candidate_status=False,
         )
     return FavoriteResponse(**result)
+
+
+@router.post("/undo-last")
+def undo_last_action():
+    """Undo the newest active candidate review action."""
+    conn = get_connection()
+    return PreferenceEventService(conn).undo_last_candidate_action()

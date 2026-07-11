@@ -93,6 +93,28 @@ def test_favorite_candidate_records_path_and_hides_it_from_unrated_list(monkeypa
     assert candidate_status == "candidate"
 
 
+def test_undo_last_action_restores_candidate_and_removes_favorite(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    conn = _setup_conn()
+    gif_path = tmp_path / "undo-favorite.gif"
+    gif_path.write_bytes(b"gif")
+    _insert_candidate(conn, "cand-undo-favorite", artifact_path=str(gif_path), preview_path=str(gif_path))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+    candidates_router.favorite_candidate(
+        "cand-undo-favorite",
+        candidates_router.FavoriteRequest(expected_artifact_path=str(gif_path)),
+    )
+
+    response = candidates_router.undo_last_action()
+
+    assert response["status"] == "undone"
+    assert conn.execute("SELECT COUNT(*) FROM favorite_gifs").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id='cand-undo-favorite'"
+    ).fetchone()[0] == "candidate"
+
+
 def test_list_candidates_allows_all_statuses_and_prefers_preview_path(monkeypatch):
     from app.routers import candidates as candidates_router
 
