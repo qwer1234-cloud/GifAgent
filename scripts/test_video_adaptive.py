@@ -6,6 +6,7 @@ Two-pass adaptive GIF extraction:
   Adjacent high-score frames are merged into longer clips.
   Top-50 ranked by gif_worthiness.
 """
+import atexit
 import sys, os, subprocess, json, re, base64, time, argparse
 import httpx
 from PIL import Image
@@ -19,7 +20,11 @@ from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
-from app.services.export_cleanup import cleanup_adaptive_export_dir
+from app.services.export_cleanup import (
+    ExportDirectoryBusyError,
+    ExportDirectoryLock,
+    cleanup_adaptive_export_dir,
+)
 from app.services.export_ranking import rank_clips_for_export
 from app.services.gif_naming import build_gif_filename
 from app.services.indexer import get_index
@@ -95,6 +100,14 @@ VLM_OPTIONS = {
 print("=" * 60)
 print(f"Adaptive GIF Extraction — {SAMPLE_INTERVAL}s intervals, ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT}")
 print("=" * 60)
+
+export_lock = ExportDirectoryLock(EXPORT_DIR)
+try:
+    export_lock.acquire()
+except ExportDirectoryBusyError as exc:
+    print(f"ERROR: {exc}")
+    raise SystemExit(2)
+atexit.register(export_lock.release)
 
 if CLEAR_OUTPUT_DIR:
     removed_outputs = cleanup_adaptive_export_dir(EXPORT_DIR, video_name=video_name)
