@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,16 +12,14 @@ from pydantic import BaseModel, Field
 
 from app.db import get_connection
 from app.services.preference_events import PreferenceEventService
+from app.services.favorites import FavoriteService
+from app.services.gif_naming import parse_clip_filename
 
 
 router = APIRouter(prefix="/api/candidates", tags=["candidates"])
 
-_LIST_STATUS_PATTERN = r"^(all|candidate|liked|disliked|neutral|promoted|rejected|archived)$"
+_LIST_STATUS_PATTERN = r"^(all|candidate|favorited|liked|disliked|neutral|promoted|rejected|archived)$"
 _GIF_SUFFIX = ".gif"
-_CLIP_FILENAME_RE = re.compile(
-    r"@@@\d+_(?P<start>\d+(?:\.\d+)?)s-(?P<end>\d+(?:\.\d+)?)s\.gif$",
-    re.IGNORECASE,
-)
 
 
 class FeedbackRequest(BaseModel):
@@ -115,10 +112,7 @@ def _add_folder_count(
 
 
 def _parse_clip_times(path: Path) -> tuple[float, float]:
-    match = _CLIP_FILENAME_RE.search(path.name)
-    if not match:
-        return 0.0, 0.0
-    return float(match.group("start")), float(match.group("end"))
+    return parse_clip_filename(path)
 
 
 def _materialize_filesystem_candidates_for_folder(conn, folder: Path) -> int:
@@ -199,19 +193,26 @@ def _row_payload(row) -> dict:
 def _candidate_rows(conn, *, status: str):
     where_sql = ""
     params: list[object] = []
-    if status != "all":
-        where_sql = "WHERE status=?"
+    if status == "candidate":
+        where_sql = "WHERE c.status=? AND fg.candidate_id IS NULL"
+        params.append(status)
+    elif status == "favorited":
+        where_sql = "WHERE fg.candidate_id IS NOT NULL"
+    elif status != "all":
+        where_sql = "WHERE c.status=?"
         params.append(status)
 
     return conn.execute(
         f"""
-        SELECT candidate_id, source_run_id, source_run_candidate_id,
-               start_sec, end_sec, artifact_path, preview_path,
-               COALESCE(preview_path, artifact_path) AS display_path,
-               status, base_rag_similarity, final_score, created_at
-        FROM candidate_gifs
+        SELECT c.candidate_id, c.source_run_id, c.source_run_candidate_id,
+               c.start_sec, c.end_sec, c.artifact_path, c.preview_path,
+               COALESCE(c.preview_path, c.artifact_path) AS display_path,
+               CASE WHEN fg.candidate_id IS NOT NULL THEN 'favorited' ELSE c.status END AS status,
+               c.base_rag_similarity, c.final_score, c.created_at
+        FROM candidate_gifs c
+        LEFT JOIN favorite_gifs fg ON fg.candidate_id = c.candidate_id
         {where_sql}
-        ORDER BY created_at DESC
+        ORDER BY c.created_at DESC
         """,
         params,
     ).fetchall()
@@ -239,14 +240,17 @@ def list_candidate_folders(
 
     folders: dict[Path, dict] = {}
     known_artifact_paths: set[Path] = set()
+    known_rows = rows if status == "all" else _candidate_rows(conn, status="all")
+    for known_row in known_rows:
+        artifact_path = _resolve_artifact_path(known_row["artifact_path"])
+        if artifact_path is not None:
+            known_artifact_paths.add(artifact_path)
     for row in rows:
         folder = _folder_for_row(row, root_path)
         if folder is None:
             continue
         row_status = row["status"]
         artifact_path = _resolve_artifact_path(row["artifact_path"])
-        if artifact_path is not None:
-            known_artifact_paths.add(artifact_path)
         _add_folder_count(
             folders,
             root_path,
@@ -340,35 +344,16 @@ def list_candidates(
             "candidates": [_row_payload(r) for r in page_rows],
         }
 
-    where_sql = ""
-    params: list[object] = []
-    if status != "all":
-        where_sql = "WHERE status=?"
-        params.append(status)
-
-    total = conn.execute(
-        f"SELECT COUNT(*) FROM candidate_gifs {where_sql}",
-        params,
-    ).fetchone()[0]
-
-    status_rows = conn.execute(
-        "SELECT status, COUNT(*) AS count FROM candidate_gifs GROUP BY status"
-    ).fetchall()
-    status_counts = {r["status"]: r["count"] for r in status_rows}
-
-    rows = conn.execute(
-        f"""
-        SELECT candidate_id, source_run_id, source_run_candidate_id,
-               start_sec, end_sec, artifact_path, preview_path,
-               COALESCE(preview_path, artifact_path) AS display_path,
-               status, base_rag_similarity, final_score
-        FROM candidate_gifs
-        {where_sql}
-        ORDER BY created_at DESC
-        LIMIT ? OFFSET ?
-        """,
-        (*params, limit, offset),
-    ).fetchall()
+    all_rows = _candidate_rows(conn, status="all")
+    status_counts: dict[str, int] = {}
+    for row in all_rows:
+        status_counts[row["status"]] = status_counts.get(row["status"], 0) + 1
+    filtered_rows = [
+        row for row in all_rows
+        if status == "all" or row["status"] == status
+    ]
+    total = len(filtered_rows)
+    rows = filtered_rows[offset : offset + limit]
 
     return {
         "total": total,
@@ -385,6 +370,16 @@ class FeedbackResponse(BaseModel):
     candidate_id: str
     rating: str
     status: str
+
+
+class FavoriteRequest(BaseModel):
+    expected_artifact_path: str | None = None
+
+
+class FavoriteResponse(BaseModel):
+    candidate_id: str
+    status: str
+    full_path: str
 
 
 @router.post("/{candidate_id}/feedback", response_model=FeedbackResponse)
@@ -457,3 +452,41 @@ def submit_feedback(candidate_id: str, body: FeedbackRequest):
         rating=body.rating,
         status=updated["status"],
     )
+
+
+@router.post("/{candidate_id}/favorite", response_model=FavoriteResponse)
+def favorite_candidate(candidate_id: str, body: FavoriteRequest):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT candidate_id, artifact_path FROM candidate_gifs WHERE candidate_id=?",
+        (candidate_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Candidate {candidate_id} not found")
+
+    artifact_path = _resolve_artifact_path(row["artifact_path"])
+    if artifact_path is None or not artifact_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "candidate_path_changed_or_missing",
+                "message": "Candidate GIF location changed or the file is missing.",
+                "artifact_path": row["artifact_path"],
+            },
+        )
+    if body.expected_artifact_path:
+        expected_path = _resolve_artifact_path(body.expected_artifact_path)
+        if expected_path != artifact_path:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "candidate_path_changed",
+                    "expected_artifact_path": _path_display(expected_path)
+                    if expected_path
+                    else body.expected_artifact_path,
+                    "artifact_path": row["artifact_path"],
+                },
+            )
+
+    result = FavoriteService(conn).favorite(candidate_id, _path_display(artifact_path))
+    return FavoriteResponse(**result)

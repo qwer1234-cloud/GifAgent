@@ -65,6 +65,25 @@ def test_list_candidates_is_paginated_and_filtered(monkeypatch):
     assert [c["candidate_id"] for c in payload["candidates"]] == ["cand-new"]
 
 
+def test_favorite_candidate_records_path_and_hides_it_from_unrated_list(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    conn = _setup_conn()
+    gif_path = tmp_path / "favorite.gif"
+    gif_path.write_bytes(b"gif")
+    _insert_candidate(conn, "cand-favorite", artifact_path=str(gif_path), preview_path=str(gif_path))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    response = candidates_router.favorite_candidate(
+        "cand-favorite", candidates_router.FavoriteRequest(expected_artifact_path=str(gif_path))
+    )
+    payload = candidates_router.list_candidates(status="candidate", limit=10, offset=0)
+
+    assert response.status == "favorited"
+    assert response.full_path == str(gif_path)
+    assert payload["total"] == 0
+
+
 def test_list_candidates_allows_all_statuses_and_prefers_preview_path(monkeypatch):
     from app.routers import candidates as candidates_router
 

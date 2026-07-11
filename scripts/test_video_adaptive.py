@@ -21,6 +21,7 @@ from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
 from app.services.export_cleanup import cleanup_adaptive_export_dir
 from app.services.export_ranking import rank_clips_for_export
+from app.services.gif_naming import build_gif_filename
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
@@ -691,7 +692,10 @@ for i, clip in enumerate(ranked_clips):
     start_ts = int(start)
     end_ts = int(start + duration)
     video_name = os.path.splitext(os.path.basename(VIDEO_PATH))[0]
-    out_gif = f"{EXPORT_DIR}/{video_name}@@@{i+1:03d}_{start_ts}s-{end_ts}s.gif"
+    out_gif = os.path.join(
+        EXPORT_DIR,
+        build_gif_filename(video_name, i + 1, start, start + duration),
+    )
     palette = f"{EXPORT_DIR}/pal_{i+1:03d}.png"
 
     fps = GIF_FPS

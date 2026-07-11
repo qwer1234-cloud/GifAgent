@@ -3,6 +3,7 @@ from app.ui.candidate_review import (
     CONFIG_FIELD_KEYS,
     CONFIG_TOOLTIP_CSS,
     CONFIG_TOOLTIP_JS,
+    REVIEW_SHORTCUTS_JS,
     REVIEW_LAYOUT_CSS,
     config_checkbox_kwargs,
     config_field_kwargs,
@@ -43,7 +44,7 @@ def test_launch_injects_tooltip_css():
     kwargs = launch_kwargs()
     assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS
     assert ".config-tooltip-icon" in kwargs["css"]
-    assert kwargs["js"] == CONFIG_TOOLTIP_JS
+    assert kwargs["js"] == CONFIG_TOOLTIP_JS + REVIEW_SHORTCUTS_JS
     assert "preference-memory-enabled" in kwargs["js"]
     assert kwargs["js"].lstrip().startswith("(() => {")
     assert "setTimeout(attach" in kwargs["js"]

@@ -43,6 +43,17 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(candidate_id) REFERENCES candidate_gifs(candidate_id)
         );
 
+        CREATE TABLE IF NOT EXISTS favorite_gifs (
+            favorite_id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL UNIQUE,
+            full_path TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(candidate_id) REFERENCES candidate_gifs(candidate_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_favorite_gifs_candidate
+            ON favorite_gifs(candidate_id);
+
         CREATE TABLE IF NOT EXISTS preference_events (
             event_id TEXT PRIMARY KEY,
             target_type TEXT NOT NULL CHECK(target_type IN ('media','candidate_gif')),

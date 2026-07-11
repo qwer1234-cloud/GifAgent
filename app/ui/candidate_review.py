@@ -378,6 +378,7 @@ def load_candidates(
 
 RATING_ICON = {
     "candidate": "todo",
+    "favorited": "favorite",
     "liked": "like",
     "disliked": "dislike",
     "neutral": "neutral",
@@ -512,6 +513,32 @@ def rate_candidate(candidate_id: str, rating: str, note: str = "", expected_arti
         return f"Error: {e}"
 
 
+def favorite_candidate(candidate_id: str, expected_artifact_path: str = ""):
+    if not candidate_id or not candidate_id.strip():
+        return "Error: No candidate selected"
+    try:
+        payload = {}
+        if expected_artifact_path:
+            payload["expected_artifact_path"] = expected_artifact_path
+        resp = httpx.post(
+            f"{API_BASE}/api/candidates/{candidate_id.strip()}/favorite",
+            json=payload,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return f"Rated: {data['status']}"
+        return f"Error: {resp.status_code} - {_format_api_error(resp)}"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+def submit_review_action(candidate_id: str, action: str, note: str = "", expected_artifact_path: str = ""):
+    if action == "favorite":
+        return favorite_candidate(candidate_id, expected_artifact_path)
+    return rate_candidate(candidate_id, action, note, expected_artifact_path)
+
+
 def rate_and_advance(
     candidate_id: str,
     rating: str,
@@ -524,7 +551,7 @@ def rate_and_advance(
     previous_folders: list[dict],
 ):
     """Rate a GIF, select the next item, and advance folders when necessary."""
-    result = rate_candidate(candidate_id, rating, note, expected_artifact_path)
+    result = submit_review_action(candidate_id, rating, note, expected_artifact_path)
     if not result.startswith("Rated:"):
         return (
             result, gr.update(), gr.update(), gr.update(), gr.update(),
@@ -841,6 +868,28 @@ CONFIG_TOOLTIP_JS = f"""
 """
 
 
+REVIEW_SHORTCUTS_JS = """
+(() => {
+    const buttonByKey = {
+        '1': 'like-btn',
+        '2': 'neutral-btn',
+        '3': 'dislike-btn',
+        '4': 'favorite-btn',
+    };
+    document.addEventListener('keydown', (event) => {
+        const active = document.activeElement;
+        if (['INPUT', 'TEXTAREA', 'SELECT'].includes(active?.tagName) || active?.isContentEditable) return;
+        const elemId = buttonByKey[event.key];
+        if (!elemId) return;
+        const button = document.querySelector(`#${elemId} button`) || document.querySelector(`#${elemId}`);
+        if (!button) return;
+        event.preventDefault();
+        button.click();
+    });
+})();
+"""
+
+
 def launch_kwargs() -> dict:
     return {
         "server_name": "127.0.0.1",
@@ -848,7 +897,7 @@ def launch_kwargs() -> dict:
         "allowed_paths": GRADIO_ALLOWED_PATHS,
         "theme": gr.themes.Soft(),
         "css": CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS,
-        "js": CONFIG_TOOLTIP_JS,
+        "js": CONFIG_TOOLTIP_JS + REVIEW_SHORTCUTS_JS,
     }
 
 
@@ -996,7 +1045,7 @@ with gr.Blocks(title="GifAgent") as app:
                     elem_id="candidate-gallery")
                 with gr.Row():
                     filter_dropdown = gr.Dropdown(
-                        choices=["candidate", "all", "liked", "disliked", "neutral", "rejected"],
+                        choices=["candidate", "favorited", "all", "liked", "disliked", "neutral", "rejected"],
                         value="candidate", label="Filter by status")
                     page_slider = gr.Slider(minimum=0, maximum=1, value=0, step=1, label="Page")
 
@@ -1012,10 +1061,10 @@ with gr.Blocks(title="GifAgent") as app:
                     elem_id="selected-gif-preview",
                 )
                 with gr.Row():
-                    like_btn = gr.Button("Like", variant="primary")
-                    neutral_btn = gr.Button("Neutral")
-                    dislike_btn = gr.Button("Dislike", variant="stop")
-                    skip_btn = gr.Button("Skip")
+                    like_btn = gr.Button("Like", variant="primary", elem_id="like-btn")
+                    neutral_btn = gr.Button("Neutral", elem_id="neutral-btn")
+                    dislike_btn = gr.Button("Dislike", variant="stop", elem_id="dislike-btn")
+                    skip_btn = gr.Button("Favorite", elem_id="favorite-btn")
                 note_input = gr.Textbox(label="Note (optional)")
                 feedback_output = gr.Textbox(label="Result")
 
@@ -1102,7 +1151,7 @@ with gr.Blocks(title="GifAgent") as app:
                               page_items_state, candidate_id_input, selected_label,
                               selected_preview, selected_artifact_path_state, folder_dropdown, folder_choices_state,
                           ])
-        skip_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "skip", n, ep, p, f, folder, root, folders),
+        skip_btn.click(fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(c, "favorite", n, ep, p, f, folder, root, folders),
                        inputs=[
                            candidate_id_input, note_input, selected_artifact_path_state,
                            page_slider, filter_dropdown, folder_dropdown, review_root_input, folder_choices_state,
