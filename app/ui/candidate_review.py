@@ -1,7 +1,7 @@
 """
 Gradio UI - candidate GIF review + batch process control panel.
 """
-import html, json, os, subprocess, signal, sys, time
+import html, json, os, subprocess, signal, sys, threading, time
 from pathlib import Path
 
 import gradio as gr
@@ -17,6 +17,7 @@ from app.services.batch_queue import (
     load_queue,
     load_queue_state,
     pending_jobs,
+    save_queue_state,
 )
 from app.services.candidate_vectors import backfill_candidate_vectors
 from app.services.embedding import compute_text_embedding
@@ -29,6 +30,7 @@ BATCH_QUEUE_STATE_FILE = "data/batch_queue_state.json"
 BATCH_LOG_FILE = "data/batch_subprocess.log"
 DRAINING_POLL_INTERVAL_SECONDS = 0.01
 DRAINING_POLL_ATTEMPTS = 50
+QUEUE_START_LOCK = threading.Lock()
 CONFIG_FILE = "configs/models.yaml"
 PAGE_SIZE = 12
 THUMB_DIR = "data/thumbs/candidates"
@@ -311,8 +313,13 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
         return f"Failed to start: {e}"
 
 
-def start_batch_queue(*, allow_terminal_successor: bool = False):
-    """Start the persistent folder queue without replacing a valid worker."""
+def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
+    """Start a queue worker after the caller has claimed the launch lock."""
+    queue_state = load_queue_state()
+    queue_status = queue_state.get("status", "idle")
+    if queue_status in {"starting", "running", "draining"}:
+        return f"Batch queue already {queue_status}."
+
     status = get_batch_status()
     if status["running"] and not allow_terminal_successor:
         return f"Batch already running (PID {status['pid']})."
@@ -330,8 +337,12 @@ def start_batch_queue(*, allow_terminal_successor: bool = False):
         cmd = ["uv", "run", "python", "-u", "scripts/test_video_batch.py", "--queue-file", BATCH_QUEUE_FILE]
 
     os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-    log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
+    queue_state["status"] = "starting"
+    queue_state["current_job_id"] = None
+    save_queue_state(queue_state)
+    log_file = None
     try:
+        log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
             cmd, cwd=".", stdout=log_file, stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW,
@@ -340,8 +351,20 @@ def start_batch_queue(*, allow_terminal_successor: bool = False):
             f.write(str(proc.pid))
         return f"Batch queue started (PID {proc.pid})."
     except Exception as exc:
-        log_file.close()
+        if log_file is not None:
+            log_file.close()
+        queue_state["status"] = "idle"
+        queue_state["current_job_id"] = None
+        save_queue_state(queue_state)
         return f"Failed to start queue: {exc}"
+
+
+def start_batch_queue(*, allow_terminal_successor: bool = False):
+    """Start the persistent folder queue without replacing a valid worker."""
+    with QUEUE_START_LOCK:
+        return _start_batch_queue_locked(
+            allow_terminal_successor=allow_terminal_successor,
+        )
 
 
 def _wait_for_draining_queue_state(state: dict) -> str:
@@ -367,20 +390,21 @@ def append_batch_directory(
     if not directory or not os.path.isdir(directory):
         return f"Invalid directory: {video_dir}", refresh_batch_status()[1]
 
-    append_queue_job(directory, int(limit or 0), (extensions or "").strip())
-    queue = load_queue()
-    queue_state = load_queue_state()
-    queue_text = format_queue_status(queue, queue_state)
-    queue_status = queue_state.get("status", "idle")
+    with QUEUE_START_LOCK:
+        append_queue_job(directory, int(limit or 0), (extensions or "").strip())
+        queue = load_queue()
+        queue_state = load_queue_state()
+        queue_text = format_queue_status(queue, queue_state)
+        queue_status = queue_state.get("status", "idle")
 
-    if queue_status == "draining":
-        queue_status = _wait_for_draining_queue_state(queue_state)
-    if queue_status in {"running", "draining"}:
-        return f"Queued: {directory}", queue_text
-    return (
-        f"Queued: {directory}. {start_batch_queue(allow_terminal_successor=True)}",
-        queue_text,
-    )
+        if queue_status == "draining":
+            queue_status = _wait_for_draining_queue_state(queue_state)
+        if queue_status in {"starting", "running", "draining"}:
+            return f"Queued: {directory}", queue_text
+        return (
+            f"Queued: {directory}. {_start_batch_queue_locked(allow_terminal_successor=True)}",
+            queue_text,
+        )
 
 
 # Candidate review functions
