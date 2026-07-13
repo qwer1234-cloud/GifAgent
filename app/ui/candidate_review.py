@@ -479,6 +479,80 @@ def _wait_for_handoff_exit(pid: int, completed_launch_token: str | None) -> bool
     return False
 
 
+def _launch_queue_child_locked(queue_state: dict) -> str:
+    """Create a queue claim and launch its child while state/queue are locked."""
+    launch_token = uuid.uuid4().hex
+    if getattr(sys, "frozen", False):
+        script_path = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
+        cmd = [sys.executable, "--run-script", script_path]
+    else:
+        cmd = [sys.executable, "-u", "scripts/test_video_batch.py"]
+    cmd.extend([
+        "--queue-file", BATCH_QUEUE_FILE,
+        "--launch-token", launch_token,
+        "--worker-lease-file", BATCH_WORKER_LEASE_FILE,
+        "--pid-file", PID_FILE,
+    ])
+
+    queue_state["status"] = "starting"
+    queue_state["current_job_id"] = None
+    queue_state["launch_token"] = launch_token
+    queue_state["launcher_pid"] = os.getpid()
+    queue_state.pop("worker_pid", None)
+    queue_state.pop("cleanup_pending", None)
+    queue_state.pop("failed_launch_token", None)
+    save_queue_state(queue_state)
+
+    log_file = None
+    try:
+        os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+        log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
+        proc = subprocess.Popen(
+            cmd,
+            cwd=".",
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as exc:
+        queue_state["status"] = "idle"
+        queue_state["current_job_id"] = None
+        queue_state["failed_launch_token"] = launch_token
+        queue_state["last_error"] = f"Queue launch failed: {exc}"
+        queue_state.pop("launch_token", None)
+        queue_state.pop("launcher_pid", None)
+        queue_state.pop("spawned_pid", None)
+        queue_state.pop("worker_pid", None)
+        save_queue_state(queue_state)
+        return f"Failed to start queue: {exc}"
+    finally:
+        if log_file is not None:
+            try:
+                log_file.close()
+            except OSError:
+                pass
+
+    try:
+        current_claim = load_queue_state()
+        if (
+            current_claim.get("status") == "starting"
+            and current_claim.get("launch_token") == launch_token
+        ):
+            current_claim["spawned_pid"] = proc.pid
+            save_queue_state(current_claim)
+    except Exception as exc:
+        # The launch claim remains active. The child still gets the first
+        # chance to persist worker_pid/current state.
+        queue_state["cleanup_pending"] = True
+        queue_state["last_error"] = f"Spawn PID handshake pending: {exc}"
+        try:
+            save_queue_state(queue_state)
+        except Exception:
+            pass
+
+    return f"Batch queue launch requested (PID {proc.pid})."
+
+
 def _start_batch_queue_locked():
     """Claim and launch one queue child under the cross-process state lock."""
     while True:
@@ -503,94 +577,43 @@ def _start_batch_queue_locked():
                         return "No queued folders to process."
                 except Exception as exc:
                     return f"Queue unavailable: {exc}"
-
-                launch_token = uuid.uuid4().hex
-                if getattr(sys, "frozen", False):
-                    script_path = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
-                    cmd = [sys.executable, "--run-script", script_path]
-                else:
-                    cmd = [sys.executable, "-u", "scripts/test_video_batch.py"]
-                cmd.extend([
-                    "--queue-file", BATCH_QUEUE_FILE,
-                    "--launch-token", launch_token,
-                    "--worker-lease-file", BATCH_WORKER_LEASE_FILE,
-                    "--pid-file", PID_FILE,
-                ])
-
-                queue_state["status"] = "starting"
-                queue_state["current_job_id"] = None
-                queue_state["launch_token"] = launch_token
-                queue_state["launcher_pid"] = os.getpid()
-                queue_state.pop("worker_pid", None)
-                queue_state.pop("cleanup_pending", None)
-                queue_state.pop("failed_launch_token", None)
-                save_queue_state(queue_state)
-
-                log_file = None
-                try:
-                    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-                    log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
-                    proc = subprocess.Popen(
-                        cmd,
-                        cwd=".",
-                        stdout=log_file,
-                        stderr=subprocess.STDOUT,
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
-                except Exception as exc:
-                    queue_state["status"] = "idle"
-                    queue_state["current_job_id"] = None
-                    queue_state["failed_launch_token"] = launch_token
-                    queue_state["last_error"] = f"Queue launch failed: {exc}"
-                    queue_state.pop("launch_token", None)
-                    queue_state.pop("launcher_pid", None)
-                    queue_state.pop("spawned_pid", None)
-                    queue_state.pop("worker_pid", None)
-                    save_queue_state(queue_state)
-                    return f"Failed to start queue: {exc}"
-                finally:
-                    if log_file is not None:
-                        try:
-                            log_file.close()
-                        except OSError:
-                            pass
-
-                try:
-                    current_claim = load_queue_state()
-                    if (
-                        current_claim.get("status") == "starting"
-                        and current_claim.get("launch_token") == launch_token
-                    ):
-                        current_claim["spawned_pid"] = proc.pid
-                        save_queue_state(current_claim)
-                except Exception as exc:
-                    # The launch claim remains active. The child still gets the
-                    # first chance to persist worker_pid/current state.
-                    queue_state["cleanup_pending"] = True
-                    queue_state["last_error"] = f"Spawn PID handshake pending: {exc}"
-                    try:
-                        save_queue_state(queue_state)
-                    except Exception:
-                        pass
-
-                # The child owns worker_pid and its first running/current state.
-                return f"Batch queue launch requested (PID {proc.pid})."
+                return _launch_queue_child_locked(queue_state)
 
         previous_pid, completed_token = handoff
-        if not _wait_for_handoff_exit(previous_pid, completed_token):
-            return f"Previous queue worker PID {previous_pid} is still exiting; folder remains queued."
-        with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+        if _wait_for_handoff_exit(previous_pid, completed_token):
+            with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+                current = load_queue_state()
+                if (
+                    current.get("status") == "idle"
+                    and current.get("previous_worker_pid") == previous_pid
+                    and current.get("completed_launch_token") == completed_token
+                ):
+                    current.pop("previous_worker_pid", None)
+                    current.pop("completed_launch_token", None)
+                    save_queue_state(current)
+            continue
+
+        with queue_state_transaction(BATCH_QUEUE_FILE, BATCH_QUEUE_STATE_FILE):
             current = load_queue_state()
-            if (
+            same_handoff = (
                 current.get("status") == "idle"
                 and current.get("previous_worker_pid") == previous_pid
                 and current.get("completed_launch_token") == completed_token
-            ):
+            )
+            has_new_owner = any(
+                current.get(field)
+                for field in ("worker_pid", "spawned_pid", "launcher_pid", "launch_token")
+            )
+            if not same_handoff or has_new_owner:
+                if current.get("status") in {"starting", "running", "draining"}:
+                    return f"Batch queue already {current['status']}."
+                return "Batch queue handoff changed; folder remains queued."
+            if not pending_jobs(load_queue(), current):
                 current.pop("previous_worker_pid", None)
                 current.pop("completed_launch_token", None)
                 save_queue_state(current)
-
-
+                return "No queued folders to process."
+            return _launch_queue_child_locked(current)
 def start_batch_queue(
     video_dir: str = "",
     limit: int = 0,

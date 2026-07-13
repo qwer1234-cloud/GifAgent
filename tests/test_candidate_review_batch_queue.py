@@ -953,3 +953,194 @@ def test_successor_launch_waits_for_exact_terminal_pid_handshake(monkeypatch, tm
     assert "launch requested" in message
     assert events[:2] == [("gone", 999), ("gone", 999)]
     assert events[-1] == ("launch", 1003)
+
+
+def test_handoff_timeout_launches_successor_while_old_lease_is_still_held(
+    monkeypatch, tmp_path
+):
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    from app.services.batch_queue import (
+        append_queue_job,
+        load_queue,
+        load_queue_state,
+        save_queue_state,
+    )
+    from app.ui import candidate_review
+    from scripts import test_video_batch
+
+    queue_path = tmp_path / "batch_queue.json"
+    state_path = tmp_path / "batch_queue_state.json"
+    lease_path = tmp_path / "batch_worker.lock"
+    pid_path = tmp_path / "batch.pid"
+    log_path = tmp_path / "batch.log"
+    direct_ready = tmp_path / "direct-ready"
+    direct_release = tmp_path / "direct-release"
+    child_threads = []
+    calls = []
+    results = {}
+    gone_checks = []
+
+    job = append_queue_job("C:/videos/after-handoff", path=queue_path)
+    save_queue_state(
+        {
+            "status": "idle",
+            "current_job_id": None,
+            "previous_worker_pid": 999,
+            "completed_launch_token": "old-token",
+            "jobs": {},
+        },
+        state_path,
+    )
+
+    owner_script = """
+import sys
+import time
+from pathlib import Path
+from app.services.batch_queue import WorkerLease
+
+lease = WorkerLease(sys.argv[1], mode="queue").acquire()
+Path(sys.argv[2]).write_text("ready", encoding="ascii")
+try:
+    while not Path(sys.argv[3]).exists():
+        time.sleep(0.01)
+finally:
+    lease.release()
+"""
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            owner_script,
+            str(lease_path),
+            str(direct_ready),
+            str(direct_release),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_FILE", str(queue_path))
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_STATE_FILE", str(state_path))
+    monkeypatch.setattr(candidate_review, "BATCH_WORKER_LEASE_FILE", str(lease_path))
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(pid_path))
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(log_path))
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: load_queue(queue_path))
+    monkeypatch.setattr(
+        candidate_review,
+        "load_queue_state",
+        lambda: load_queue_state(state_path),
+    )
+    monkeypatch.setattr(
+        candidate_review,
+        "save_queue_state",
+        lambda state: save_queue_state(state, state_path),
+    )
+    monkeypatch.setattr(
+        candidate_review,
+        "_is_process_definitely_gone",
+        lambda pid: gone_checks.append(pid) or False,
+    )
+    monkeypatch.setattr(candidate_review, "WORKER_CLEANUP_POLL_ATTEMPTS", 3)
+    monkeypatch.setattr(candidate_review.time, "sleep", lambda _seconds: None)
+
+    def fake_popen(command, **_kwargs):
+        token = command[command.index("--launch-token") + 1]
+
+        def run_child():
+            results["result"] = test_video_batch.run_queue(
+                str(queue_path),
+                process_job=lambda current_job: calls.append(current_job["job_id"]) or 0,
+                worker_lease_file=lease_path,
+                pid_file=pid_path,
+                launch_token=token,
+            )
+
+        child = threading.Thread(target=run_child)
+        child_threads.append(child)
+        child.start()
+        return type("FakeProcess", (), {"pid": 4243})()
+
+    monkeypatch.setattr(candidate_review.subprocess, "Popen", fake_popen)
+
+    try:
+        deadline = time.monotonic() + 5
+        while not direct_ready.exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert direct_ready.exists(), owner.communicate(timeout=1)
+
+        message = candidate_review.start_batch_queue()
+
+        assert "Batch queue launch requested (PID 4243)" in message
+        assert len(gone_checks) >= 4
+        assert owner.poll() is None
+        direct_release.write_text("release", encoding="ascii")
+        for child in child_threads:
+            child.join(timeout=5)
+            assert not child.is_alive()
+    finally:
+        direct_release.write_text("release", encoding="ascii")
+        for child in child_threads:
+            if child.is_alive():
+                child.join(timeout=1)
+        if owner.poll() is None:
+            owner.terminate()
+            owner.wait(timeout=3)
+
+    state = load_queue_state(state_path)
+    assert results["result"] == 0
+    assert calls == [job["job_id"]]
+    assert state["jobs"][job["job_id"]]["status"] == "completed"
+    assert state["completed_launch_token"] != "old-token"
+
+
+def test_handoff_timeout_does_not_clear_new_owner_or_old_token(monkeypatch, tmp_path):
+    from app.ui import candidate_review
+
+    state_store = {
+        "status": "idle",
+        "current_job_id": None,
+        "previous_worker_pid": 999,
+        "completed_launch_token": "old-token",
+        "jobs": {"job-1": {"status": "pending"}},
+    }
+    launches = []
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_FILE", str(tmp_path / "queue.json"))
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path / "batch.pid"))
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: dict(state_store))
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-1"}]})
+    monkeypatch.setattr(candidate_review, "pending_jobs", lambda queue, state: queue["jobs"])
+    monkeypatch.setattr(candidate_review, "_is_process_definitely_gone", lambda _pid: False)
+
+    def timeout_with_new_owner(_pid, _token):
+        state_store.clear()
+        state_store.update(
+            {
+                "status": "starting",
+                "current_job_id": None,
+                "launch_token": "new-token",
+                "worker_pid": 333,
+                "jobs": {"job-1": {"status": "pending"}},
+            }
+        )
+        return False
+
+    monkeypatch.setattr(candidate_review, "_wait_for_handoff_exit", timeout_with_new_owner)
+    monkeypatch.setattr(
+        candidate_review.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: launches.append(True),
+    )
+
+    message = candidate_review.start_batch_queue()
+
+    assert message == "Batch queue already starting."
+    assert launches == []
+    assert state_store["launch_token"] == "new-token"
+    assert state_store["worker_pid"] == 333
