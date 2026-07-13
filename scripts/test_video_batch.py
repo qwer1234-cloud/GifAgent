@@ -10,6 +10,7 @@ Usage:
 import sys, os, subprocess, json, time, argparse
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 # Windows console defaults to GBK — reconfigure to handle Unicode filenames (💦💢💗 etc.)
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -21,6 +22,16 @@ REUSABLE_CHECKPOINT_STATUSES = {"ok", "dedup_skipped"}
 RETRYABLE_CHECKPOINT_STATUSES = {"failed", "timeout"}
 
 from app.services.video_fingerprint import compute_fingerprint, find_duplicate_in_checkpoint
+from app.services.batch_queue import (
+    load_queue,
+    load_queue_state,
+    pending_jobs,
+    save_queue_state,
+    update_job_state,
+)
+
+
+DEFAULT_EXTENSIONS = ".mp4,.mkv,.avi,.mov,.webm,.ts"
 
 
 def load_checkpoint():
@@ -77,28 +88,14 @@ def update_last_run(cp: dict, **updates):
     cp["last_run"] = run
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dir", required=True, help="Directory containing video files")
-    parser.add_argument("--limit", type=int, default=0, help="Max videos to process (0=all)")
-    parser.add_argument("--dry-run", action="store_true", help="List videos without processing")
-    parser.add_argument("--extensions", default=".mp4,.mkv,.avi,.mov,.webm,.ts", help="Video extensions")
-    parser.add_argument("--force", action="store_true", help="Re-process completed videos")
-    args = parser.parse_args()
-
-    videos = discover_videos(args.dir, args.extensions)
+def run_single_directory(video_dir: str, limit: int, extensions: str, force: bool) -> int:
+    videos = discover_videos(video_dir, extensions)
 
     if not videos:
-        print(f"No videos found in {args.dir}")
+        print(f"No videos found in {video_dir}")
         return 1
 
-    print(f"Found {len(videos)} videos in {args.dir}")
-
-    if args.dry_run:
-        for i, v in enumerate(videos):
-            name = os.path.splitext(os.path.basename(v))[0]
-            print(f"  [{i+1}] {name}")
-        return 0
+    print(f"Found {len(videos)} videos in {video_dir}")
 
     # ── Load checkpoint ──────────────────────────────────────────────────
     cp = load_checkpoint()
@@ -113,14 +110,14 @@ def main():
     for v in videos:
         vname = os.path.splitext(os.path.basename(v))[0]
         existing = cp["completed"].get(vname)
-        if existing and not args.force:
+        if existing and not force:
             if checkpoint_entry_can_be_reused(existing):
                 skipped += 1
                 continue
             retrying += 1
 
         # Content-based dedup: skip if a different-named video with same content was already processed
-        if not args.force:
+        if not force:
             fp = compute_fingerprint(v)
             if fp:
                 dup_of = find_duplicate_in_checkpoint(fp, cp)
@@ -140,16 +137,16 @@ def main():
 
     print(f"Checkpoint: {skipped} reusable, {retrying} retrying, {dedup_skipped} dedup-skipped, {len(pending)} pending")
 
-    if args.limit and args.limit < len(pending):
-        pending = pending[:args.limit]
-        print(f"Limited to {args.limit} videos (this run)")
+    if limit and limit < len(pending):
+        pending = pending[:limit]
+        print(f"Limited to {limit} videos (this run)")
 
     update_last_run(
         cp,
         status="running" if pending else "complete",
         started_at=datetime.now().isoformat(),
-        dir=args.dir,
-        limit=args.limit,
+        dir=video_dir,
+        limit=limit,
         planned=len(pending),
         processed=0,
         succeeded=0,
@@ -166,7 +163,7 @@ def main():
         return 0
 
     # Derive input folder name so outputs are grouped: adaptive_test/{folder}/{video}/
-    input_folder = os.path.basename(os.path.normpath(args.dir))
+    input_folder = os.path.basename(os.path.normpath(video_dir))
     base_export_dir = os.path.join("data/exports/adaptive_test", input_folder) if input_folder else "data/exports/adaptive_test"
 
     # ── Process ──────────────────────────────────────────────────────────
@@ -251,6 +248,101 @@ def main():
     )
     save_checkpoint(cp)
     return 0 if failed == 0 else 1
+
+
+def build_single_batch_command(video_dir: str, limit: int, extensions: str) -> list[str]:
+    if getattr(sys, "frozen", False):
+        script = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
+        command = [sys.executable, "--run-script", script]
+    else:
+        command = [sys.executable, "-u", "scripts/test_video_batch.py"]
+    return command + [
+        "--dir",
+        video_dir,
+        "--limit",
+        str(limit),
+        "--extensions",
+        extensions,
+    ]
+
+
+def _queue_state_path(queue_file: str) -> Path:
+    queue_path = Path(queue_file)
+    return queue_path.with_name(f"{queue_path.stem}_state{queue_path.suffix}")
+
+
+def run_queue(
+    queue_file: str,
+    process_job: Callable[[dict], int] | None = None,
+) -> int:
+    state_path = _queue_state_path(queue_file)
+    failed = False
+
+    while True:
+        queue = load_queue(queue_file)
+        state = load_queue_state(state_path)
+        jobs = pending_jobs(queue, state)
+        if not jobs:
+            state["status"] = "idle"
+            state["current_job_id"] = None
+            save_queue_state(state, state_path)
+            return 1 if failed else 0
+
+        job = jobs[0]
+        job_id = job["job_id"]
+        update_job_state(state, job_id, "running", started_at=datetime.now().isoformat())
+        state["status"] = "running"
+        state["current_job_id"] = job_id
+        save_queue_state(state, state_path)
+        print(f"[QUEUE] Processing folder: {job['directory']}", flush=True)
+
+        if process_job is None:
+            command = build_single_batch_command(
+                job["directory"],
+                job.get("limit", 0),
+                job.get("extensions") or DEFAULT_EXTENSIONS,
+            )
+            result = subprocess.run(command, cwd=".").returncode
+        else:
+            result = process_job(job)
+
+        state = load_queue_state(state_path)
+        status = "completed" if result == 0 else "failed"
+        update_job_state(state, job_id, status, finished_at=datetime.now().isoformat())
+        state["status"] = "idle"
+        state["current_job_id"] = None
+        save_queue_state(state, state_path)
+        failed = failed or result != 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dir", help="Directory containing video files")
+    parser.add_argument("--queue-file", help="Queue file containing batch-folder jobs")
+    parser.add_argument("--limit", type=int, default=0, help="Max videos to process (0=all)")
+    parser.add_argument("--dry-run", action="store_true", help="List videos without processing")
+    parser.add_argument("--extensions", default=DEFAULT_EXTENSIONS, help="Video extensions")
+    parser.add_argument("--force", action="store_true", help="Re-process completed videos")
+    args = parser.parse_args()
+
+    if not args.dir and not args.queue_file:
+        parser.error("one of --dir or --queue-file is required")
+    if args.dir and args.queue_file:
+        parser.error("--dir and --queue-file cannot be used together")
+    if args.queue_file:
+        return run_queue(args.queue_file)
+
+    if args.dry_run:
+        videos = discover_videos(args.dir, args.extensions)
+        if not videos:
+            print(f"No videos found in {args.dir}")
+            return 1
+        print(f"Found {len(videos)} videos in {args.dir}")
+        for i, video in enumerate(videos):
+            print(f"  [{i + 1}] {os.path.splitext(os.path.basename(video))[0]}")
+        return 0
+
+    return run_single_directory(args.dir, args.limit, args.extensions, args.force)
 
 
 if __name__ == "__main__":
