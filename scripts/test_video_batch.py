@@ -23,6 +23,7 @@ REUSABLE_CHECKPOINT_STATUSES = {"ok", "dedup_skipped"}
 RETRYABLE_CHECKPOINT_STATUSES = {"failed", "timeout"}
 WORKER_BUSY_EXIT_CODE = 3
 LAUNCH_REJECTED_EXIT_CODE = 4
+QUEUE_LEASE_RETRY_INTERVAL_SECONDS = 0.05
 
 from app.services.video_fingerprint import compute_fingerprint, find_duplicate_in_checkpoint
 from app.services.batch_queue import (
@@ -33,6 +34,7 @@ from app.services.batch_queue import (
     load_queue_state,
     pending_jobs,
     queue_state_lock,
+    queue_state_transaction,
     save_queue_state,
     update_job_state,
 )
@@ -166,6 +168,7 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
     pending: list[tuple[str, str]] = []
     skipped = 0
     dedup_skipped = 0
+    skipped_limit = 0
     retrying = 0
     prescan_failed = 0
     for v in videos:
@@ -230,6 +233,7 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
     print(f"Checkpoint: {skipped} reusable, {retrying} retrying, {dedup_skipped} dedup-skipped, {len(pending)} pending")
 
     if limit and limit < len(pending):
+        skipped_limit = len(pending) - limit
         for skipped_video, _key in pending[limit:]:
             print(
                 _format_video_event(skipped_video, "OK", outcome="SKIPPED", reason="run limit"),
@@ -248,12 +252,13 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
         started_at=datetime.now().isoformat(),
         dir=video_dir,
         limit=limit,
-        planned=prescan_failed + len(pending),
-        processed=prescan_failed,
+        planned=len(videos),
+        processed=prescan_failed + skipped + dedup_skipped + skipped_limit,
         succeeded=0,
         failed=prescan_failed,
         dedup_skipped=dedup_skipped,
         skipped_reusable=skipped,
+        skipped_limit=skipped_limit,
         retrying_backlog=retrying,
         current_video="",
     )
@@ -360,7 +365,15 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
 
         update_last_run(
             cp,
-            processed=prescan_failed + idx + 1,
+            processed=min(
+                len(videos),
+                prescan_failed
+                + skipped
+                + dedup_skipped
+                + skipped_limit
+                + idx
+                + 1,
+            ),
             succeeded=succeeded,
             failed=failed,
             current_video="",
@@ -368,7 +381,14 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
         save_checkpoint(cp)
 
         # Show overall progress
-        total_done = len(cp["completed"]) + failed
+        total_done = (
+            prescan_failed
+            + skipped
+            + dedup_skipped
+            + skipped_limit
+            + idx
+            + 1
+        )
         total_elapsed = time.time() - total_start
         avg = total_elapsed / (idx + 1)
         eta = avg * (len(pending) - idx - 1)
@@ -381,7 +401,7 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
     update_last_run(
         cp,
         status="complete" if failed == 0 else "completed_with_failures",
-        processed=prescan_failed + len(pending),
+        processed=len(videos),
         succeeded=succeeded,
         failed=failed,
         current_video="",
@@ -519,16 +539,23 @@ def _owned_queue_state(state_path: Path, token: str, pid: int) -> dict | None:
 
 
 def _finish_queue_worker(
+    queue_file: str | Path,
     state_path: Path,
     *,
     token: str,
     pid: int,
     error: str = "",
-) -> bool:
-    with queue_state_lock(state_path):
+) -> str:
+    """Commit idle only after an atomic last queue/state inspection."""
+    with queue_state_transaction(queue_file, state_path):
         state = _owned_queue_state(state_path, token, pid)
         if state is None:
-            return False
+            return "lost"
+        if pending_jobs(load_queue(queue_file), state):
+            state["status"] = "running"
+            state["current_job_id"] = None
+            save_queue_state(state, state_path)
+            return "pending"
         state["status"] = "idle"
         state["current_job_id"] = None
         state["previous_worker_pid"] = pid
@@ -541,7 +568,42 @@ def _finish_queue_worker(
         if error:
             state["last_error"] = error
         save_queue_state(state, state_path)
-        return True
+        return "finished"
+
+
+def _acquire_queue_lease(
+    lease: WorkerLease,
+    state_path: Path,
+    launch_token: str | None,
+) -> bool | None:
+    """Wait for a Control-launched queue child to inherit the worker lease."""
+    waited = False
+    while True:
+        try:
+            lease.acquire()
+            return True
+        except WorkerLeaseBusyError as exc:
+            if launch_token is None:
+                message = str(exc)
+                print(
+                    f"[QUEUE] status=FAILED folder={state_path} error={message}",
+                    flush=True,
+                )
+                _record_launch_failure(state_path, launch_token, message)
+                return False
+            try:
+                state = load_queue_state(state_path)
+            except Exception:
+                state = {}
+            if (
+                state.get("status") != "starting"
+                or state.get("launch_token") != launch_token
+            ):
+                return None
+            if not waited:
+                print(f"[QUEUE] waiting for worker lease: {exc}", flush=True)
+                waited = True
+            time.sleep(QUEUE_LEASE_RETRY_INTERVAL_SECONDS)
 
 
 def run_queue(
@@ -558,13 +620,11 @@ def run_queue(
     worker_pid = os.getpid()
     failed = False
     lease = WorkerLease(lease_path, mode="queue")
-    try:
-        lease.acquire()
-    except WorkerLeaseBusyError as exc:
-        message = str(exc)
-        print(f"[QUEUE] status=FAILED folder={queue_file} error={message}", flush=True)
-        _record_launch_failure(state_path, launch_token, message)
+    lease_result = _acquire_queue_lease(lease, state_path, launch_token)
+    if lease_result is False:
         return WORKER_BUSY_EXIT_CODE
+    if lease_result is None:
+        return LAUNCH_REJECTED_EXIT_CODE
 
     token = None
     try:
@@ -600,18 +660,16 @@ def run_queue(
                     job = None
 
             if job is None:
-                with queue_state_lock(state_path):
-                    state = _owned_queue_state(state_path, token, worker_pid)
-                    if state is None:
-                        return 1
-                    queue = load_queue(queue_file)
-                    if pending_jobs(queue, state):
-                        state["status"] = "running"
-                        save_queue_state(state, state_path)
-                        continue
-                _finish_queue_worker(
-                    state_path, token=token, pid=worker_pid
+                finish_result = _finish_queue_worker(
+                    queue_file,
+                    state_path,
+                    token=token,
+                    pid=worker_pid,
                 )
+                if finish_result == "pending":
+                    continue
+                if finish_result == "lost":
+                    return 1
                 return 1 if failed else 0
 
             directory = job["directory"]
@@ -660,7 +718,11 @@ def run_queue(
         error = f"Queue worker error: {type(exc).__name__}: {exc}"
         if token is not None:
             _finish_queue_worker(
-                state_path, token=token, pid=worker_pid, error=error
+                queue_file,
+                state_path,
+                token=token,
+                pid=worker_pid,
+                error=error,
             )
         print(f"[QUEUE] status=FAILED folder={queue_file} error={error}", flush=True)
         return 1

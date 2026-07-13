@@ -18,6 +18,7 @@ from app.services.batch_queue import (
     load_queue_state,
     pending_jobs,
     queue_state_lock,
+    queue_state_transaction,
     save_queue_state,
 )
 from app.services.candidate_vectors import backfill_candidate_vectors
@@ -64,10 +65,22 @@ GRADIO_ALLOWED_PATHS = _build_gradio_allowed_paths()
 def summarize_checkpoint_status(cp: dict) -> dict:
     run = cp.get("last_run")
     if isinstance(run, dict):
+        completed = sum(
+            int(run.get(field, 0) or 0)
+            for field in (
+                "succeeded",
+                "dedup_skipped",
+                "skipped_reusable",
+                "skipped_limit",
+            )
+        )
+        failed = int(run.get("failed", 0) or 0)
+        processed = int(run.get("processed", 0) or 0)
+        planned = int(run.get("planned", 0) or 0)
         return {
-            "completed": int(run.get("succeeded", 0)) + int(run.get("dedup_skipped", 0)),
-            "failed": int(run.get("failed", 0)),
-            "total": int(run.get("planned", 0)),
+            "completed": completed,
+            "failed": failed,
+            "total": max(planned, processed, completed + failed),
             "current_video": run.get("current_video", "") or "",
         }
 
@@ -294,7 +307,7 @@ def stop_batch():
         return f"WARNING: Process {pid} may still be running. Try manual kill."
 
     with QUEUE_START_LOCK:
-        with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+        with queue_state_transaction(BATCH_QUEUE_FILE, BATCH_QUEUE_STATE_FILE):
             queue_state = load_queue_state()
             if queue_state.get("worker_pid") == pid:
                 _recover_stale_queue_state_locked(
@@ -443,7 +456,7 @@ def _start_batch_queue_locked():
     observed_status = get_batch_status()
     while True:
         handoff = None
-        with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+        with queue_state_transaction(BATCH_QUEUE_FILE, BATCH_QUEUE_STATE_FILE):
             queue_state = load_queue_state()
             queue_status = _recover_stale_queue_state_locked(queue_state)
             if queue_status in {"starting", "running", "draining"}:

@@ -149,6 +149,30 @@ def queue_state_lock(path: str | Path = DEFAULT_STATE_FILE):
         lock.release()
 
 
+@contextmanager
+def queue_state_transaction(
+    queue_path: str | Path = DEFAULT_QUEUE_FILE,
+    state_path: str | Path = DEFAULT_STATE_FILE,
+):
+    """Atomically coordinate queue append and worker state transitions.
+
+    Every caller acquires the queue lock before the state lock.  The final
+    worker drain check and a GUI append therefore cannot observe different
+    halves of the handoff.
+    """
+    queue_lock = InterProcessFileLock(_lock_path(queue_path, "queue"))
+    state_lock = InterProcessFileLock(_lock_path(state_path, "state"))
+    with queue_lock:
+        with state_lock:
+            yield
+
+
+def queue_state_path_for_queue(path: str | Path) -> Path:
+    """Return the sibling state path used by a queue file."""
+    queue_path = Path(path)
+    return queue_path.with_name(f"{queue_path.stem}_state{queue_path.suffix}")
+
+
 def _read_json(path: str | Path) -> Any:
     try:
         with Path(path).open(encoding="utf-8") as handle:
@@ -201,8 +225,12 @@ def append_queue_job(
     limit: int = 0,
     extensions: str = "",
     path: str | Path = DEFAULT_QUEUE_FILE,
+    *,
+    state_path: str | Path | None = None,
 ) -> dict:
-    with InterProcessFileLock(_lock_path(path, "queue")):
+    queue_path = Path(path)
+    transaction_state_path = Path(state_path) if state_path is not None else queue_state_path_for_queue(queue_path)
+    with queue_state_transaction(queue_path, transaction_state_path):
         queue = load_queue(path)
         job = {
             "job_id": str(uuid.uuid4()),

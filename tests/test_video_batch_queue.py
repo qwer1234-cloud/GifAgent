@@ -21,7 +21,7 @@ def test_run_queue_processes_jobs_in_order_and_continues_after_failure(tmp_path)
 
 
 def test_run_queue_adopts_job_appended_while_draining(monkeypatch, tmp_path):
-    from app.services.batch_queue import append_queue_job
+    from app.services.batch_queue import load_queue, save_queue
     from scripts import test_video_batch
 
     queue_path = tmp_path / "batch_queue.json"
@@ -36,7 +36,16 @@ def test_run_queue_adopts_job_appended_while_draining(monkeypatch, tmp_path):
         original_save_state(state, path)
         if state["status"] == "draining" and not appended:
             appended = True
-            append_queue_job("C:/videos/late", path=queue_path)
+            queue = load_queue(queue_path)
+            queue["jobs"].append(
+                {
+                    "job_id": "late-job",
+                    "directory": "C:/videos/late",
+                    "limit": 0,
+                    "extensions": "",
+                }
+            )
+            save_queue(queue, queue_path)
 
     monkeypatch.setattr(test_video_batch, "save_queue_state", append_when_draining)
 
@@ -49,6 +58,157 @@ def test_run_queue_adopts_job_appended_while_draining(monkeypatch, tmp_path):
     assert calls == ["C:/videos/late"]
     draining_index = saved_statuses.index("draining")
     assert saved_statuses[draining_index:draining_index + 2] == ["draining", "running"]
+
+
+def test_run_queue_final_drain_transaction_adopts_append_before_idle(monkeypatch, tmp_path):
+    from app.services.batch_queue import append_queue_job, load_queue_state
+    from scripts import test_video_batch
+
+    queue_path = tmp_path / "batch_queue.json"
+    late_directory = str(tmp_path / "late")
+    calls = []
+    appended = False
+    original_finish = test_video_batch._finish_queue_worker
+
+    def append_in_final_drain_gap(*args, **kwargs):
+        nonlocal appended
+        if not appended:
+            appended = True
+            append_queue_job(late_directory, path=queue_path)
+        return original_finish(*args, **kwargs)
+
+    monkeypatch.setattr(
+        test_video_batch,
+        "_finish_queue_worker",
+        append_in_final_drain_gap,
+    )
+
+    result = test_video_batch.run_queue(
+        str(queue_path),
+        process_job=lambda job: calls.append(job["directory"]) or 0,
+    )
+
+    assert result == 0
+    assert calls == [late_directory]
+    state = load_queue_state(tmp_path / "batch_queue_state.json")
+    assert all(item.get("status") == "completed" for item in state["jobs"].values())
+
+
+def test_queue_worker_retries_lease_until_direct_owner_releases(
+    monkeypatch, tmp_path
+):
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    from app.services.batch_queue import (
+        WorkerLease,
+        WorkerLeaseBusyError,
+        append_queue_job,
+        load_queue_state,
+        save_queue_state,
+    )
+    from scripts import test_video_batch
+
+    queue_path = tmp_path / "batch_queue.json"
+    lease_path = tmp_path / "batch_worker.lock"
+    pid_path = tmp_path / "batch.pid"
+    ready_path = tmp_path / "direct-ready"
+    release_path = tmp_path / "direct-release"
+    busy_path = tmp_path / "queue-saw-direct-owner"
+    append_queue_job("C:/videos/after-direct", path=queue_path)
+    save_queue_state(
+        {
+            "status": "starting",
+            "current_job_id": None,
+            "launch_token": "launch-after-direct",
+            "launcher_pid": 123,
+            "jobs": {},
+        },
+        tmp_path / "batch_queue_state.json",
+    )
+
+    owner_script = """
+import sys
+import time
+from pathlib import Path
+from app.services.batch_queue import WorkerLease
+
+lease = WorkerLease(sys.argv[1], mode="direct").acquire()
+Path(sys.argv[2]).write_text("ready", encoding="ascii")
+try:
+    while not Path(sys.argv[3]).exists():
+        time.sleep(0.01)
+finally:
+    lease.release()
+"""
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            owner_script,
+            str(lease_path),
+            str(ready_path),
+            str(release_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    results = {}
+    calls = []
+    original_lease = test_video_batch.WorkerLease
+
+    class ObservedLease(original_lease):
+        def acquire(self):
+            try:
+                return super().acquire()
+            except WorkerLeaseBusyError:
+                busy_path.write_text("busy", encoding="ascii")
+                raise
+
+    monkeypatch.setattr(test_video_batch, "WorkerLease", ObservedLease)
+
+    def run_worker():
+        results["result"] = test_video_batch.run_queue(
+            str(queue_path),
+            process_job=lambda job: calls.append(job["directory"]) or 0,
+            worker_lease_file=lease_path,
+            pid_file=pid_path,
+            launch_token="launch-after-direct",
+        )
+
+    worker = threading.Thread(target=run_worker)
+    try:
+        deadline = time.monotonic() + 5
+        while not ready_path.exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready_path.exists(), owner.communicate(timeout=1)
+
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not busy_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert busy_path.exists()
+
+        release_path.write_text("release", encoding="ascii")
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+    finally:
+        release_path.write_text("release", encoding="ascii")
+        if worker.is_alive():
+            worker.join(timeout=1)
+        if owner.poll() is None:
+            owner.terminate()
+            owner.wait(timeout=3)
+
+    assert results["result"] == 0
+    assert calls == ["C:/videos/after-direct"]
+    state = load_queue_state(tmp_path / "batch_queue_state.json")
+    job_state = next(iter(state["jobs"].values()))
+    assert job_state["status"] == "completed"
+    assert state["status"] == "idle"
 
 
 def test_build_single_batch_command_keeps_frozen_and_source_modes_distinct(monkeypatch):
@@ -371,3 +531,12 @@ def test_reusable_dedup_and_timeout_videos_have_full_terminal_logs(
     assert f"[VIDEO] status=OK path={duplicate} outcome=DEDUP_SKIPPED" in output
     assert f"[VIDEO] status=START path={timeout_video}" in output
     assert f"[VIDEO] status=FAILED path={timeout_video} reason=timeout" in output
+    run_status = test_video_batch.load_checkpoint()["last_run"]
+    assert run_status["planned"] == 3
+    assert run_status["processed"] == 3
+    from app.ui.candidate_review import summarize_checkpoint_status
+
+    status = summarize_checkpoint_status({"last_run": run_status})
+    assert status["completed"] == 2
+    assert status["total"] == 3
+    assert status["completed"] <= status["total"]
