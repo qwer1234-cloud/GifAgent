@@ -104,7 +104,12 @@ def load_queue_state(path: str | Path = DEFAULT_STATE_FILE) -> dict:
 def save_queue_state(state: dict, path: str | Path = DEFAULT_STATE_FILE) -> None:
     if not isinstance(state, dict) or not isinstance(state.get("jobs"), dict):
         raise BatchQueueFormatError("Queue state must contain a jobs mapping")
-    _atomic_write(state, path)
+    payload = {
+        "status": state.get("status", "idle"),
+        "current_job_id": state.get("current_job_id"),
+        "jobs": state["jobs"],
+    }
+    _atomic_write(payload, path)
 
 
 def pending_jobs(queue: dict, state: dict) -> list[dict]:

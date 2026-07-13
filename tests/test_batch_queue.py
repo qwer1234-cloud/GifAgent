@@ -28,6 +28,30 @@ def test_pending_jobs_excludes_completed_and_failed_jobs(tmp_path):
     assert pending_jobs(load_queue(queue_path), state) == []
 
 
+def test_pending_jobs_includes_running_job(tmp_path):
+    from app.services.batch_queue import append_queue_job, load_queue, pending_jobs, update_job_state
+
+    queue_path = tmp_path / "batch_queue.json"
+    job = append_queue_job("C:/videos/running", path=queue_path)
+    state = {"status": "running", "current_job_id": job["job_id"], "jobs": {}}
+    update_job_state(state, job["job_id"], "running")
+
+    assert pending_jobs(load_queue(queue_path), state) == [job]
+
+
+def test_save_queue_state_persists_required_fields(tmp_path):
+    from app.services.batch_queue import load_queue_state, save_queue_state
+
+    state_path = tmp_path / "batch_queue_state.json"
+    save_queue_state({"jobs": {"job-1": {"status": "running"}}}, state_path)
+
+    assert load_queue_state(state_path) == {
+        "status": "idle",
+        "current_job_id": None,
+        "jobs": {"job-1": {"status": "running"}},
+    }
+
+
 def test_malformed_queue_raises_without_replacing_existing_file(tmp_path):
     from app.services.batch_queue import BatchQueueFormatError, load_queue
 
