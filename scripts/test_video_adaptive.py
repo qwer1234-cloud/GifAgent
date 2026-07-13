@@ -20,6 +20,7 @@ from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
+from app.services.batch_logging import format_gif_export_line
 from app.services.export_cleanup import (
     ExportDirectoryBusyError,
     ExportDirectoryLock,
@@ -731,7 +732,6 @@ for i, clip in enumerate(ranked_clips):
 
     if os.path.exists(out_gif):
         sz = os.path.getsize(out_gif)
-        merged = "merged" if clip["frame_count"] > 1 else "single"
         exported_bookmarks.append(
             PotPlayerBookmark(
                 start_s=start,
@@ -742,8 +742,40 @@ for i, clip in enumerate(ranked_clips):
                 caption=r.get("caption") or r.get("reason") or r.get("emotional_core") or "",
             )
         )
-        print(f"  #{i+1:2d} w={worth:.2f} dur={duration:.1f}s [{merged}:{clip['frame_count']}fr] "
-              f"{sz//1024:4d}KB t={int(ts)}s {r.get('emotional_core','?')}")
+        print(
+            format_gif_export_line(
+                video_name=video_name,
+                index=i + 1,
+                total=len(ranked_clips),
+                output_path=out_gif,
+                status="OK",
+                worthiness=worth,
+                duration_s=duration,
+                timestamp_s=int(ts),
+                merged=clip["frame_count"] > 1,
+                frame_count=clip["frame_count"],
+                size_bytes=sz,
+                emotional_core=r.get("emotional_core", "?"),
+            ),
+            flush=True,
+        )
+    else:
+        print(
+            format_gif_export_line(
+                video_name=video_name,
+                index=i + 1,
+                total=len(ranked_clips),
+                output_path=out_gif,
+                status="FAILED",
+                worthiness=worth,
+                duration_s=duration,
+                timestamp_s=int(ts),
+                merged=clip["frame_count"] > 1,
+                frame_count=clip["frame_count"],
+                emotional_core=r.get("emotional_core", "?"),
+            ),
+            flush=True,
+        )
 
 if POTPLAYER_PBF_ENABLED and exported_bookmarks:
     potplayer_pbf_path = write_pbf_file(
