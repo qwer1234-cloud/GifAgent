@@ -20,6 +20,31 @@ def test_run_queue_processes_jobs_in_order_and_continues_after_failure(tmp_path)
     assert state["jobs"][second["job_id"]]["status"] == "completed"
 
 
+def test_run_queue_reloads_job_appended_during_idle_grace(monkeypatch, tmp_path):
+    from app.services.batch_queue import append_queue_job
+    from scripts import test_video_batch
+
+    queue_path = tmp_path / "batch_queue.json"
+    calls = []
+    appended = False
+
+    def append_during_idle_grace(_seconds):
+        nonlocal appended
+        if not appended:
+            appended = True
+            append_queue_job("C:/videos/late", path=queue_path)
+
+    monkeypatch.setattr(test_video_batch.time, "sleep", append_during_idle_grace)
+
+    result = test_video_batch.run_queue(
+        str(queue_path),
+        process_job=lambda job: calls.append(job["directory"]) or 0,
+    )
+
+    assert result == 0
+    assert calls == ["C:/videos/late"]
+
+
 def test_build_single_batch_command_keeps_frozen_and_source_modes_distinct(monkeypatch):
     from scripts import test_video_batch
 

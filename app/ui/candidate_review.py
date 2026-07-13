@@ -27,6 +27,7 @@ CHECKPOINT_FILE = "data/batch_checkpoint.json"
 BATCH_QUEUE_FILE = "data/batch_queue.json"
 BATCH_QUEUE_STATE_FILE = "data/batch_queue_state.json"
 BATCH_LOG_FILE = "data/batch_subprocess.log"
+QUEUE_WORKER_EXIT_GRACE_SECONDS = 0.1
 CONFIG_FILE = "configs/models.yaml"
 PAGE_SIZE = 12
 THUMB_DIR = "data/thumbs/candidates"
@@ -229,7 +230,11 @@ def refresh_batch_status() -> tuple[str, str, str]:
         queue_text = format_queue_status(load_queue(), load_queue_state())
     except Exception as exc:
         queue_text = f"Queue unavailable: {exc}"
-    return format_batch_status(status), queue_text, read_batch_log(BATCH_LOG_FILE)
+    try:
+        log_text = read_batch_log(BATCH_LOG_FILE)
+    except OSError as exc:
+        log_text = f"Detailed output log unavailable: {exc}"
+    return format_batch_status(status), queue_text, log_text
 
 
 def stop_batch():
@@ -352,7 +357,11 @@ def append_batch_directory(
     append_queue_job(directory, int(limit or 0), (extensions or "").strip())
     queue_text = format_queue_status(load_queue(), load_queue_state())
 
-    if not get_batch_status().get("running"):
+    worker_running = get_batch_status().get("running")
+    if worker_running:
+        time.sleep(QUEUE_WORKER_EXIT_GRACE_SECONDS)
+        worker_running = get_batch_status().get("running")
+    if not worker_running:
         return f"Queued: {directory}. {start_batch_queue()}", queue_text
     return f"Queued: {directory}", queue_text
 
