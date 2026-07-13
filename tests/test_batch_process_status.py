@@ -38,3 +38,20 @@ def test_batch_command_line_rejects_gui_and_unrelated_processes():
     assert not is_batch_command_line(r"C:\Windows\System32\notepad.exe")
     assert not is_batch_command_line("")
     assert not is_batch_command_line(None)
+
+
+def test_format_batch_status_keeps_persisted_queue_error_visible():
+    from app.ui.candidate_review import format_batch_status
+
+    text = format_batch_status({
+        "running": False,
+        "queue_state": "starting",
+        "queue_worker_pid": 555,
+        "cleanup_pending": True,
+        "last_error": "worker handshake failed",
+    })
+
+    assert "Queue State: starting" in text
+    assert "Queue Worker PID: 555" in text
+    assert "Cleanup Pending: YES" in text
+    assert "Last Error: worker handshake failed" in text

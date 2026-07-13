@@ -20,7 +20,7 @@ from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
-from app.services.batch_logging import format_gif_export_line, is_successful_gif_export
+from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
 from app.services.export_cleanup import (
     ExportDirectoryBusyError,
     ExportDirectoryLock,
@@ -686,6 +686,7 @@ ranked_clips = all_ranked_clips[:output_count]
 
 
 exported_bookmarks = []
+gif_export_results = []
 potplayer_pbf_path = None
 
 for i, clip in enumerate(ranked_clips):
@@ -713,91 +714,61 @@ for i, clip in enumerate(ranked_clips):
     palette = f"{EXPORT_DIR}/pal_{i+1:03d}.png"
 
     fps = GIF_FPS
-    ffmpeg_failed = False
-
-    try:
-        palette_result = subprocess.run([
+    attempt = run_gif_export_attempt(
+        palette_command=[
             "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
             "-vf",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",palette
-        ], capture_output=True, timeout=60)
-        if palette_result.returncode != 0:
-            ffmpeg_failed = True
-
-        gif_result = subprocess.run([
+        ],
+        gif_command=[
             "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
             "-i",palette,
             "-filter_complex",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
             out_gif
-        ], capture_output=True, timeout=60)
-        if gif_result.returncode != 0:
-            ffmpeg_failed = True
-    except (subprocess.TimeoutExpired, OSError):
-        ffmpeg_failed = True
-    finally:
-        # Clean up palette PNG even when ffmpeg times out or cannot launch.
-        try:
-            if os.path.exists(palette):
-                os.remove(palette)
-        except OSError:
-            pass
+        ],
+        palette_path=palette,
+        output_path=out_gif,
+    )
+    gif_export_results.append({
+        "index": i + 1,
+        "path": out_gif,
+        "status": "OK" if attempt.success else "FAILED",
+        "size_bytes": attempt.size_bytes,
+        "error": attempt.error,
+    })
 
-        try:
-            output_exists = os.path.exists(out_gif)
-        except OSError:
-            output_exists = False
+    if attempt.success:
+        exported_bookmarks.append(
+            PotPlayerBookmark(
+                start_s=start,
+                end_s=start + duration,
+                rank=i + 1,
+                score=worth,
+                merged=clip["frame_count"] > 1,
+                caption=r.get("caption") or r.get("reason") or r.get("emotional_core") or "",
+            )
+        )
+    print(
+        format_gif_export_line(
+            video_name=video_name,
+            index=i + 1,
+            total=len(ranked_clips),
+            output_path=out_gif,
+            status="OK" if attempt.success else "FAILED",
+            worthiness=worth,
+            duration_s=duration,
+            timestamp_s=int(ts),
+            merged=clip["frame_count"] > 1,
+            frame_count=clip["frame_count"],
+            size_bytes=attempt.size_bytes,
+            emotional_core=r.get("emotional_core", "?"),
+            error=attempt.error,
+        ),
+        flush=True,
+    )
 
-        if is_successful_gif_export(
-            ffmpeg_failed=ffmpeg_failed,
-            output_exists=output_exists,
-        ):
-            try:
-                sz = os.path.getsize(out_gif)
-            except OSError:
-                sz = 0
-            exported_bookmarks.append(
-                PotPlayerBookmark(
-                    start_s=start,
-                    end_s=start + duration,
-                    rank=i + 1,
-                    score=worth,
-                    merged=clip["frame_count"] > 1,
-                    caption=r.get("caption") or r.get("reason") or r.get("emotional_core") or "",
-                )
-            )
-            print(
-                format_gif_export_line(
-                    video_name=video_name,
-                    index=i + 1,
-                    total=len(ranked_clips),
-                    output_path=out_gif,
-                    status="OK",
-                    worthiness=worth,
-                    duration_s=duration,
-                    timestamp_s=int(ts),
-                    merged=clip["frame_count"] > 1,
-                    frame_count=clip["frame_count"],
-                    size_bytes=sz,
-                    emotional_core=r.get("emotional_core", "?"),
-                ),
-                flush=True,
-            )
-        else:
-            print(
-                format_gif_export_line(
-                    video_name=video_name,
-                    index=i + 1,
-                    total=len(ranked_clips),
-                    output_path=out_gif,
-                    status="FAILED",
-                    worthiness=worth,
-                    duration_s=duration,
-                    timestamp_s=int(ts),
-                    merged=clip["frame_count"] > 1,
-                    frame_count=clip["frame_count"],
-                    emotional_core=r.get("emotional_core", "?"),
-                ),
-                flush=True,
-            )
+gif_attempted = len(gif_export_results)
+gif_succeeded = sum(item["status"] == "OK" for item in gif_export_results)
+gif_failed = gif_attempted - gif_succeeded
 
 if POTPLAYER_PBF_ENABLED and exported_bookmarks:
     potplayer_pbf_path = write_pbf_file(
@@ -831,7 +802,12 @@ output = {
     "deduped_clips": len(deduped_clips),
     "clusters_after_dedup": len(deduped_clips),
     "duplicate_groups": duplicate_groups,
-    "output_count": output_count,
+    "planned_output_count": output_count,
+    "output_count": gif_succeeded,
+    "gif_attempted": gif_attempted,
+    "gif_succeeded": gif_succeeded,
+    "gif_failed": gif_failed,
+    "gif_exports": gif_export_results,
     "preference_memory_enabled": PREFERENCE_MEMORY_ENABLED,
     "base_score_weight": BASE_SCORE_WEIGHT,
     "preference_score_weight": PREFERENCE_SCORE_WEIGHT,
@@ -848,7 +824,10 @@ output = {
          "caption":clip["best_frame"].get("caption"),
          "emotional_core":clip["best_frame"].get("emotional_core"),
          "aesthetic_notes":clip["best_frame"].get("aesthetic_notes"),
-         "reason":clip["best_frame"].get("reason")}
+         "reason":clip["best_frame"].get("reason"),
+         "export_status":gif_export_results[i]["status"],
+         "export_path":gif_export_results[i]["path"],
+         "export_error":gif_export_results[i]["error"]}
         for i,clip in enumerate(ranked_clips)
     ],
 }
@@ -874,9 +853,16 @@ print(
     f"  Dedup: {len(clips)} → {embedding_deduped_clips} embedding "
     f"→ {len(deduped_clips)} temporal"
 )
-print(f"  Output: {output_count} GIFs @ max {GIF_MAX_WIDTH}px (ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})")
+print(
+    f"  Output: {gif_succeeded}/{gif_attempted} GIFs succeeded "
+    f"({gif_failed} failed) @ max {GIF_MAX_WIDTH}px "
+    f"(ratio={OUTPUT_RATIO}, cap={MAX_OUTPUT})"
+)
 print(f"  Duration: {min(durations):.1f}s - {max(durations):.1f}s")
 print(f"  Worthiness: {min(c['gif_worthiness'] for c in ranked_clips):.2f} - {max(c['gif_worthiness'] for c in ranked_clips):.2f}")
 print(f"  Emotions: {dict(sorted(emotions.items(), key=lambda x:-x[1]))}")
 print(f"  Export: {EXPORT_DIR}/")
 print(f"{'='*60}")
+
+if gif_failed:
+    raise SystemExit(1)

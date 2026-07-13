@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 import pytest
 
 
@@ -61,3 +64,109 @@ def test_malformed_queue_raises_without_replacing_existing_file(tmp_path):
     with pytest.raises(BatchQueueFormatError):
         load_queue(queue_path)
     assert queue_path.read_text(encoding="utf-8") == "not-json"
+
+
+def test_worker_lease_blocks_another_process_until_released(tmp_path):
+    from app.services.batch_queue import WorkerLease
+
+    lease_path = tmp_path / "batch_worker.lock"
+    owner = WorkerLease(lease_path, mode="queue")
+    owner.acquire()
+    script = """
+import sys
+from app.services.batch_queue import WorkerLease, WorkerLeaseBusyError
+lease = WorkerLease(sys.argv[1], mode='direct')
+try:
+    lease.acquire()
+except WorkerLeaseBusyError:
+    print('busy')
+else:
+    print('acquired')
+    lease.release()
+"""
+    try:
+        blocked = subprocess.run(
+            [sys.executable, "-c", script, str(lease_path)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    finally:
+        owner.release()
+
+    acquired = subprocess.run(
+        [sys.executable, "-c", script, str(lease_path)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert blocked.stdout.strip() == "busy"
+    assert acquired.stdout.strip() == "acquired"
+
+
+def test_queue_state_preserves_launch_and_error_metadata(tmp_path):
+    from app.services.batch_queue import load_queue_state, save_queue_state
+
+    state_path = tmp_path / "batch_queue_state.json"
+    expected = {
+        "status": "running",
+        "current_job_id": "job-1",
+        "jobs": {"job-1": {"status": "running"}},
+        "worker_pid": 321,
+        "launch_token": "launch-1",
+        "launcher_pid": 123,
+        "cleanup_pending": True,
+        "last_error": "cleanup failed",
+        "custom_future_field": {"keep": True},
+    }
+
+    save_queue_state(expected, state_path)
+
+    assert load_queue_state(state_path) == expected
+
+
+def test_format_queue_status_includes_worker_state_and_persisted_error():
+    from app.services.batch_queue import format_queue_status
+
+    text = format_queue_status(
+        {"jobs": []},
+        {
+            "status": "starting",
+            "worker_pid": 444,
+            "cleanup_pending": True,
+            "last_error": "PID write failed",
+            "jobs": {},
+        },
+    )
+
+    assert "Worker: starting" in text
+    assert "PID: 444" in text
+    assert "Cleanup pending: YES" in text
+    assert "Last error: PID write failed" in text
+
+
+def test_concurrent_process_appends_preserve_every_job(tmp_path):
+    from app.services.batch_queue import load_queue
+
+    queue_path = tmp_path / "batch_queue.json"
+    script = """
+import sys
+from app.services.batch_queue import append_queue_job
+append_queue_job(sys.argv[2], path=sys.argv[1])
+"""
+    processes = [
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(queue_path), f"C:/videos/{index}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for index in range(12)
+    ]
+    results = [process.communicate(timeout=10) + (process.returncode,) for process in processes]
+
+    assert all(returncode == 0 for _stdout, _stderr, returncode in results), results
+    assert {job["directory"] for job in load_queue(queue_path)["jobs"]} == {
+        f"C:/videos/{index}" for index in range(12)
+    }

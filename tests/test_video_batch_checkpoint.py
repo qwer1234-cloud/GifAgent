@@ -1,4 +1,6 @@
 from scripts.test_video_batch import (
+    checkpoint_key,
+    claim_checkpoint_entry_for_source,
     checkpoint_entry_can_be_reused,
     discover_videos,
     normalize_checkpoint_for_resume,
@@ -38,3 +40,29 @@ def test_discover_videos_handles_glob_metacharacters_in_directory(tmp_path):
     video_path.write_bytes(b"placeholder")
 
     assert discover_videos(str(video_dir), ".mp4,.mkv") == [str(video_path)]
+
+
+def test_checkpoint_key_uses_normalized_source_path_for_same_basename(tmp_path):
+    first = tmp_path / "one" / "clip.mp4"
+    second = tmp_path / "two" / "clip.mp4"
+
+    assert checkpoint_key(str(first)) != checkpoint_key(str(second))
+
+
+def test_legacy_basename_checkpoint_is_bound_once_without_future_collision(tmp_path):
+    first = tmp_path / "one" / "clip.mp4"
+    second = tmp_path / "two" / "clip.mp4"
+    checkpoint = {
+        "completed": {"clip": {"status": "ok"}},
+        "retryable": {},
+    }
+
+    first_key, first_entry = claim_checkpoint_entry_for_source(checkpoint, str(first))
+    second_key, second_entry = claim_checkpoint_entry_for_source(checkpoint, str(second))
+
+    assert first_entry["status"] == "ok"
+    assert first_entry["source_path"]
+    assert first_key in checkpoint["completed"]
+    assert "clip" not in checkpoint["completed"]
+    assert second_key != first_key
+    assert second_entry is None

@@ -1,7 +1,7 @@
 """
 Gradio UI - candidate GIF review + batch process control panel.
 """
-import html, json, os, subprocess, signal, sys, threading, time
+import html, json, os, subprocess, signal, sys, threading, time, uuid
 from pathlib import Path
 
 import gradio as gr
@@ -17,6 +17,7 @@ from app.services.batch_queue import (
     load_queue,
     load_queue_state,
     pending_jobs,
+    queue_state_lock,
     save_queue_state,
 )
 from app.services.candidate_vectors import backfill_candidate_vectors
@@ -28,10 +29,9 @@ CHECKPOINT_FILE = "data/batch_checkpoint.json"
 BATCH_QUEUE_FILE = "data/batch_queue.json"
 BATCH_QUEUE_STATE_FILE = "data/batch_queue_state.json"
 BATCH_LOG_FILE = "data/batch_subprocess.log"
-DRAINING_POLL_INTERVAL_SECONDS = 0.01
-DRAINING_POLL_ATTEMPTS = 50
+BATCH_WORKER_LEASE_FILE = "data/batch_worker.lock"
 WORKER_CLEANUP_POLL_INTERVAL_SECONDS = 0.05
-WORKER_CLEANUP_POLL_ATTEMPTS = 20
+WORKER_CLEANUP_POLL_ATTEMPTS = 60
 QUEUE_START_LOCK = threading.Lock()
 CONFIG_FILE = "configs/models.yaml"
 PAGE_SIZE = 12
@@ -146,6 +146,10 @@ def get_batch_status():
         "queue_completed": 0,
         "queue_failed": 0,
         "queue_total": 0,
+        "queue_state": "idle",
+        "queue_worker_pid": None,
+        "cleanup_pending": False,
+        "last_error": "",
         "gpu_model": "",
     }
 
@@ -157,8 +161,12 @@ def get_batch_status():
             if is_batch_process(pid):
                 status["running"] = True
                 status["pid"] = pid
+            elif _is_process_definitely_gone(pid):
+                _remove_pid_file_for_worker(pid)
             else:
-                os.remove(PID_FILE)
+                # A live PID with an unreadable command line is not safe to replace.
+                status["running"] = True
+                status["pid"] = pid
         except (ValueError, OSError, ProcessLookupError):
             status["running"] = False
             try:
@@ -183,6 +191,18 @@ def get_batch_status():
         queue_state = load_queue_state()
         queue_jobs = queue.get("jobs", [])
         job_states = queue_state.get("jobs", {})
+        status["queue_state"] = queue_state.get("status", "idle")
+        status["queue_worker_pid"] = queue_state.get("worker_pid")
+        status["cleanup_pending"] = bool(queue_state.get("cleanup_pending"))
+        status["last_error"] = queue_state.get("last_error", "") or ""
+        worker_pid = queue_state.get("worker_pid")
+        if (
+            queue_state.get("status") in {"starting", "running", "draining"}
+            and worker_pid
+            and not _is_process_definitely_gone(worker_pid)
+        ):
+            status["running"] = True
+            status["pid"] = worker_pid
         current_job_id = queue_state.get("current_job_id")
         current_job = next(
             (job for job in queue_jobs if job.get("job_id") == current_job_id), None
@@ -224,6 +244,10 @@ def format_batch_status(status: dict) -> str:
         f"Video Failed: {status.get('failed', 0)}",
         f"Queue: {status.get('queue_completed', 0)}/{status.get('queue_total', 0)}",
         f"Queue Failed: {status.get('queue_failed', 0)}",
+        f"Queue State: {status.get('queue_state', 'idle')}",
+        f"Queue Worker PID: {status.get('queue_worker_pid') or 'N/A'}",
+        f"Cleanup Pending: {'YES' if status.get('cleanup_pending') else 'NO'}",
+        f"Last Error: {status.get('last_error') or 'N/A'}",
         f"GPU Model: {status.get('gpu_model') or 'N/A'}",
     ])
 
@@ -258,13 +282,26 @@ def stop_batch():
             os.kill(pid, signal.SIGTERM)
         except Exception:
             pass
-    time.sleep(2)
 
-    # Verify stopped
-    if is_batch_process(pid):
+    stopped = False
+    for attempt in range(WORKER_CLEANUP_POLL_ATTEMPTS):
+        if _is_process_definitely_gone(pid):
+            stopped = True
+            break
+        if attempt + 1 < WORKER_CLEANUP_POLL_ATTEMPTS:
+            time.sleep(WORKER_CLEANUP_POLL_INTERVAL_SECONDS)
+    if not stopped:
         return f"WARNING: Process {pid} may still be running. Try manual kill."
-    if os.path.exists(PID_FILE):
-        os.remove(PID_FILE)
+
+    with QUEUE_START_LOCK:
+        with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+            queue_state = load_queue_state()
+            if queue_state.get("worker_pid") == pid:
+                _recover_stale_queue_state_locked(
+                    queue_state,
+                    error=f"Stopped by user after worker PID {pid} exited",
+                )
+    _remove_pid_file_for_worker(pid)
     return f"Batch stopped (PID {pid}). Checkpoint saved at {CHECKPOINT_FILE}"
 
 
@@ -346,50 +383,6 @@ def _is_process_definitely_gone(pid: int) -> bool:
     return False
 
 
-def _wait_for_spawned_worker_exit(proc, pid: int) -> bool:
-    """Poll until a terminated worker PID is proven to have exited."""
-    for attempt in range(WORKER_CLEANUP_POLL_ATTEMPTS):
-        if not is_batch_process(pid) and _is_process_definitely_gone(pid):
-            return True
-        if attempt + 1 < WORKER_CLEANUP_POLL_ATTEMPTS:
-            time.sleep(WORKER_CLEANUP_POLL_INTERVAL_SECONDS)
-    return False
-
-
-def _terminate_spawned_queue_worker(proc) -> bool:
-    """Terminate a worker and report whether its PID is confirmed gone."""
-    pid = getattr(proc, "pid", None)
-    if not pid:
-        return False
-    if os.name == "nt":
-        try:
-            result = subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                capture_output=True,
-                timeout=10,
-            )
-        except Exception:
-            return False
-        if getattr(result, "returncode", None) != 0:
-            return False
-        return _wait_for_spawned_worker_exit(proc, pid)
-
-    try:
-        proc.terminate()
-    except Exception:
-        return False
-    try:
-        proc.wait(timeout=WORKER_CLEANUP_POLL_INTERVAL_SECONDS * WORKER_CLEANUP_POLL_ATTEMPTS)
-    except Exception:
-        pass
-    return _wait_for_spawned_worker_exit(proc, pid)
-
-
-def _clear_cleanup_markers(queue_state: dict) -> None:
-    queue_state.pop("cleanup_pending", None)
-    queue_state.pop("last_error", None)
-
-
 def _remove_pid_file_for_worker(pid: int) -> None:
     """Remove only the PID file owned by the worker just confirmed stopped."""
     try:
@@ -401,128 +394,176 @@ def _remove_pid_file_for_worker(pid: int) -> None:
         pass
 
 
-def _starting_claim_has_valid_worker(queue_state: dict) -> bool:
-    """Keep a starting claim until its worker PID is confirmed dead."""
-    worker_pid = queue_state.get("worker_pid")
-    if worker_pid is not None:
-        if is_batch_process(worker_pid):
-            return True
-        return not _is_process_definitely_gone(worker_pid)
-    if queue_state.get("cleanup_pending"):
-        return True
-    return bool(get_batch_status().get("running"))
-
-
-def _recover_stale_starting_claim_locked(queue_state: dict) -> str:
-    """Release a starting claim only after its exact worker PID is dead."""
+def _recover_stale_queue_state_locked(queue_state: dict, *, error: str = "") -> str:
+    """Recover an active state only after its exact owner PID is proven dead."""
     queue_status = queue_state.get("status", "idle")
-    if queue_status != "starting":
+    if queue_status not in {"starting", "running", "draining"}:
         return queue_status
-    if _starting_claim_has_valid_worker(queue_state):
-        return "starting"
+    owner_pid = queue_state.get("worker_pid")
+    if owner_pid is None and queue_status == "starting":
+        owner_pid = queue_state.get("spawned_pid") or queue_state.get("launcher_pid")
+    if owner_pid is None or not _is_process_definitely_gone(owner_pid):
+        return queue_status
+
+    stale_status = queue_status
     queue_state["status"] = "idle"
     queue_state["current_job_id"] = None
     queue_state.pop("worker_pid", None)
-    _clear_cleanup_markers(queue_state)
+    queue_state.pop("spawned_pid", None)
+    queue_state.pop("launcher_pid", None)
+    queue_state.pop("launch_token", None)
+    queue_state.pop("cleanup_pending", None)
+    queue_state["last_error"] = error or queue_state.get("last_error") or (
+        f"Recovered stale {stale_status} worker after PID {owner_pid} exited"
+    )
     save_queue_state(queue_state)
+    _remove_pid_file_for_worker(owner_pid)
     return "idle"
 
 
-def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
-    """Start a queue worker after the caller has claimed the launch lock."""
-    queue_state = load_queue_state()
-    queue_status = queue_state.get("status", "idle")
-    if queue_status == "starting":
-        queue_status = _recover_stale_starting_claim_locked(queue_state)
-        if queue_status == "starting":
-            return "Batch queue already starting."
-    if queue_status in {"running", "draining"}:
-        return f"Batch queue already {queue_status}."
-
-    status = get_batch_status()
-    if status["running"] and not allow_terminal_successor:
-        return f"Batch already running (PID {status['pid']})."
-
-    try:
-        if not pending_jobs(load_queue(), load_queue_state()):
-            return "No queued folders to process."
-    except Exception as exc:
-        return f"Queue unavailable: {exc}"
-
-    if getattr(sys, "frozen", False):
-        script_path = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
-        cmd = [sys.executable, "--run-script", script_path, "--queue-file", BATCH_QUEUE_FILE]
-    else:
-        cmd = ["uv", "run", "python", "-u", "scripts/test_video_batch.py", "--queue-file", BATCH_QUEUE_FILE]
-
-    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-    queue_state["status"] = "starting"
-    queue_state["current_job_id"] = None
-    queue_state.pop("worker_pid", None)
-    _clear_cleanup_markers(queue_state)
-    save_queue_state(queue_state)
-    log_file = None
-    proc = None
-    try:
-        log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
-        proc = subprocess.Popen(
-            cmd, cwd=".", stdout=log_file, stderr=subprocess.STDOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        with open(PID_FILE, "w") as f:
-            f.write(str(proc.pid))
-        queue_state["worker_pid"] = proc.pid
-        save_queue_state(queue_state)
-        return f"Batch queue started (PID {proc.pid})."
-    except Exception as exc:
-        cleanup_confirmed = proc is not None and _terminate_spawned_queue_worker(proc)
-        if log_file is not None:
-            log_file.close()
-        if cleanup_confirmed:
-            _remove_pid_file_for_worker(proc.pid)
-            queue_state["status"] = "idle"
-            queue_state["current_job_id"] = None
-            queue_state.pop("worker_pid", None)
-            _clear_cleanup_markers(queue_state)
-            save_queue_state(queue_state)
-            return f"Failed to start queue: {exc}"
-
-        if proc is not None:
-            queue_state["worker_pid"] = proc.pid
-            queue_state["cleanup_pending"] = True
-            queue_state["last_error"] = str(exc)
-            queue_state["status"] = "starting"
-            queue_state["current_job_id"] = None
-            save_queue_state(queue_state)
-            return f"Failed to start queue; cleanup pending for PID {proc.pid}: {exc}"
-
-        queue_state["status"] = "idle"
-        queue_state["current_job_id"] = None
-        queue_state.pop("worker_pid", None)
-        _clear_cleanup_markers(queue_state)
-        save_queue_state(queue_state)
-        return f"Failed to start queue: {exc}"
-
-
-def start_batch_queue(*, allow_terminal_successor: bool = False):
-    """Start the persistent folder queue without replacing a valid worker."""
-    with QUEUE_START_LOCK:
-        return _start_batch_queue_locked(
-            allow_terminal_successor=allow_terminal_successor,
-        )
-
-
-def _wait_for_draining_queue_state(state: dict) -> str:
-    """Wait for a draining worker to adopt work or complete its terminal exit."""
-    for _ in range(DRAINING_POLL_ATTEMPTS):
-        status = state.get("status", "idle")
-        if status != "draining":
-            return status
-        if not get_batch_status().get("running"):
-            return "idle"
-        time.sleep(DRAINING_POLL_INTERVAL_SECONDS)
+def _wait_for_handoff_exit(pid: int, completed_launch_token: str | None) -> bool:
+    """Wait for the exact predecessor PID while its terminal token stays current."""
+    for attempt in range(WORKER_CLEANUP_POLL_ATTEMPTS):
+        if _is_process_definitely_gone(pid):
+            return True
         state = load_queue_state()
-    return "draining"
+        if (
+            state.get("status") != "idle"
+            or state.get("previous_worker_pid") != pid
+            or state.get("completed_launch_token") != completed_launch_token
+        ):
+            return False
+        if attempt + 1 < WORKER_CLEANUP_POLL_ATTEMPTS:
+            time.sleep(WORKER_CLEANUP_POLL_INTERVAL_SECONDS)
+    return False
+
+
+def _start_batch_queue_locked():
+    """Claim and launch one queue child under the cross-process state lock."""
+    observed_status = get_batch_status()
+    while True:
+        handoff = None
+        with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+            queue_state = load_queue_state()
+            queue_status = _recover_stale_queue_state_locked(queue_state)
+            if queue_status in {"starting", "running", "draining"}:
+                return f"Batch queue already {queue_status}."
+
+            previous_pid = queue_state.get("previous_worker_pid")
+            completed_token = queue_state.get("completed_launch_token")
+            if previous_pid and not _is_process_definitely_gone(previous_pid):
+                handoff = (previous_pid, completed_token)
+            else:
+                queue_state.pop("previous_worker_pid", None)
+                queue_state.pop("completed_launch_token", None)
+
+            if handoff is None:
+                if observed_status.get("running"):
+                    return f"Batch already running (PID {observed_status.get('pid')})."
+                try:
+                    if not pending_jobs(load_queue(), queue_state):
+                        return "No queued folders to process."
+                except Exception as exc:
+                    return f"Queue unavailable: {exc}"
+
+                launch_token = uuid.uuid4().hex
+                if getattr(sys, "frozen", False):
+                    script_path = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
+                    cmd = [sys.executable, "--run-script", script_path]
+                else:
+                    cmd = [sys.executable, "-u", "scripts/test_video_batch.py"]
+                cmd.extend([
+                    "--queue-file", BATCH_QUEUE_FILE,
+                    "--launch-token", launch_token,
+                    "--worker-lease-file", BATCH_WORKER_LEASE_FILE,
+                    "--pid-file", PID_FILE,
+                ])
+
+                queue_state["status"] = "starting"
+                queue_state["current_job_id"] = None
+                queue_state["launch_token"] = launch_token
+                queue_state["launcher_pid"] = os.getpid()
+                queue_state.pop("worker_pid", None)
+                queue_state.pop("cleanup_pending", None)
+                queue_state.pop("failed_launch_token", None)
+                save_queue_state(queue_state)
+
+                log_file = None
+                try:
+                    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+                    log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
+                    proc = subprocess.Popen(
+                        cmd,
+                        cwd=".",
+                        stdout=log_file,
+                        stderr=subprocess.STDOUT,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                except Exception as exc:
+                    queue_state["status"] = "idle"
+                    queue_state["current_job_id"] = None
+                    queue_state["failed_launch_token"] = launch_token
+                    queue_state["last_error"] = f"Queue launch failed: {exc}"
+                    queue_state.pop("launch_token", None)
+                    queue_state.pop("launcher_pid", None)
+                    queue_state.pop("spawned_pid", None)
+                    queue_state.pop("worker_pid", None)
+                    save_queue_state(queue_state)
+                    return f"Failed to start queue: {exc}"
+                finally:
+                    if log_file is not None:
+                        try:
+                            log_file.close()
+                        except OSError:
+                            pass
+
+                try:
+                    current_claim = load_queue_state()
+                    if (
+                        current_claim.get("status") == "starting"
+                        and current_claim.get("launch_token") == launch_token
+                    ):
+                        current_claim["spawned_pid"] = proc.pid
+                        save_queue_state(current_claim)
+                except Exception as exc:
+                    # The launch claim remains active. The child still gets the
+                    # first chance to persist worker_pid/current state.
+                    queue_state["cleanup_pending"] = True
+                    queue_state["last_error"] = f"Spawn PID handshake pending: {exc}"
+                    try:
+                        save_queue_state(queue_state)
+                    except Exception:
+                        pass
+
+                # The child owns worker_pid and its first running/current state.
+                return f"Batch queue launch requested (PID {proc.pid})."
+
+        previous_pid, completed_token = handoff
+        if not _wait_for_handoff_exit(previous_pid, completed_token):
+            return f"Previous queue worker PID {previous_pid} is still exiting; folder remains queued."
+        with queue_state_lock(BATCH_QUEUE_STATE_FILE):
+            current = load_queue_state()
+            if (
+                current.get("status") == "idle"
+                and current.get("previous_worker_pid") == previous_pid
+                and current.get("completed_launch_token") == completed_token
+            ):
+                current.pop("previous_worker_pid", None)
+                current.pop("completed_launch_token", None)
+                save_queue_state(current)
+        observed_status = get_batch_status()
+
+
+def start_batch_queue(
+    video_dir: str = "",
+    limit: int = 0,
+    extensions: str = "",
+):
+    """Append an optional initial folder, then start or resume the queue."""
+    if (video_dir or "").strip():
+        return append_batch_directory(video_dir, limit, extensions)[0]
+    with QUEUE_START_LOCK:
+        return _start_batch_queue_locked()
 
 
 def append_batch_directory(
@@ -540,20 +581,10 @@ def append_batch_directory(
         queue = load_queue()
         queue_state = load_queue_state()
         queue_text = format_queue_status(queue, queue_state)
-        queue_status = queue_state.get("status", "idle")
-
-        if queue_status == "starting":
-            queue_status = _recover_stale_starting_claim_locked(queue_state)
-            if queue_status == "idle":
-                queue_text = format_queue_status(queue, queue_state)
-        if queue_status == "draining":
-            queue_status = _wait_for_draining_queue_state(queue_state)
-        if queue_status in {"starting", "running", "draining"}:
+        start_result = _start_batch_queue_locked()
+        if start_result.startswith("Batch queue already"):
             return f"Queued: {directory}", queue_text
-        return (
-            f"Queued: {directory}. {_start_batch_queue_locked(allow_terminal_successor=True)}",
-            queue_text,
-        )
+        return f"Queued: {directory}. {start_result}", queue_text
 
 
 # Candidate review functions
@@ -1615,7 +1646,11 @@ with gr.Blocks(title="GifAgent") as app:
             inputs=[dir_input, limit_input, ext_input],
             outputs=[control_output, queue_text],
         ).then(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
-        start_queue_btn.click(fn=start_batch_queue, outputs=[control_output])\
+        start_queue_btn.click(
+            fn=start_batch_queue,
+            inputs=[dir_input, limit_input, ext_input],
+            outputs=[control_output],
+        )\
                 .then(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
         stop_btn.click(fn=stop_batch, outputs=[control_output])\
                 .then(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])

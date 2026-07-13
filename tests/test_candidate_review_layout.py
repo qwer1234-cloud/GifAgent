@@ -11,6 +11,8 @@ def test_control_layout_declares_fixed_summary_and_detailed_log():
     assert 'label="Detailed Output Log"' in source
     assert 'elem_id="batch-status"' in source
     assert 'elem_id="batch-log"' in source
+    assert "fn=start_batch_queue" in source
+    assert "inputs=[dir_input, limit_input, ext_input]" in source
 
 
 def test_folder_page_selects_first_candidate_for_preview(monkeypatch):
