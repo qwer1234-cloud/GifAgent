@@ -714,68 +714,77 @@ for i, clip in enumerate(ranked_clips):
 
     fps = GIF_FPS
 
-    subprocess.run([
-        "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
-        "-vf",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",palette
-    ], capture_output=True, timeout=60)
+    try:
+        subprocess.run([
+            "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
+            "-vf",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",palette
+        ], capture_output=True, timeout=60)
 
-    subprocess.run([
-        "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
-        "-i",palette,
-        "-filter_complex",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
-        out_gif
-    ], capture_output=True, timeout=60)
+        subprocess.run([
+            "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
+            "-i",palette,
+            "-filter_complex",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+            out_gif
+        ], capture_output=True, timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    finally:
+        # Clean up palette PNG even when ffmpeg times out or cannot launch.
+        try:
+            if os.path.exists(palette):
+                os.remove(palette)
+        except OSError:
+            pass
 
-    # Clean up palette PNG immediately after GIF generation
-    if os.path.exists(palette):
-        os.remove(palette)
-
-    if os.path.exists(out_gif):
-        sz = os.path.getsize(out_gif)
-        exported_bookmarks.append(
-            PotPlayerBookmark(
-                start_s=start,
-                end_s=start + duration,
-                rank=i + 1,
-                score=worth,
-                merged=clip["frame_count"] > 1,
-                caption=r.get("caption") or r.get("reason") or r.get("emotional_core") or "",
+        if os.path.exists(out_gif):
+            try:
+                sz = os.path.getsize(out_gif)
+            except OSError:
+                sz = 0
+            exported_bookmarks.append(
+                PotPlayerBookmark(
+                    start_s=start,
+                    end_s=start + duration,
+                    rank=i + 1,
+                    score=worth,
+                    merged=clip["frame_count"] > 1,
+                    caption=r.get("caption") or r.get("reason") or r.get("emotional_core") or "",
+                )
             )
-        )
-        print(
-            format_gif_export_line(
-                video_name=video_name,
-                index=i + 1,
-                total=len(ranked_clips),
-                output_path=out_gif,
-                status="OK",
-                worthiness=worth,
-                duration_s=duration,
-                timestamp_s=int(ts),
-                merged=clip["frame_count"] > 1,
-                frame_count=clip["frame_count"],
-                size_bytes=sz,
-                emotional_core=r.get("emotional_core", "?"),
-            ),
-            flush=True,
-        )
-    else:
-        print(
-            format_gif_export_line(
-                video_name=video_name,
-                index=i + 1,
-                total=len(ranked_clips),
-                output_path=out_gif,
-                status="FAILED",
-                worthiness=worth,
-                duration_s=duration,
-                timestamp_s=int(ts),
-                merged=clip["frame_count"] > 1,
-                frame_count=clip["frame_count"],
-                emotional_core=r.get("emotional_core", "?"),
-            ),
-            flush=True,
-        )
+            print(
+                format_gif_export_line(
+                    video_name=video_name,
+                    index=i + 1,
+                    total=len(ranked_clips),
+                    output_path=out_gif,
+                    status="OK",
+                    worthiness=worth,
+                    duration_s=duration,
+                    timestamp_s=int(ts),
+                    merged=clip["frame_count"] > 1,
+                    frame_count=clip["frame_count"],
+                    size_bytes=sz,
+                    emotional_core=r.get("emotional_core", "?"),
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                format_gif_export_line(
+                    video_name=video_name,
+                    index=i + 1,
+                    total=len(ranked_clips),
+                    output_path=out_gif,
+                    status="FAILED",
+                    worthiness=worth,
+                    duration_s=duration,
+                    timestamp_s=int(ts),
+                    merged=clip["frame_count"] > 1,
+                    frame_count=clip["frame_count"],
+                    emotional_core=r.get("emotional_core", "?"),
+                ),
+                flush=True,
+            )
 
 if POTPLAYER_PBF_ENABLED and exported_bookmarks:
     potplayer_pbf_path = write_pbf_file(
