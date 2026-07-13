@@ -164,6 +164,164 @@ def test_append_batch_directory_rejects_blank_or_missing_paths(monkeypatch, tmp_
     assert appended == []
 
 
+def test_append_while_direct_worker_runs_launches_queue_successor_without_second_start(
+    monkeypatch, tmp_path
+):
+    import subprocess
+    import sys
+    import threading
+    import time
+
+    from app.services.batch_queue import (
+        WorkerLease,
+        WorkerLeaseBusyError,
+        append_queue_job,
+        load_queue,
+        load_queue_state,
+        save_queue_state,
+    )
+    from app.ui import candidate_review
+    from scripts import test_video_batch
+
+    queue_path = tmp_path / "batch_queue.json"
+    state_path = tmp_path / "batch_queue_state.json"
+    lease_path = tmp_path / "batch_worker.lock"
+    pid_path = tmp_path / "batch.pid"
+    log_path = tmp_path / "batch.log"
+    direct_ready = tmp_path / "direct-ready"
+    direct_release = tmp_path / "direct-release"
+    queue_busy = threading.Event()
+    queue_threads = []
+    calls = []
+    results = {}
+    video_dir = tmp_path / "queued-folder"
+    video_dir.mkdir()
+
+    save_queue_state(
+        {"status": "idle", "current_job_id": None, "jobs": {}},
+        state_path,
+    )
+    owner_script = """
+import sys
+import time
+from pathlib import Path
+from app.services.batch_queue import WorkerLease
+
+lease = WorkerLease(sys.argv[1], mode="direct").acquire()
+Path(sys.argv[2]).write_text("ready", encoding="ascii")
+try:
+    while not Path(sys.argv[3]).exists():
+        time.sleep(0.01)
+finally:
+    lease.release()
+"""
+    owner = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            owner_script,
+            str(lease_path),
+            str(direct_ready),
+            str(direct_release),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    original_lease = test_video_batch.WorkerLease
+
+    class ObservedLease(original_lease):
+        def acquire(self):
+            try:
+                return super().acquire()
+            except WorkerLeaseBusyError:
+                queue_busy.set()
+                raise
+
+    monkeypatch.setattr(test_video_batch, "WorkerLease", ObservedLease)
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_FILE", str(queue_path))
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_STATE_FILE", str(state_path))
+    monkeypatch.setattr(candidate_review, "BATCH_WORKER_LEASE_FILE", str(lease_path))
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(pid_path))
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(log_path))
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: load_queue(queue_path))
+    monkeypatch.setattr(
+        candidate_review,
+        "load_queue_state",
+        lambda: load_queue_state(state_path),
+    )
+    monkeypatch.setattr(
+        candidate_review,
+        "save_queue_state",
+        lambda state: save_queue_state(state, state_path),
+    )
+    monkeypatch.setattr(
+        candidate_review,
+        "append_queue_job",
+        lambda directory, limit, extensions: append_queue_job(
+            directory,
+            limit,
+            extensions,
+            path=queue_path,
+            state_path=state_path,
+        ),
+    )
+    monkeypatch.setattr(
+        candidate_review,
+        "get_batch_status",
+        lambda: {"running": True, "pid": 9876},
+    )
+
+    def fake_popen(command, **_kwargs):
+        token = command[command.index("--launch-token") + 1]
+
+        def run_child():
+            results["result"] = test_video_batch.run_queue(
+                str(queue_path),
+                process_job=lambda job: calls.append(job["directory"]) or 0,
+                worker_lease_file=lease_path,
+                pid_file=pid_path,
+                launch_token=token,
+            )
+
+        child = threading.Thread(target=run_child)
+        queue_threads.append(child)
+        child.start()
+        return type("FakeProcess", (), {"pid": 4242})()
+
+    monkeypatch.setattr(candidate_review.subprocess, "Popen", fake_popen)
+
+    try:
+        deadline = time.monotonic() + 5
+        while not direct_ready.exists() and owner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert direct_ready.exists(), owner.communicate(timeout=1)
+
+        message, _queue_text = candidate_review.append_batch_directory(str(video_dir))
+
+        assert "Batch queue launch requested" in message
+        assert queue_busy.wait(timeout=5)
+        direct_release.write_text("release", encoding="ascii")
+        for child in queue_threads:
+            child.join(timeout=5)
+            assert not child.is_alive()
+    finally:
+        direct_release.write_text("release", encoding="ascii")
+        for child in queue_threads:
+            if child.is_alive():
+                child.join(timeout=1)
+        if owner.poll() is None:
+            owner.terminate()
+            owner.wait(timeout=3)
+
+    assert results["result"] == 0
+    assert calls == [str(video_dir)]
+    state = load_queue_state(state_path)
+    assert state["status"] == "idle"
+    assert all(item["status"] == "completed" for item in state["jobs"].values())
+
+
 def test_rapid_append_requests_launch_one_successor_worker(monkeypatch, tmp_path):
     import threading
 
@@ -559,10 +717,15 @@ def test_queue_parent_does_not_overwrite_child_first_state(monkeypatch, tmp_path
     assert state_store["worker_pid"] == 333
 
 
-def test_append_never_bypasses_an_external_live_batch_pid(monkeypatch, tmp_path):
+def test_append_launches_queue_child_when_external_direct_pid_is_live(monkeypatch, tmp_path):
     from app.ui import candidate_review
 
     launches = []
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_FILE", str(tmp_path / "queue.json"))
+    monkeypatch.setattr(candidate_review, "BATCH_QUEUE_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setattr(candidate_review, "BATCH_WORKER_LEASE_FILE", str(tmp_path / "worker.lock"))
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path / "batch.pid"))
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
     monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: {"job_id": "job-1"})
     monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-1"}]})
     monkeypatch.setattr(
@@ -578,13 +741,15 @@ def test_append_never_bypasses_an_external_live_batch_pid(monkeypatch, tmp_path)
     monkeypatch.setattr(
         candidate_review.subprocess,
         "Popen",
-        lambda *_args, **_kwargs: launches.append(True),
+        lambda *_args, **_kwargs: launches.append(True)
+        or type("FakeProcess", (), {"pid": 222})(),
     )
+    monkeypatch.setattr(candidate_review, "save_queue_state", lambda _state: None)
 
     message, _ = candidate_review.append_batch_directory(str(tmp_path))
 
-    assert "already running" in message
-    assert launches == []
+    assert "Batch queue launch requested (PID 222)" in message
+    assert launches == [True]
 
 
 def test_start_recovers_crashed_running_worker_and_resumes_pending_job(monkeypatch, tmp_path):

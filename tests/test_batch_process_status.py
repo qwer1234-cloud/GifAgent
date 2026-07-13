@@ -55,3 +55,42 @@ def test_format_batch_status_keeps_persisted_queue_error_visible():
     assert "Queue Worker PID: 555" in text
     assert "Cleanup Pending: YES" in text
     assert "Last Error: worker handshake failed" in text
+
+
+def test_status_keeps_direct_pid_separate_from_waiting_queue_spawned_pid(
+    monkeypatch, tmp_path
+):
+    from app.ui import candidate_review
+
+    pid_file = tmp_path / "batch.pid"
+    pid_file.write_text("111", encoding="ascii")
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(pid_file))
+    monkeypatch.setattr(candidate_review, "CHECKPOINT_FILE", str(tmp_path / "missing.json"))
+    monkeypatch.setattr(candidate_review, "is_batch_process", lambda pid: pid == 111)
+    monkeypatch.setattr(
+        candidate_review,
+        "_is_process_definitely_gone",
+        lambda _pid: False,
+    )
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": []})
+    monkeypatch.setattr(
+        candidate_review,
+        "load_queue_state",
+        lambda: {
+            "status": "starting",
+            "worker_pid": None,
+            "spawned_pid": 222,
+            "jobs": {},
+        },
+    )
+    monkeypatch.setattr(
+        candidate_review.httpx,
+        "get",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+
+    status = candidate_review.get_batch_status()
+
+    assert status["pid"] == 111
+    assert status["queue_worker_pid"] == 222
+    assert status["queue_waiting_for_lease"] is True

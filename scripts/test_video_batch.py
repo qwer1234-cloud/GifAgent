@@ -299,16 +299,18 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
             result = subprocess.run(cmd, cwd=".", timeout=14400)
 
             if result.returncode == 0:
-                succeeded += 1
+                fingerprint = compute_fingerprint(video)
                 cp["completed"][video_key] = {
                     "status": "ok",
                     "elapsed_s": int(time.time() - video_start),
                     "finished_at": datetime.now().isoformat(),
-                    "fingerprint": compute_fingerprint(video),
+                    "fingerprint": fingerprint,
                     "source_path": normalized_source_path(video),
                     "display_name": video_name,
                 }
                 cp["retryable"].pop(video_key, None)
+                save_checkpoint(cp)
+                succeeded += 1
                 print(f"  [{idx+1}/{len(pending)}] OK ({time.time()-video_start:.0f}s)")
                 print(_format_video_event(video, "OK", outcome="PROCESSED"), flush=True)
             else:

@@ -161,6 +161,7 @@ def get_batch_status():
         "queue_total": 0,
         "queue_state": "idle",
         "queue_worker_pid": None,
+        "queue_waiting_for_lease": False,
         "cleanup_pending": False,
         "last_error": "",
         "gpu_model": "",
@@ -205,10 +206,12 @@ def get_batch_status():
         queue_jobs = queue.get("jobs", [])
         job_states = queue_state.get("jobs", {})
         status["queue_state"] = queue_state.get("status", "idle")
-        status["queue_worker_pid"] = queue_state.get("worker_pid")
+        queue_worker_pid = queue_state.get("worker_pid") or queue_state.get("spawned_pid")
+        status["queue_worker_pid"] = queue_worker_pid
         status["cleanup_pending"] = bool(queue_state.get("cleanup_pending"))
         status["last_error"] = queue_state.get("last_error", "") or ""
         worker_pid = queue_state.get("worker_pid")
+        spawned_pid = queue_state.get("spawned_pid")
         if (
             queue_state.get("status") in {"starting", "running", "draining"}
             and worker_pid
@@ -216,6 +219,15 @@ def get_batch_status():
         ):
             status["running"] = True
             status["pid"] = worker_pid
+        elif (
+            queue_state.get("status") == "starting"
+            and spawned_pid
+            and not _is_process_definitely_gone(spawned_pid)
+        ):
+            status["queue_waiting_for_lease"] = True
+            if not status["running"]:
+                status["running"] = True
+                status["pid"] = spawned_pid
         current_job_id = queue_state.get("current_job_id")
         current_job = next(
             (job for job in queue_jobs if job.get("job_id") == current_job_id), None
@@ -259,6 +271,7 @@ def format_batch_status(status: dict) -> str:
         f"Queue Failed: {status.get('queue_failed', 0)}",
         f"Queue State: {status.get('queue_state', 'idle')}",
         f"Queue Worker PID: {status.get('queue_worker_pid') or 'N/A'}",
+        f"Queue Waiting for Lease: {'YES' if status.get('queue_waiting_for_lease') else 'NO'}",
         f"Cleanup Pending: {'YES' if status.get('cleanup_pending') else 'NO'}",
         f"Last Error: {status.get('last_error') or 'N/A'}",
         f"GPU Model: {status.get('gpu_model') or 'N/A'}",
@@ -285,7 +298,16 @@ def stop_batch():
     if not status["running"]:
         return "No batch process running."
 
-    pid = status["pid"]
+    queue_pid = None
+    try:
+        queue_state = load_queue_state()
+        if queue_state.get("status") in {"starting", "running", "draining"}:
+            queue_pid = queue_state.get("worker_pid")
+            if queue_pid is None and queue_state.get("status") == "starting":
+                queue_pid = queue_state.get("spawned_pid")
+    except Exception:
+        queue_state = {}
+    pid = queue_pid or status["pid"]
     try:
         # Kill process tree on Windows
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
@@ -309,7 +331,13 @@ def stop_batch():
     with QUEUE_START_LOCK:
         with queue_state_transaction(BATCH_QUEUE_FILE, BATCH_QUEUE_STATE_FILE):
             queue_state = load_queue_state()
-            if queue_state.get("worker_pid") == pid:
+            if (
+                queue_state.get("worker_pid") == pid
+                or (
+                    queue_state.get("status") == "starting"
+                    and queue_state.get("spawned_pid") == pid
+                )
+            ):
                 _recover_stale_queue_state_locked(
                     queue_state,
                     error=f"Stopped by user after worker PID {pid} exited",
@@ -453,7 +481,6 @@ def _wait_for_handoff_exit(pid: int, completed_launch_token: str | None) -> bool
 
 def _start_batch_queue_locked():
     """Claim and launch one queue child under the cross-process state lock."""
-    observed_status = get_batch_status()
     while True:
         handoff = None
         with queue_state_transaction(BATCH_QUEUE_FILE, BATCH_QUEUE_STATE_FILE):
@@ -471,8 +498,6 @@ def _start_batch_queue_locked():
                 queue_state.pop("completed_launch_token", None)
 
             if handoff is None:
-                if observed_status.get("running"):
-                    return f"Batch already running (PID {observed_status.get('pid')})."
                 try:
                     if not pending_jobs(load_queue(), queue_state):
                         return "No queued folders to process."
@@ -564,7 +589,6 @@ def _start_batch_queue_locked():
                 current.pop("previous_worker_pid", None)
                 current.pop("completed_launch_token", None)
                 save_queue_state(current)
-        observed_status = get_batch_status()
 
 
 def start_batch_queue(

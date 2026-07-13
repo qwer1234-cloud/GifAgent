@@ -471,6 +471,53 @@ def test_fingerprint_error_logs_failed_terminal_and_continues_next_video(
     assert run_status["failed"] == 1
 
 
+def test_post_success_fingerprint_error_is_failed_only(monkeypatch, tmp_path, capsys):
+    from app.ui.candidate_review import summarize_checkpoint_status
+    from scripts import test_video_batch
+
+    video_dir = tmp_path / "videos"
+    video_dir.mkdir()
+    video = video_dir / "post-success-fingerprint.mp4"
+    video.write_bytes(b"video")
+    checkpoint = tmp_path / "checkpoint.json"
+    monkeypatch.setattr(test_video_batch, "CHECKPOINT_FILE", str(checkpoint))
+
+    fingerprint_calls = 0
+
+    def fingerprint(_path):
+        nonlocal fingerprint_calls
+        fingerprint_calls += 1
+        if fingerprint_calls == 1:
+            return None
+        raise OSError("fingerprint failed after adaptive success")
+
+    class Result:
+        returncode = 0
+
+    monkeypatch.setattr(test_video_batch, "compute_fingerprint", fingerprint)
+    monkeypatch.setattr(test_video_batch.subprocess, "run", lambda *_args, **_kwargs: Result())
+
+    result = test_video_batch.run_single_directory(str(video_dir), 0, ".mp4", False)
+
+    output = capsys.readouterr().out
+    run_status = test_video_batch.load_checkpoint()["last_run"]
+    status = summarize_checkpoint_status({"last_run": run_status})
+    video_key = test_video_batch.checkpoint_key(str(video))
+
+    assert result == 1
+    assert fingerprint_calls == 2
+    assert run_status["planned"] == 1
+    assert run_status["processed"] == 1
+    assert run_status["succeeded"] == 0
+    assert run_status["failed"] == 1
+    assert status["total"] == 1
+    assert status["completed"] + status["failed"] == 1
+    assert video_key not in test_video_batch.load_checkpoint()["completed"]
+    assert test_video_batch.load_checkpoint()["retryable"][video_key]["status"] == "failed"
+    assert "status=FAILED" in output
+    assert "fingerprint failed after adaptive success" in output
+
+
 def test_reusable_dedup_and_timeout_videos_have_full_terminal_logs(
     monkeypatch, tmp_path, capsys
 ):
