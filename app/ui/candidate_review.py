@@ -10,12 +10,23 @@ import yaml
 from PIL import Image
 
 from app.db import get_connection
+from app.services.batch_logging import read_batch_log
+from app.services.batch_queue import (
+    append_queue_job,
+    format_queue_status,
+    load_queue,
+    load_queue_state,
+    pending_jobs,
+)
 from app.services.candidate_vectors import backfill_candidate_vectors
 from app.services.embedding import compute_text_embedding
 
 API_BASE = "http://127.0.0.1:8000"
 PID_FILE = "data/batch_pid.txt"
 CHECKPOINT_FILE = "data/batch_checkpoint.json"
+BATCH_QUEUE_FILE = "data/batch_queue.json"
+BATCH_QUEUE_STATE_FILE = "data/batch_queue_state.json"
+BATCH_LOG_FILE = "data/batch_subprocess.log"
 CONFIG_FILE = "configs/models.yaml"
 PAGE_SIZE = 12
 THUMB_DIR = "data/thumbs/candidates"
@@ -125,6 +136,10 @@ def get_batch_status():
         "failed": 0,
         "total": 0,
         "current_video": "",
+        "current_folder": "",
+        "queue_completed": 0,
+        "queue_failed": 0,
+        "queue_total": 0,
         "gpu_model": "",
     }
 
@@ -151,8 +166,34 @@ def get_batch_status():
             with open(CHECKPOINT_FILE, encoding="utf-8-sig") as f:
                 cp = json.load(f)
             status.update(summarize_checkpoint_status(cp))
+            last_run = cp.get("last_run")
+            if isinstance(last_run, dict):
+                status["current_folder"] = last_run.get("dir", "") or ""
         except Exception:
             pass
+
+    try:
+        queue = load_queue()
+        queue_state = load_queue_state()
+        queue_jobs = queue.get("jobs", [])
+        job_states = queue_state.get("jobs", {})
+        current_job_id = queue_state.get("current_job_id")
+        current_job = next(
+            (job for job in queue_jobs if job.get("job_id") == current_job_id), None
+        )
+        if current_job:
+            status["current_folder"] = current_job.get("directory", "")
+        status["queue_total"] = len(queue_jobs)
+        status["queue_completed"] = sum(
+            job_states.get(job.get("job_id"), {}).get("status") == "completed"
+            for job in queue_jobs
+        )
+        status["queue_failed"] = sum(
+            job_states.get(job.get("job_id"), {}).get("status") == "failed"
+            for job in queue_jobs
+        )
+    except Exception:
+        pass
 
     # Check Ollama GPU
     try:
@@ -164,6 +205,31 @@ def get_batch_status():
         status["gpu_model"] = "ollama offline"
 
     return status
+
+
+def format_batch_status(status: dict) -> str:
+    """Format the fixed Control-tab summary without detailed log output."""
+    return "\n".join([
+        f"Running: {'YES' if status.get('running') else 'NO'}",
+        f"PID: {status.get('pid') or 'N/A'}",
+        f"Current Folder: {status.get('current_folder') or 'N/A'}",
+        f"Current Video: {status.get('current_video') or 'N/A'}",
+        f"Video: {status.get('completed', 0)}/{status.get('total', 0)}",
+        f"Video Failed: {status.get('failed', 0)}",
+        f"Queue: {status.get('queue_completed', 0)}/{status.get('queue_total', 0)}",
+        f"Queue Failed: {status.get('queue_failed', 0)}",
+        f"GPU Model: {status.get('gpu_model') or 'N/A'}",
+    ])
+
+
+def refresh_batch_status() -> tuple[str, str, str]:
+    """Refresh the independent Control summary, queue, and detailed log."""
+    status = get_batch_status()
+    try:
+        queue_text = format_queue_status(load_queue(), load_queue_state())
+    except Exception as exc:
+        queue_text = f"Queue unavailable: {exc}"
+    return format_batch_status(status), queue_text, read_batch_log(BATCH_LOG_FILE)
 
 
 def stop_batch():
@@ -219,8 +285,8 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
 
     # Redirect subprocess output to a log file so failures are diagnosable
     os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
-    log_path = os.path.join(os.path.dirname(PID_FILE), "batch_subprocess.log")
-    log_file = open(log_path, "w", encoding="utf-8", errors="replace")
+    log_path = BATCH_LOG_FILE
+    log_file = open(log_path, "a", encoding="utf-8", errors="replace")
 
     try:
         proc = subprocess.Popen(
@@ -237,6 +303,58 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
     except Exception as e:
         log_file.close()
         return f"Failed to start: {e}"
+
+
+def start_batch_queue():
+    """Start the persistent folder queue without replacing a valid worker."""
+    status = get_batch_status()
+    if status["running"]:
+        return f"Batch already running (PID {status['pid']})."
+
+    try:
+        if not pending_jobs(load_queue(), load_queue_state()):
+            return "No queued folders to process."
+    except Exception as exc:
+        return f"Queue unavailable: {exc}"
+
+    if getattr(sys, "frozen", False):
+        script_path = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
+        cmd = [sys.executable, "--run-script", script_path, "--queue-file", BATCH_QUEUE_FILE]
+    else:
+        cmd = ["uv", "run", "python", "-u", "scripts/test_video_batch.py", "--queue-file", BATCH_QUEUE_FILE]
+
+    os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
+    log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=".", stdout=log_file, stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        with open(PID_FILE, "w") as f:
+            f.write(str(proc.pid))
+        return f"Batch queue started (PID {proc.pid})."
+    except Exception as exc:
+        log_file.close()
+        return f"Failed to start queue: {exc}"
+
+
+def append_batch_directory(
+    video_dir: str,
+    limit: int = 0,
+    extensions: str = "",
+) -> tuple[str, str]:
+    """Append a folder and ensure an idle queue worker starts afterwards."""
+    directory = (video_dir or "").strip()
+    if not directory or not os.path.isdir(directory):
+        return f"Invalid directory: {video_dir}", refresh_batch_status()[1]
+
+    get_batch_status()
+    append_queue_job(directory, int(limit or 0), (extensions or "").strip())
+    queue_text = format_queue_status(load_queue(), load_queue_state())
+
+    if not get_batch_status().get("running"):
+        return f"Queued: {directory}. {start_batch_queue()}", queue_text
+    return f"Queued: {directory}", queue_text
 
 
 # Candidate review functions
@@ -1256,7 +1374,7 @@ with gr.Blocks(title="GifAgent") as app:
         with gr.Row():
             with gr.Column(scale=2):
                 with gr.Group():
-                    gr.Markdown("### Start Batch")
+                    gr.Markdown("### Folder Queue")
                     dir_input = gr.Textbox(
                         label="Video Directory",
                         value="C:/Users/sunhao/Desktop/ToWatch/CumForKate",
@@ -1267,38 +1385,44 @@ with gr.Blocks(title="GifAgent") as app:
                         value=".mp4,.mkv,.avi,.mov,.webm,.ts",
                         placeholder=".mp4,.mkv,.avi,.mov,.webm,.ts")
                     with gr.Row():
-                        start_btn = gr.Button("Start", variant="primary")
+                        append_folder_btn = gr.Button("Append Folder", variant="primary")
+                        start_queue_btn = gr.Button("Start Queue")
                         stop_btn = gr.Button("Stop", variant="stop")
                     control_output = gr.Textbox(label="Result", interactive=False)
 
             with gr.Column(scale=1):
                 with gr.Group():
                     gr.Markdown("### Status")
-                    status_text = gr.Textbox(label="Batch Status", interactive=False, lines=6,
-                                             value="Loading...")
+                    status_text = gr.Textbox(label="Batch Status", interactive=False, lines=9,
+                                             elem_id="batch-status", value="Loading...")
+                    queue_text = gr.Textbox(label="Folder Queue", interactive=False, lines=7)
                     refresh_btn = gr.Button("Refresh")
 
-        def refresh_status():
-            s = get_batch_status()
-            lines = [
-                f"Running: {'YES' if s['running'] else 'NO'}",
-                f"PID: {s['pid'] or 'N/A'}",
-                f"Completed: {s['completed']}",
-                f"Run Failed: {s['failed']}",
-                f"GPU Model: {s['gpu_model']}",
-            ]
-            return "\n".join(lines)
+        with gr.Group():
+            gr.Markdown("### Detailed Output")
+            batch_log_text = gr.Textbox(
+                label="Detailed Output Log", interactive=False, lines=18,
+                elem_id="batch-log",
+            )
 
         status_timer2 = gr.Timer(10)
-        status_timer2.tick(fn=refresh_status, outputs=[status_text])
+        status_timer2.tick(
+            fn=refresh_batch_status,
+            outputs=[status_text, queue_text, batch_log_text],
+        )
 
-        start_btn.click(fn=start_batch, inputs=[dir_input, limit_input, ext_input], outputs=[control_output])\
-                .then(fn=refresh_status, outputs=[status_text])
+        append_folder_btn.click(
+            fn=append_batch_directory,
+            inputs=[dir_input, limit_input, ext_input],
+            outputs=[control_output, queue_text],
+        ).then(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
+        start_queue_btn.click(fn=start_batch_queue, outputs=[control_output])\
+                .then(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
         stop_btn.click(fn=stop_batch, outputs=[control_output])\
-                .then(fn=refresh_status, outputs=[status_text])
-        refresh_btn.click(fn=refresh_status, outputs=[status_text])
+                .then(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
+        refresh_btn.click(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
 
-        app.load(fn=refresh_status, outputs=[status_text])
+        app.load(fn=refresh_batch_status, outputs=[status_text, queue_text, batch_log_text])
     # Config Tab
     with gr.Tab("Config"):
         gr.Markdown("## Configuration Editor\nEdit values and click **Save**. Changes write to `configs/models.yaml`.")
