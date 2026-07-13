@@ -20,7 +20,7 @@ from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
-from app.services.batch_logging import format_gif_export_line
+from app.services.batch_logging import format_gif_export_line, is_successful_gif_export
 from app.services.export_cleanup import (
     ExportDirectoryBusyError,
     ExportDirectoryLock,
@@ -713,21 +713,26 @@ for i, clip in enumerate(ranked_clips):
     palette = f"{EXPORT_DIR}/pal_{i+1:03d}.png"
 
     fps = GIF_FPS
+    ffmpeg_failed = False
 
     try:
-        subprocess.run([
+        palette_result = subprocess.run([
             "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
             "-vf",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",palette
         ], capture_output=True, timeout=60)
+        if palette_result.returncode != 0:
+            ffmpeg_failed = True
 
-        subprocess.run([
+        gif_result = subprocess.run([
             "ffmpeg","-y","-ss",str(start),"-t",str(duration),"-i",VIDEO_PATH,
             "-i",palette,
             "-filter_complex",f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
             out_gif
         ], capture_output=True, timeout=60)
+        if gif_result.returncode != 0:
+            ffmpeg_failed = True
     except (subprocess.TimeoutExpired, OSError):
-        pass
+        ffmpeg_failed = True
     finally:
         # Clean up palette PNG even when ffmpeg times out or cannot launch.
         try:
@@ -736,7 +741,15 @@ for i, clip in enumerate(ranked_clips):
         except OSError:
             pass
 
-        if os.path.exists(out_gif):
+        try:
+            output_exists = os.path.exists(out_gif)
+        except OSError:
+            output_exists = False
+
+        if is_successful_gif_export(
+            ffmpeg_failed=ffmpeg_failed,
+            output_exists=output_exists,
+        ):
             try:
                 sz = os.path.getsize(out_gif)
             except OSError:

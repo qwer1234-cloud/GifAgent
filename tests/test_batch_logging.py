@@ -62,3 +62,12 @@ def test_read_batch_log_replaces_malformed_utf8_bytes(tmp_path):
     path.write_bytes(b"[GIF 1/1] status=OK \xff\n")
 
     assert read_batch_log(path) == "[GIF 1/1] status=OK \ufffd\n"
+
+
+def test_failed_ffmpeg_with_existing_output_is_not_a_success():
+    from app.services.batch_logging import is_successful_gif_export
+
+    assert not is_successful_gif_export(
+        ffmpeg_failed=True,
+        output_exists=True,
+    )

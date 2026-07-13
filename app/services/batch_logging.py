@@ -35,3 +35,8 @@ def read_batch_log(path: str | Path) -> str:
         return Path(path).read_text(encoding="utf-8", errors="replace")
     except FileNotFoundError:
         return ""
+
+
+def is_successful_gif_export(*, ffmpeg_failed: bool, output_exists: bool) -> bool:
+    """Return whether an export can be logged as successful."""
+    return not ffmpeg_failed and output_exists
