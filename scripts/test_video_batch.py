@@ -294,6 +294,7 @@ def run_queue(
                 continue
             state["status"] = "idle"
             state["current_job_id"] = None
+            state.pop("worker_pid", None)
             save_queue_state(state, state_path)
             return 1 if failed else 0
 
@@ -318,7 +319,7 @@ def run_queue(
         state = load_queue_state(state_path)
         status = "completed" if result == 0 else "failed"
         update_job_state(state, job_id, status, finished_at=datetime.now().isoformat())
-        state["status"] = "idle"
+        state["status"] = "running"
         state["current_job_id"] = None
         save_queue_state(state, state_path)
         failed = failed or result != 0

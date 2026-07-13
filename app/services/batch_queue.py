@@ -94,11 +94,14 @@ def load_queue_state(path: str | Path = DEFAULT_STATE_FILE) -> dict:
         or not isinstance(payload.get("jobs"), dict)
     ):
         raise BatchQueueFormatError(f"Invalid queue state format: {path}")
-    return {
+    state = {
         "status": payload.get("status", "idle"),
         "current_job_id": payload.get("current_job_id"),
         "jobs": payload["jobs"],
     }
+    if "worker_pid" in payload:
+        state["worker_pid"] = payload["worker_pid"]
+    return state
 
 
 def save_queue_state(state: dict, path: str | Path = DEFAULT_STATE_FILE) -> None:
@@ -109,6 +112,8 @@ def save_queue_state(state: dict, path: str | Path = DEFAULT_STATE_FILE) -> None
         "current_job_id": state.get("current_job_id"),
         "jobs": state["jobs"],
     }
+    if "worker_pid" in state:
+        payload["worker_pid"] = state["worker_pid"]
     _atomic_write(payload, path)
 
 

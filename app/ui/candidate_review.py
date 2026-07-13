@@ -313,11 +313,48 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
         return f"Failed to start: {e}"
 
 
+def _terminate_spawned_queue_worker(proc) -> None:
+    """Terminate a worker that started but could not be persisted safely."""
+    pid = getattr(proc, "pid", None)
+    if not pid:
+        return
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=10,
+            )
+        else:
+            proc.terminate()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _starting_claim_has_valid_worker(queue_state: dict) -> bool:
+    """Return whether a persisted starting claim still owns a batch worker."""
+    worker_pid = queue_state.get("worker_pid")
+    if worker_pid is not None:
+        return is_batch_process(worker_pid)
+    return bool(get_batch_status().get("running"))
+
+
 def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
     """Start a queue worker after the caller has claimed the launch lock."""
     queue_state = load_queue_state()
     queue_status = queue_state.get("status", "idle")
-    if queue_status in {"starting", "running", "draining"}:
+    if queue_status == "starting":
+        if _starting_claim_has_valid_worker(queue_state):
+            return "Batch queue already starting."
+        queue_state["status"] = "idle"
+        queue_state["current_job_id"] = None
+        queue_state.pop("worker_pid", None)
+        save_queue_state(queue_state)
+        queue_status = "idle"
+    if queue_status in {"running", "draining"}:
         return f"Batch queue already {queue_status}."
 
     status = get_batch_status()
@@ -339,8 +376,10 @@ def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
     os.makedirs(os.path.dirname(PID_FILE), exist_ok=True)
     queue_state["status"] = "starting"
     queue_state["current_job_id"] = None
+    queue_state.pop("worker_pid", None)
     save_queue_state(queue_state)
     log_file = None
+    proc = None
     try:
         log_file = open(BATCH_LOG_FILE, "a", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
@@ -349,12 +388,17 @@ def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
         )
         with open(PID_FILE, "w") as f:
             f.write(str(proc.pid))
+        queue_state["worker_pid"] = proc.pid
+        save_queue_state(queue_state)
         return f"Batch queue started (PID {proc.pid})."
     except Exception as exc:
+        if proc is not None:
+            _terminate_spawned_queue_worker(proc)
         if log_file is not None:
             log_file.close()
         queue_state["status"] = "idle"
         queue_state["current_job_id"] = None
+        queue_state.pop("worker_pid", None)
         save_queue_state(queue_state)
         return f"Failed to start queue: {exc}"
 

@@ -166,7 +166,7 @@ def test_rapid_append_requests_launch_one_successor_worker(monkeypatch, tmp_path
     assert not first.is_alive()
     assert not second.is_alive()
     assert launches == [True]
-    assert saved_statuses == ["starting"]
+    assert saved_statuses == ["starting", "starting"]
 
 
 def test_start_batch_queue_restores_idle_state_after_launch_failure(monkeypatch, tmp_path):
@@ -193,3 +193,72 @@ def test_start_batch_queue_restores_idle_state_after_launch_failure(monkeypatch,
     assert "Failed to start queue" in message
     assert state_store["status"] == "idle"
     assert saved_statuses == ["starting", "idle"]
+
+
+def test_start_batch_queue_terminates_spawned_worker_when_pid_write_fails(monkeypatch, tmp_path):
+    from app.ui import candidate_review
+
+    state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
+    saved_statuses = []
+    taskkill_calls = []
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-2"}]})
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: dict(state_store))
+    monkeypatch.setattr(candidate_review, "pending_jobs", lambda queue, state: queue["jobs"])
+    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": False, "pid": None})
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path))
+
+    def save_state(state):
+        state_store.update(state)
+        saved_statuses.append(state["status"])
+
+    class FakeProcess:
+        pid = 444
+
+    monkeypatch.setattr(candidate_review, "save_queue_state", save_state)
+    monkeypatch.setattr(candidate_review.subprocess, "Popen", lambda *_args, **_kwargs: FakeProcess())
+    monkeypatch.setattr(
+        candidate_review.subprocess,
+        "run",
+        lambda command, **_kwargs: taskkill_calls.append(command),
+    )
+
+    message = candidate_review.start_batch_queue()
+
+    assert "Failed to start queue" in message
+    assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", "444"]]
+    assert state_store["status"] == "idle"
+    assert saved_statuses == ["starting", "idle"]
+
+
+def test_start_batch_queue_reclaims_stale_starting_claim_once(monkeypatch, tmp_path):
+    from app.ui import candidate_review
+
+    state_store = {"status": "starting", "current_job_id": None, "worker_pid": 999, "jobs": {}}
+    saved_statuses = []
+    launches = []
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-2"}]})
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: dict(state_store))
+    monkeypatch.setattr(candidate_review, "pending_jobs", lambda queue, state: queue["jobs"])
+    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": False, "pid": None})
+    monkeypatch.setattr(candidate_review, "is_batch_process", lambda pid: pid == 333)
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path / "batch.pid"))
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
+
+    def save_state(state):
+        state_store.clear()
+        state_store.update(state)
+        saved_statuses.append(state["status"])
+
+    class FakeProcess:
+        pid = 333
+
+    monkeypatch.setattr(candidate_review, "save_queue_state", save_state)
+    monkeypatch.setattr(candidate_review.subprocess, "Popen", lambda *_args, **_kwargs: launches.append(True) or FakeProcess())
+
+    candidate_review.start_batch_queue()
+    candidate_review.start_batch_queue()
+
+    assert launches == [True]
+    assert saved_statuses == ["idle", "starting", "starting"]
+    assert state_store["worker_pid"] == 333
