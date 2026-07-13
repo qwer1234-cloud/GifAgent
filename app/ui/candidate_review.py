@@ -341,7 +341,7 @@ def _is_process_definitely_gone(pid: int) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
-    except (OSError, ValueError):
+    except Exception:
         return False
     return False
 

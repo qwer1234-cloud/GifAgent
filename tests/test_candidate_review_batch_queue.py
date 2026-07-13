@@ -285,6 +285,52 @@ def test_start_batch_queue_keeps_claim_when_worker_cleanup_cannot_be_confirmed(m
     assert saved_states[-1]["status"] == "starting"
 
 
+def test_start_batch_queue_keeps_claim_when_cleanup_verification_errors(monkeypatch, tmp_path):
+    import subprocess
+
+    from app.ui import candidate_review
+
+    state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
+    launches = []
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-2"}]})
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: dict(state_store))
+    monkeypatch.setattr(candidate_review, "pending_jobs", lambda queue, state: queue["jobs"])
+    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": False, "pid": None})
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path))
+
+    def save_state(state):
+        state_store.clear()
+        state_store.update(state)
+
+    class FakeProcess:
+        pid = 446
+
+    def fake_run(command, **_kwargs):
+        if command[0] == "taskkill":
+            return type("Result", (), {"returncode": 0})()
+        raise subprocess.TimeoutExpired(command, 3)
+
+    monkeypatch.setattr(candidate_review, "save_queue_state", save_state)
+    monkeypatch.setattr(
+        candidate_review.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: launches.append(True) or FakeProcess(),
+    )
+    monkeypatch.setattr(candidate_review.subprocess, "run", fake_run)
+    monkeypatch.setattr(candidate_review, "is_batch_process", lambda _pid: False)
+
+    message = candidate_review.start_batch_queue()
+    second_message = candidate_review.start_batch_queue()
+
+    assert "cleanup pending" in message
+    assert second_message == "Batch queue already starting."
+    assert launches == [True]
+    assert state_store["status"] == "starting"
+    assert state_store["worker_pid"] == 446
+    assert state_store["cleanup_pending"] is True
+
+
 def test_start_batch_queue_reclaims_stale_starting_claim_once(monkeypatch, tmp_path):
     from app.ui import candidate_review
 
