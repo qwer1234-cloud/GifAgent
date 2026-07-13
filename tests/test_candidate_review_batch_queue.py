@@ -76,6 +76,55 @@ def test_append_batch_directory_starts_one_successor_after_draining_worker_goes_
     assert started == [True]
 
 
+def test_append_batch_directory_reclaims_dead_cleanup_claim_and_starts_successor(monkeypatch, tmp_path):
+    from app.ui import candidate_review
+
+    state_store = {
+        "status": "starting",
+        "current_job_id": None,
+        "worker_pid": 999,
+        "cleanup_pending": True,
+        "last_error": "PID persistence failed",
+        "jobs": {},
+    }
+    saved_states = []
+    launches = []
+    monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: {"job_id": "job-2"})
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-2"}]})
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: dict(state_store))
+    monkeypatch.setattr(candidate_review, "pending_jobs", lambda queue, state: queue["jobs"])
+    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": False, "pid": None})
+    monkeypatch.setattr(candidate_review, "is_batch_process", lambda _pid: False)
+    monkeypatch.setattr(candidate_review, "_is_process_definitely_gone", lambda pid: pid == 999)
+    monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path / "batch.pid"))
+    monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
+
+    def save_state(state):
+        state_store.clear()
+        state_store.update(state)
+        saved_states.append(dict(state))
+
+    class FakeProcess:
+        pid = 333
+
+    monkeypatch.setattr(candidate_review, "save_queue_state", save_state)
+    monkeypatch.setattr(
+        candidate_review.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: launches.append(True) or FakeProcess(),
+    )
+
+    message, _ = candidate_review.append_batch_directory(str(tmp_path))
+
+    assert "Batch queue started (PID 333)" in message
+    assert launches == [True]
+    assert saved_states[0]["status"] == "idle"
+    assert state_store["status"] == "starting"
+    assert state_store["worker_pid"] == 333
+    assert "cleanup_pending" not in state_store
+    assert "last_error" not in state_store
+
+
 def test_refresh_batch_status_keeps_summary_and_queue_when_log_cannot_be_read(monkeypatch):
     from app.ui import candidate_review
 
@@ -133,6 +182,7 @@ def test_rapid_append_requests_launch_one_successor_worker(monkeypatch, tmp_path
     monkeypatch.setattr(candidate_review, "save_queue_state", save_state, raising=False)
     monkeypatch.setattr(candidate_review, "pending_jobs", lambda queue, state: queue["jobs"])
     monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": False, "pid": None})
+    monkeypatch.setattr(candidate_review, "is_batch_process", lambda pid: pid == 123)
     monkeypatch.setattr(candidate_review, "PID_FILE", str(tmp_path / "batch.pid"))
     monkeypatch.setattr(candidate_review, "BATCH_LOG_FILE", str(tmp_path / "batch.log"))
 

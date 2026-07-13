@@ -413,19 +413,29 @@ def _starting_claim_has_valid_worker(queue_state: dict) -> bool:
     return bool(get_batch_status().get("running"))
 
 
+def _recover_stale_starting_claim_locked(queue_state: dict) -> str:
+    """Release a starting claim only after its exact worker PID is dead."""
+    queue_status = queue_state.get("status", "idle")
+    if queue_status != "starting":
+        return queue_status
+    if _starting_claim_has_valid_worker(queue_state):
+        return "starting"
+    queue_state["status"] = "idle"
+    queue_state["current_job_id"] = None
+    queue_state.pop("worker_pid", None)
+    _clear_cleanup_markers(queue_state)
+    save_queue_state(queue_state)
+    return "idle"
+
+
 def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
     """Start a queue worker after the caller has claimed the launch lock."""
     queue_state = load_queue_state()
     queue_status = queue_state.get("status", "idle")
     if queue_status == "starting":
-        if _starting_claim_has_valid_worker(queue_state):
+        queue_status = _recover_stale_starting_claim_locked(queue_state)
+        if queue_status == "starting":
             return "Batch queue already starting."
-        queue_state["status"] = "idle"
-        queue_state["current_job_id"] = None
-        queue_state.pop("worker_pid", None)
-        _clear_cleanup_markers(queue_state)
-        save_queue_state(queue_state)
-        queue_status = "idle"
     if queue_status in {"running", "draining"}:
         return f"Batch queue already {queue_status}."
 
@@ -532,6 +542,10 @@ def append_batch_directory(
         queue_text = format_queue_status(queue, queue_state)
         queue_status = queue_state.get("status", "idle")
 
+        if queue_status == "starting":
+            queue_status = _recover_stale_starting_claim_locked(queue_state)
+            if queue_status == "idle":
+                queue_text = format_queue_status(queue, queue_state)
         if queue_status == "draining":
             queue_status = _wait_for_draining_queue_state(queue_state)
         if queue_status in {"starting", "running", "draining"}:
