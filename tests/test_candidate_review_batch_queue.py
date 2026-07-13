@@ -164,6 +164,40 @@ def test_append_batch_directory_rejects_blank_or_missing_paths(monkeypatch, tmp_
     assert appended == []
 
 
+def test_append_batch_directory_reports_duplicate_without_starting_worker(
+    monkeypatch, tmp_path
+):
+    from app.services.batch_queue import DuplicateQueueJobError
+    from app.ui import candidate_review
+
+    existing_job = {"job_id": "job-1", "directory": str(tmp_path)}
+    monkeypatch.setattr(
+        candidate_review,
+        "append_queue_job",
+        lambda *_args: (_ for _ in ()).throw(
+            DuplicateQueueJobError(str(tmp_path), existing_job)
+        ),
+    )
+    monkeypatch.setattr(
+        candidate_review,
+        "refresh_batch_status",
+        lambda: ("summary", "queue-text", "log-text"),
+    )
+    started = []
+    monkeypatch.setattr(
+        candidate_review,
+        "_start_batch_queue_locked",
+        lambda **_kwargs: started.append(True) or "started",
+    )
+
+    message, queue_text = candidate_review.append_batch_directory(str(tmp_path))
+
+    assert "Already queued" in message
+    assert str(tmp_path) in message
+    assert queue_text == "queue-text"
+    assert started == []
+
+
 def test_append_while_direct_worker_runs_launches_queue_successor_without_second_start(
     monkeypatch, tmp_path
 ):

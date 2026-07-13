@@ -16,10 +16,21 @@ from typing import Any
 DEFAULT_QUEUE_FILE = Path("data/batch_queue.json")
 DEFAULT_STATE_FILE = Path("data/batch_queue_state.json")
 DEFAULT_WORKER_LEASE_FILE = Path("data/batch_worker.lock")
+TERMINAL_QUEUE_JOB_STATUSES = {"completed", "failed"}
 
 
 class BatchQueueFormatError(ValueError):
     """Raised when a queue or state file cannot be read as its expected shape."""
+
+
+class DuplicateQueueJobError(ValueError):
+    """Raised when an active job already owns the requested directory."""
+
+    def __init__(self, directory: str, existing_job: dict):
+        self.directory = directory
+        self.existing_job = dict(existing_job)
+        job_id = self.existing_job.get("job_id", "unknown")
+        super().__init__(f"Directory already queued: {directory} (job {job_id})")
 
 
 class WorkerLeaseBusyError(RuntimeError):
@@ -203,6 +214,72 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def canonical_directory(directory: str | Path) -> str:
+    """Return a stable, case-normalized identity for a directory path."""
+    value = os.fspath(directory).strip()
+    if not value:
+        return ""
+    return os.path.normcase(os.path.realpath(os.path.abspath(value)))
+
+
+def queue_job_directory_key(job: dict) -> str:
+    """Read a new or legacy queue job's canonical directory identity."""
+    stored_key = job.get("directory_key")
+    if stored_key:
+        return os.path.normcase(str(stored_key))
+    return canonical_directory(job.get("directory", ""))
+
+
+def _queue_job_status(job: dict, state: dict) -> str:
+    return state.get("jobs", {}).get(job.get("job_id"), {}).get("status", "pending")
+
+
+def deduplicate_queue_jobs(queue: dict, state: dict | None = None) -> tuple[dict, list[dict]]:
+    """Remove duplicate active jobs while retaining terminal history entries."""
+    state = state or {"jobs": {}}
+    seen_active: set[str] = set()
+    kept: list[dict] = []
+    removed: list[dict] = []
+    for job in queue.get("jobs", []):
+        key = queue_job_directory_key(job)
+        status = _queue_job_status(job, state)
+        if not key or status in TERMINAL_QUEUE_JOB_STATUSES or key not in seen_active:
+            kept.append(job)
+            if key and status not in TERMINAL_QUEUE_JOB_STATUSES:
+                seen_active.add(key)
+        else:
+            removed.append(job)
+    cleaned = dict(queue)
+    cleaned["jobs"] = kept
+    return cleaned, removed
+
+
+def deduplicate_queue_file(
+    path: str | Path = DEFAULT_QUEUE_FILE,
+    *,
+    state_path: str | Path | None = None,
+) -> list[dict]:
+    """Persist removal of duplicate active jobs and return removed jobs."""
+    queue_path = Path(path)
+    transaction_state_path = (
+        Path(state_path) if state_path is not None else queue_state_path_for_queue(queue_path)
+    )
+    with queue_state_transaction(queue_path, transaction_state_path):
+        queue = load_queue(queue_path)
+        state = load_queue_state(transaction_state_path)
+        cleaned, removed = deduplicate_queue_jobs(queue, state)
+        if removed:
+            save_queue(cleaned, queue_path)
+            removed_ids = {job.get("job_id") for job in removed}
+            state["jobs"] = {
+                job_id: job_state
+                for job_id, job_state in state.get("jobs", {}).items()
+                if job_id not in removed_ids
+            }
+            save_queue_state(state, transaction_state_path)
+    return removed
+
+
 def load_queue(path: str | Path = DEFAULT_QUEUE_FILE) -> dict:
     payload = _read_json(path)
     if payload is None:
@@ -232,9 +309,26 @@ def append_queue_job(
     transaction_state_path = Path(state_path) if state_path is not None else queue_state_path_for_queue(queue_path)
     with queue_state_transaction(queue_path, transaction_state_path):
         queue = load_queue(path)
+        state = load_queue_state(transaction_state_path)
+        queue, _removed = deduplicate_queue_jobs(queue, state)
+        if _removed:
+            save_queue(queue, path)
+        requested_key = canonical_directory(directory)
+        existing_job = next(
+            (
+                job
+                for job in queue["jobs"]
+                if queue_job_directory_key(job) == requested_key
+                and _queue_job_status(job, state) not in TERMINAL_QUEUE_JOB_STATUSES
+            ),
+            None,
+        )
+        if existing_job is not None:
+            raise DuplicateQueueJobError(directory, existing_job)
         job = {
             "job_id": str(uuid.uuid4()),
             "directory": directory,
+            "directory_key": requested_key,
             "limit": limit,
             "extensions": extensions,
             "created_at": _timestamp(),

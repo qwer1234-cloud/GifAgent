@@ -170,3 +170,46 @@ append_queue_job(sys.argv[2], path=sys.argv[1])
     assert {job["directory"] for job in load_queue(queue_path)["jobs"]} == {
         f"C:/videos/{index}" for index in range(12)
     }
+
+
+def test_append_queue_job_rejects_duplicate_active_directory(tmp_path):
+    from app.services.batch_queue import (
+        DuplicateQueueJobError,
+        append_queue_job,
+        load_queue,
+    )
+
+    queue_path = tmp_path / "batch_queue.json"
+    directory = tmp_path / "videos"
+    directory.mkdir()
+    first = append_queue_job(str(directory), path=queue_path)
+
+    with pytest.raises(DuplicateQueueJobError) as exc_info:
+        append_queue_job(str(directory) + "\\", path=queue_path)
+
+    assert exc_info.value.existing_job["job_id"] == first["job_id"]
+    assert len(load_queue(queue_path)["jobs"]) == 1
+
+
+def test_append_queue_job_allows_requeue_after_terminal_job(tmp_path):
+    from app.services.batch_queue import (
+        append_queue_job,
+        load_queue,
+        load_queue_state,
+        save_queue_state,
+        update_job_state,
+    )
+
+    queue_path = tmp_path / "batch_queue.json"
+    state_path = tmp_path / "batch_queue_state.json"
+    directory = tmp_path / "videos"
+    directory.mkdir()
+    first = append_queue_job(str(directory), path=queue_path, state_path=state_path)
+    state = load_queue_state(state_path)
+    update_job_state(state, first["job_id"], "completed")
+    save_queue_state(state, state_path)
+
+    second = append_queue_job(str(directory), path=queue_path, state_path=state_path)
+
+    assert second["job_id"] != first["job_id"]
+    assert len(load_queue(queue_path)["jobs"]) == 2

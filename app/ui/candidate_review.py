@@ -12,6 +12,7 @@ from PIL import Image
 from app.db import get_connection
 from app.services.batch_logging import read_batch_log
 from app.services.batch_queue import (
+    DuplicateQueueJobError,
     append_queue_job,
     format_queue_status,
     load_queue,
@@ -637,7 +638,14 @@ def append_batch_directory(
         return f"Invalid directory: {video_dir}", refresh_batch_status()[1]
 
     with QUEUE_START_LOCK:
-        append_queue_job(directory, int(limit or 0), (extensions or "").strip())
+        try:
+            append_queue_job(directory, int(limit or 0), (extensions or "").strip())
+        except DuplicateQueueJobError as exc:
+            existing_id = exc.existing_job.get("job_id", "unknown")
+            return (
+                f"Already queued: {directory} (job {existing_id})",
+                refresh_batch_status()[1],
+            )
         queue = load_queue()
         queue_state = load_queue_state()
         queue_text = format_queue_status(queue, queue_state)
