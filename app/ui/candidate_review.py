@@ -30,6 +30,8 @@ BATCH_QUEUE_STATE_FILE = "data/batch_queue_state.json"
 BATCH_LOG_FILE = "data/batch_subprocess.log"
 DRAINING_POLL_INTERVAL_SECONDS = 0.01
 DRAINING_POLL_ATTEMPTS = 50
+WORKER_CLEANUP_POLL_INTERVAL_SECONDS = 0.05
+WORKER_CLEANUP_POLL_ATTEMPTS = 20
 QUEUE_START_LOCK = threading.Lock()
 CONFIG_FILE = "configs/models.yaml"
 PAGE_SIZE = 12
@@ -313,32 +315,101 @@ def start_batch(video_dir: str, limit: int = 0, extensions: str = ""):
         return f"Failed to start: {e}"
 
 
-def _terminate_spawned_queue_worker(proc) -> None:
-    """Terminate a worker that started but could not be persisted safely."""
-    pid = getattr(proc, "pid", None)
-    if not pid:
-        return
+def _is_process_definitely_gone(pid: int) -> bool:
+    """Return true only when the operating system confirms a PID has exited."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+
     try:
         if os.name == "nt":
-            subprocess.run(
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    f"if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ exit 1 }} else {{ exit 0 }}",
+                ],
+                capture_output=True,
+                timeout=3,
+                creationflags=flags,
+            )
+            return result.returncode == 0
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _wait_for_spawned_worker_exit(proc, pid: int) -> bool:
+    """Poll until a terminated worker PID is proven to have exited."""
+    for attempt in range(WORKER_CLEANUP_POLL_ATTEMPTS):
+        if not is_batch_process(pid) and _is_process_definitely_gone(pid):
+            return True
+        if attempt + 1 < WORKER_CLEANUP_POLL_ATTEMPTS:
+            time.sleep(WORKER_CLEANUP_POLL_INTERVAL_SECONDS)
+    return False
+
+
+def _terminate_spawned_queue_worker(proc) -> bool:
+    """Terminate a worker and report whether its PID is confirmed gone."""
+    pid = getattr(proc, "pid", None)
+    if not pid:
+        return False
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True,
                 timeout=10,
             )
-        else:
-            proc.terminate()
-    except Exception:
-        try:
-            proc.kill()
         except Exception:
-            pass
+            return False
+        if getattr(result, "returncode", None) != 0:
+            return False
+        return _wait_for_spawned_worker_exit(proc, pid)
+
+    try:
+        proc.terminate()
+    except Exception:
+        return False
+    try:
+        proc.wait(timeout=WORKER_CLEANUP_POLL_INTERVAL_SECONDS * WORKER_CLEANUP_POLL_ATTEMPTS)
+    except Exception:
+        pass
+    return _wait_for_spawned_worker_exit(proc, pid)
+
+
+def _clear_cleanup_markers(queue_state: dict) -> None:
+    queue_state.pop("cleanup_pending", None)
+    queue_state.pop("last_error", None)
+
+
+def _remove_pid_file_for_worker(pid: int) -> None:
+    """Remove only the PID file owned by the worker just confirmed stopped."""
+    try:
+        with open(PID_FILE) as f:
+            recorded_pid = int(f.read().strip())
+        if recorded_pid == int(pid):
+            os.remove(PID_FILE)
+    except (OSError, ValueError):
+        pass
 
 
 def _starting_claim_has_valid_worker(queue_state: dict) -> bool:
-    """Return whether a persisted starting claim still owns a batch worker."""
+    """Keep a starting claim until its worker PID is confirmed dead."""
     worker_pid = queue_state.get("worker_pid")
     if worker_pid is not None:
-        return is_batch_process(worker_pid)
+        if is_batch_process(worker_pid):
+            return True
+        return not _is_process_definitely_gone(worker_pid)
+    if queue_state.get("cleanup_pending"):
+        return True
     return bool(get_batch_status().get("running"))
 
 
@@ -352,6 +423,7 @@ def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
         queue_state["status"] = "idle"
         queue_state["current_job_id"] = None
         queue_state.pop("worker_pid", None)
+        _clear_cleanup_markers(queue_state)
         save_queue_state(queue_state)
         queue_status = "idle"
     if queue_status in {"running", "draining"}:
@@ -377,6 +449,7 @@ def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
     queue_state["status"] = "starting"
     queue_state["current_job_id"] = None
     queue_state.pop("worker_pid", None)
+    _clear_cleanup_markers(queue_state)
     save_queue_state(queue_state)
     log_file = None
     proc = None
@@ -392,13 +465,31 @@ def _start_batch_queue_locked(*, allow_terminal_successor: bool = False):
         save_queue_state(queue_state)
         return f"Batch queue started (PID {proc.pid})."
     except Exception as exc:
-        if proc is not None:
-            _terminate_spawned_queue_worker(proc)
+        cleanup_confirmed = proc is not None and _terminate_spawned_queue_worker(proc)
         if log_file is not None:
             log_file.close()
+        if cleanup_confirmed:
+            _remove_pid_file_for_worker(proc.pid)
+            queue_state["status"] = "idle"
+            queue_state["current_job_id"] = None
+            queue_state.pop("worker_pid", None)
+            _clear_cleanup_markers(queue_state)
+            save_queue_state(queue_state)
+            return f"Failed to start queue: {exc}"
+
+        if proc is not None:
+            queue_state["worker_pid"] = proc.pid
+            queue_state["cleanup_pending"] = True
+            queue_state["last_error"] = str(exc)
+            queue_state["status"] = "starting"
+            queue_state["current_job_id"] = None
+            save_queue_state(queue_state)
+            return f"Failed to start queue; cleanup pending for PID {proc.pid}: {exc}"
+
         queue_state["status"] = "idle"
         queue_state["current_job_id"] = None
         queue_state.pop("worker_pid", None)
+        _clear_cleanup_markers(queue_state)
         save_queue_state(queue_state)
         return f"Failed to start queue: {exc}"
 

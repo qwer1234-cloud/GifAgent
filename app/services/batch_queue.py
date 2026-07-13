@@ -99,8 +99,9 @@ def load_queue_state(path: str | Path = DEFAULT_STATE_FILE) -> dict:
         "current_job_id": payload.get("current_job_id"),
         "jobs": payload["jobs"],
     }
-    if "worker_pid" in payload:
-        state["worker_pid"] = payload["worker_pid"]
+    for key in ("worker_pid", "cleanup_pending", "last_error"):
+        if key in payload:
+            state[key] = payload[key]
     return state
 
 
@@ -112,8 +113,9 @@ def save_queue_state(state: dict, path: str | Path = DEFAULT_STATE_FILE) -> None
         "current_job_id": state.get("current_job_id"),
         "jobs": state["jobs"],
     }
-    if "worker_pid" in state:
-        payload["worker_pid"] = state["worker_pid"]
+    for key in ("worker_pid", "cleanup_pending", "last_error"):
+        if key in state:
+            payload[key] = state[key]
     _atomic_write(payload, path)
 
 
