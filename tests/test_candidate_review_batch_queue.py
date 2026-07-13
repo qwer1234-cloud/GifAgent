@@ -27,24 +27,49 @@ def test_append_batch_directory_restarts_queue_when_worker_exits_during_append(m
     monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": []})
     monkeypatch.setattr(candidate_review, "load_queue_state", lambda: {"jobs": {}})
     started = []
-    monkeypatch.setattr(candidate_review, "start_batch_queue", lambda: started.append(True) or "started")
+    monkeypatch.setattr(candidate_review, "start_batch_queue", lambda **_kwargs: started.append(True) or "started")
 
     candidate_review.append_batch_directory(str(tmp_path))
 
     assert started == [True]
 
 
-def test_append_batch_directory_rechecks_worker_after_idle_grace(monkeypatch, tmp_path):
+def test_append_batch_directory_waits_for_draining_worker_adoption(monkeypatch, tmp_path):
     from app.ui import candidate_review
 
-    statuses = iter(({"running": True}, {"running": True}, {"running": False}))
-    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: next(statuses))
+    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": True})
     monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: {"job_id": "job-2"})
     monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": []})
-    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: {"jobs": {}})
+    states = iter((
+        {"status": "draining", "jobs": {}},
+        {"status": "running", "jobs": {}},
+    ))
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: next(states))
+    sleeps = []
+    monkeypatch.setattr(candidate_review.time, "sleep", sleeps.append)
+    started = []
+    monkeypatch.setattr(candidate_review, "start_batch_queue", lambda **_kwargs: started.append(True) or "started")
+
+    candidate_review.append_batch_directory(str(tmp_path))
+
+    assert sleeps == [candidate_review.DRAINING_POLL_INTERVAL_SECONDS]
+    assert started == []
+
+
+def test_append_batch_directory_starts_one_successor_after_draining_worker_goes_idle(monkeypatch, tmp_path):
+    from app.ui import candidate_review
+
+    monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": True})
+    monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: {"job_id": "job-2"})
+    monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": []})
+    states = iter((
+        {"status": "draining", "jobs": {}},
+        {"status": "idle", "jobs": {}},
+    ))
+    monkeypatch.setattr(candidate_review, "load_queue_state", lambda: next(states))
     monkeypatch.setattr(candidate_review.time, "sleep", lambda _seconds: None)
     started = []
-    monkeypatch.setattr(candidate_review, "start_batch_queue", lambda: started.append(True) or "started")
+    monkeypatch.setattr(candidate_review, "start_batch_queue", lambda **_kwargs: started.append(True) or "started")
 
     candidate_review.append_batch_directory(str(tmp_path))
 

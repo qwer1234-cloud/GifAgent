@@ -32,7 +32,6 @@ from app.services.batch_queue import (
 
 
 DEFAULT_EXTENSIONS = ".mp4,.mkv,.avi,.mov,.webm,.ts"
-QUEUE_IDLE_GRACE_SECONDS = 0.1
 
 
 def load_checkpoint():
@@ -284,10 +283,14 @@ def run_queue(
         state = load_queue_state(state_path)
         jobs = pending_jobs(queue, state)
         if not jobs:
-            time.sleep(QUEUE_IDLE_GRACE_SECONDS)
+            state["status"] = "draining"
+            state["current_job_id"] = None
+            save_queue_state(state, state_path)
             queue = load_queue(queue_file)
             state = load_queue_state(state_path)
             if pending_jobs(queue, state):
+                state["status"] = "running"
+                save_queue_state(state, state_path)
                 continue
             state["status"] = "idle"
             state["current_job_id"] = None

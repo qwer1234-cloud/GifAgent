@@ -20,21 +20,25 @@ def test_run_queue_processes_jobs_in_order_and_continues_after_failure(tmp_path)
     assert state["jobs"][second["job_id"]]["status"] == "completed"
 
 
-def test_run_queue_reloads_job_appended_during_idle_grace(monkeypatch, tmp_path):
+def test_run_queue_adopts_job_appended_while_draining(monkeypatch, tmp_path):
     from app.services.batch_queue import append_queue_job
     from scripts import test_video_batch
 
     queue_path = tmp_path / "batch_queue.json"
     calls = []
     appended = False
+    saved_statuses = []
+    original_save_state = test_video_batch.save_queue_state
 
-    def append_during_idle_grace(_seconds):
+    def append_when_draining(state, path):
         nonlocal appended
-        if not appended:
+        saved_statuses.append(state["status"])
+        original_save_state(state, path)
+        if state["status"] == "draining" and not appended:
             appended = True
             append_queue_job("C:/videos/late", path=queue_path)
 
-    monkeypatch.setattr(test_video_batch.time, "sleep", append_during_idle_grace)
+    monkeypatch.setattr(test_video_batch, "save_queue_state", append_when_draining)
 
     result = test_video_batch.run_queue(
         str(queue_path),
@@ -43,6 +47,7 @@ def test_run_queue_reloads_job_appended_during_idle_grace(monkeypatch, tmp_path)
 
     assert result == 0
     assert calls == ["C:/videos/late"]
+    assert saved_statuses[:2] == ["draining", "running"]
 
 
 def test_build_single_batch_command_keeps_frozen_and_source_modes_distinct(monkeypatch):
