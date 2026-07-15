@@ -67,13 +67,33 @@ uv run python scripts/test_video_batch.py --dir "<video_dir>" --extensions ".ts,
 ```
 
 Output structure: `data/exports/adaptive_test/{input_folder_name}/{video_name}/`
-contains GIFs named `{video_name}@@@{seq}_{start}s-{end}s.gif` and a
+contains GIFs named `{video_name}@@@{seq}_{start_ms}ms-{end_ms}ms.gif` and a
 PotPlayer bookmark file named `{video_name}.pbf`.
+
+### Control batch queue
+
+The Candidate Review Control panel appends video directories to one persistent,
+serial queue. Directory identity is normalized (absolute path, case-insensitive
+on Windows), so an active directory can only have one queued job. A repeated
+click returns `Already queued` without launching another worker; completed or
+failed jobs may be queued again as a new run.
+
+`Batch Status`, `Folder Queue`, and `Detailed Output Log` are independent UI
+outputs. The detailed log records every video with its full-path `START` and
+terminal status, plus every GIF attempt and its failure reason. Queue state also
+persists worker PID, cleanup state, and the last error for crash recovery.
+
+To normalize legacy queue data after copying an old runtime directory:
+
+```bash
+uv run python -c "from app.services.batch_queue import deduplicate_queue_file; deduplicate_queue_file('data/batch_queue.json')"
+```
 
 ### Packaged GUI
 
 ```bash
-uv run pyinstaller --noconfirm build_exe.spec
+uv pip install pyinstaller
+uv run python -m PyInstaller --noconfirm build_exe.spec
 ```
 
 Output: `dist/GifAgentUI/GifAgentUI.exe`. If an older packaged GUI is running,
@@ -216,7 +236,7 @@ Key ones:
 ## Test Suite
 
 ```bash
-uv run pytest tests/ -v   # 95 tests, 1 skipped
+uv run pytest tests/ -v
 ```
 
 Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker.

@@ -43,6 +43,17 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(candidate_id) REFERENCES candidate_gifs(candidate_id)
         );
 
+        CREATE TABLE IF NOT EXISTS favorite_gifs (
+            favorite_id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL UNIQUE,
+            full_path TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(candidate_id) REFERENCES candidate_gifs(candidate_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_favorite_gifs_candidate
+            ON favorite_gifs(candidate_id);
+
         CREATE TABLE IF NOT EXISTS preference_events (
             event_id TEXT PRIMARY KEY,
             target_type TEXT NOT NULL CHECK(target_type IN ('media','candidate_gif')),
@@ -52,7 +63,10 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             scenario_keys_json TEXT NOT NULL DEFAULT '[]',
             corrected_tags_json TEXT,
             note TEXT,
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            previous_status TEXT,
+            undone_at TEXT,
+            undone_reason TEXT
         );
 
         CREATE TABLE IF NOT EXISTS preference_profile_builds (
@@ -103,4 +117,12 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             ON preference_events(source_video_sha256, created_at);
         """
     )
+    event_columns = {row[1] for row in conn.execute("PRAGMA table_info(preference_events)").fetchall()}
+    for column, ddl in (
+        ("previous_status", "TEXT"),
+        ("undone_at", "TEXT"),
+        ("undone_reason", "TEXT"),
+    ):
+        if column not in event_columns:
+            conn.execute(f"ALTER TABLE preference_events ADD COLUMN {column} {ddl}")
     conn.commit()

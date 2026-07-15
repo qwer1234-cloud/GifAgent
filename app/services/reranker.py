@@ -28,6 +28,24 @@ _NOMINAL_NEGATIVE_WEIGHTS: dict[str, float] = {
 }
 
 
+def blend_export_scores(
+    base_score: float,
+    preference_score: float,
+    base_score_weight: float,
+    preference_score_weight: float,
+) -> float:
+    """Blend two normalized export scores using their configured proportions."""
+    if base_score_weight < 0 or preference_score_weight < 0:
+        raise ValueError("export score weights must be non-negative")
+    weight_total = base_score_weight + preference_score_weight
+    if weight_total <= 0:
+        raise ValueError("at least one export score weight must be positive")
+    return float(
+        (base_score * base_score_weight + preference_score * preference_score_weight)
+        / weight_total
+    )
+
+
 def _normalize(vec: np.ndarray) -> np.ndarray:
     """L2-normalize a vector in place (or return a zero vector unchanged)."""
     norm = np.linalg.norm(vec)
@@ -213,24 +231,33 @@ class PreferenceReranker:
 
         final_score = float(max(0.0, min(1.0, raw_score)))
 
-        # ---- Compute profile_score (preference signal alone) ---------------
+        # ---- Compute normalized preference score (preference signal only) --
         profile_score: float | None = None
-        positive_contrib = 0.0
-        negative_contrib = 0.0
+        preference_components: list[tuple[float, float]] = []
         if "global_like" in active_weights:
-            positive_contrib += active_weights["global_like"] * global_like_sim
+            preference_components.append(
+                (_NOMINAL_POSITIVE_WEIGHTS["global_like"], (global_like_sim + 1.0) / 2.0)
+            )
         if "scenario_like" in active_weights:
-            positive_contrib += active_weights["scenario_like"] * scenario_like_sim
+            preference_components.append(
+                (_NOMINAL_POSITIVE_WEIGHTS["scenario_like"], (scenario_like_sim + 1.0) / 2.0)
+            )
         if "global_dislike" in active_weights:
-            negative_contrib += active_weights["global_dislike"] * global_dislike_sim
-
-        has_pref_signal = (
-            "global_like" in active_weights
-            or "scenario_like" in active_weights
-            or "global_dislike" in active_weights
-        )
-        if has_pref_signal:
-            profile_score = positive_contrib - negative_contrib
+            preference_components.append(
+                (_NOMINAL_NEGATIVE_WEIGHTS["global_dislike"], (1.0 - global_dislike_sim) / 2.0)
+            )
+        if preference_components:
+            preference_weight_total = sum(weight for weight, _ in preference_components)
+            profile_score = float(
+                max(
+                    0.0,
+                    min(
+                        1.0,
+                        sum(weight * score for weight, score in preference_components)
+                        / preference_weight_total,
+                    ),
+                )
+            )
 
         return {
             "base_rag_similarity": base_rag_similarity,

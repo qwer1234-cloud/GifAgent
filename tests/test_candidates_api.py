@@ -65,6 +65,56 @@ def test_list_candidates_is_paginated_and_filtered(monkeypatch):
     assert [c["candidate_id"] for c in payload["candidates"]] == ["cand-new"]
 
 
+def test_favorite_candidate_records_path_and_hides_it_from_unrated_list(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    conn = _setup_conn()
+    gif_path = tmp_path / "favorite.gif"
+    gif_path.write_bytes(b"gif")
+    _insert_candidate(conn, "cand-favorite", artifact_path=str(gif_path), preview_path=str(gif_path))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    response = candidates_router.favorite_candidate(
+        "cand-favorite", candidates_router.FavoriteRequest(expected_artifact_path=str(gif_path))
+    )
+    payload = candidates_router.list_candidates(status="candidate", limit=10, offset=0)
+
+    assert response.status == "favorited"
+    assert response.full_path == str(gif_path)
+    assert payload["total"] == 0
+    event = conn.execute(
+        "SELECT rating FROM preference_events WHERE target_id=? ORDER BY created_at DESC LIMIT 1",
+        ("cand-favorite",),
+    ).fetchone()
+    candidate_status = conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id=?", ("cand-favorite",)
+    ).fetchone()[0]
+    assert event["rating"] == "like"
+    assert candidate_status == "candidate"
+
+
+def test_undo_last_action_restores_candidate_and_removes_favorite(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    conn = _setup_conn()
+    gif_path = tmp_path / "undo-favorite.gif"
+    gif_path.write_bytes(b"gif")
+    _insert_candidate(conn, "cand-undo-favorite", artifact_path=str(gif_path), preview_path=str(gif_path))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+    candidates_router.favorite_candidate(
+        "cand-undo-favorite",
+        candidates_router.FavoriteRequest(expected_artifact_path=str(gif_path)),
+    )
+
+    response = candidates_router.undo_last_action()
+
+    assert response["status"] == "undone"
+    assert conn.execute("SELECT COUNT(*) FROM favorite_gifs").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id='cand-undo-favorite'"
+    ).fetchone()[0] == "candidate"
+
+
 def test_list_candidates_allows_all_statuses_and_prefers_preview_path(monkeypatch):
     from app.routers import candidates as candidates_router
 

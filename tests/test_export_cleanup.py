@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_cleanup_adaptive_export_dir_removes_generated_outputs(tmp_path):
     from app.services.export_cleanup import cleanup_adaptive_export_dir
 
@@ -31,3 +34,19 @@ def test_cleanup_adaptive_export_dir_removes_generated_outputs(tmp_path):
     assert not grid.exists()
     assert note.exists()
     assert other_sample.exists()
+
+
+def test_export_directory_lock_rejects_a_second_process(tmp_path):
+    from app.services.export_cleanup import ExportDirectoryBusyError, ExportDirectoryLock
+
+    export_dir = tmp_path / "VideoA"
+    first = ExportDirectoryLock(export_dir)
+    first.acquire()
+    try:
+        second = ExportDirectoryLock(export_dir)
+        with pytest.raises(ExportDirectoryBusyError):
+            second.acquire()
+    finally:
+        first.release()
+
+    assert not (export_dir / ".adaptive_export.lock").exists()

@@ -153,6 +153,53 @@ def test_skip_does_not_change_status():
     assert status == "candidate"  # unchanged
 
 
+def test_undo_last_candidate_action_marks_event_undone_and_restores_status():
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        ("cand-undo", "run", "clip", "video", "/v.mp4", 0.0, 1.0, "candidate"),
+    )
+    conn.commit()
+    service = PreferenceEventService(conn)
+    event = service.record_feedback(
+        target_type="candidate_gif", target_id="cand-undo", rating="like",
+        source_video_sha256="video", scenario_keys=[],
+    )
+
+    result = service.undo_last_candidate_action()
+
+    undone = conn.execute(
+        "SELECT undone_at, previous_status FROM preference_events WHERE event_id=?",
+        (event.event_id,),
+    ).fetchone()
+    status = conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id='cand-undo'"
+    ).fetchone()[0]
+    assert result["status"] == "undone"
+    assert undone["undone_at"] is not None
+    assert undone["previous_status"] == "candidate"
+    assert status == "candidate"
+
+
+def test_undo_with_no_active_candidate_action_is_noop():
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    assert PreferenceEventService(conn).undo_last_candidate_action()["status"] == "nothing_to_undo"
+
+
 def test_invalid_rating_raises():
     import pytest
     from app.services.preference_schema import apply_preference_schema

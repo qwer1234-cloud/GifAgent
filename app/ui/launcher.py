@@ -121,6 +121,13 @@ def _wait_for_url(url, label, timeout=30, thread=None):
     return False
 
 
+def launch_gradio_app(gradio_app):
+    """Launch Gradio with the UI module's complete visual configuration."""
+    from app.ui.candidate_review import launch_kwargs
+
+    gradio_app.launch(prevent_thread_lock=True, **launch_kwargs())
+
+
 def _run_script_mode():
     """When invoked as `GifAgentUI.exe --run-script <path> [args...]`,
     run the given .py script via runpy instead of starting the GUI.
@@ -186,14 +193,9 @@ def main():
 
     # Start Gradio UI in a background thread (prevent_thread_lock=True makes
     # launch() return immediately; the server runs in Gradio's internal thread).
-    from app.ui.candidate_review import GRADIO_ALLOWED_PATHS, app as gradio_app
+    from app.ui.candidate_review import app as gradio_app
     try:
-        gradio_app.launch(
-            server_name="127.0.0.1",
-            server_port=7861,
-            prevent_thread_lock=True,
-            allowed_paths=GRADIO_ALLOWED_PATHS,
-        )
+        launch_gradio_app(gradio_app)
     except Exception as e:
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)
         os._exit(1)

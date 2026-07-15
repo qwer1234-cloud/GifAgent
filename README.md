@@ -160,7 +160,7 @@ uv run python scripts/test_video_batch.py --dir "C:/path/to/videos"
 输出：
 - `data/exports/adaptive_test/{video_name}/`：每个视频的候选 GIF 片段（merge_gap=6s 合并）
 - `data/exports/adaptive_test/{video_name}/Sample/`：9 宫格缩略图（`{video_name}_grid.jpg`）+ 9 张独立帧图（`{video_name}_sample_*.jpg`）
-- GIF 命名格式：`{video_name}@@@{seq}_{start_s}s-{end_s}s.gif`
+- GIF 命名格式：`{video_name}@@@{seq}_{start_ms}ms-{end_ms}ms.gif`（旧的秒格式仅用于兼容读取）
 - `data/batch_checkpoint.json`：批量处理断点文件（含视频指纹，用于跨文件名去重）
 
 **视频去重**：批量处理时自动计算每个视频的内容指纹（时长 + 5 个关键帧 pHash）。如果新视频与已处理视频指纹匹配（Hamming distance ≤ 5），自动跳过并记录 `duplicate_of`。抗重编码、换容器、改名，不抗裁剪/水印。
@@ -210,6 +210,18 @@ uv run python app/ui/review.py
 uv run python app/ui/candidate_review.py
 ```
 
+### Control 批量队列与详细状态（2026-07-14）
+
+候选审核界面的 Control 面板支持把多个视频目录追加到串行队列。相同的
+规范化目录在未完成队列中只允许一个任务，重复点击会返回 `Already queued`
+并且不会启动第二个 worker；任务完成或失败后可以再次加入新的批次。
+
+- `Batch Status` 固定显示 worker、队列、当前目录/视频、完成/失败计数和错误信息。
+- `Folder Queue` 显示每个目录的排队状态、PID、清理状态和持久化错误。
+- `Detailed Output Log` 逐视频输出完整路径的 `START`/`OK`/`FAILED`，逐 GIF 输出成功或失败原因。
+- 队列使用跨进程锁、断点状态和 successor handoff，避免 GUI 误触、并发启动或崩溃后丢失任务。
+- 历史 `batch_queue.json` 可通过 `deduplicate_queue_file` 清理重复的活动目录任务；本次发布前已处理现有运行数据。
+
 ### Candidate review performance fix (2026-07-04)
 
 - `GET /api/candidates` now supports server-side pagination and filtering:
@@ -234,7 +246,8 @@ uv run python app/ui/candidate_review.py
   the original `artifact_path`; moved or missing files return a path-integrity
   error instead of silently reviewing stale data.
 - The Windows GUI bundle was rebuilt with:
-  `uv run pyinstaller --noconfirm build_exe.spec`.
+  `uv pip install pyinstaller` followed by
+  `uv run python -m PyInstaller --noconfirm build_exe.spec`.
   Output: `dist/GifAgentUI/GifAgentUI.exe`.
 
 ### Adaptive duplicate reduction tuning (2026-07-05)
@@ -471,8 +484,9 @@ uv run python scripts/preference_memory.py status --json
 
 ```bash
 uv run pytest tests/ -v
-# Current suite: 91 tests, 1 skipped.
-# 91 tests（1 skipped）: JSON 解析、placeholder 检测、emotional_core 归一化、
+# Current suite count is reported by pytest; the queue/control regression suite
+# covers duplicate directory rejection, recovery, handoff, and detailed status.
+# The suite covers JSON 解析、placeholder 检测、emotional_core 归一化、
 # FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序
 ```
 

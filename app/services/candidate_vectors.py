@@ -64,6 +64,7 @@ def _candidate_rows(conn: sqlite3.Connection, *, only_feedback: bool) -> list[sq
             FROM preference_events
             WHERE target_type='candidate_gif'
               AND rating IN ('like','dislike')
+              AND undone_at IS NULL
         ) pe ON pe.target_id = cg.candidate_id
         """
 
