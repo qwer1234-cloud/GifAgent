@@ -184,10 +184,11 @@ state. Partial output uses `StageResult.outcome=needs_attention` and preserves
 successfully published GIFs.
 
 Release gate: compileall, the complete pytest suite, and `git diff --check`.
-The 2026-07-18 verified baseline is `940 passed, 2 skipped, 3 warnings`, with
-four deterministic production E2E scenarios: success, VLM outage, invalid VLM
-payload, and valid zero-clip. Tests must use temporary data and must not mutate
-historical databases, exports, labels, checkpoints, or writable configuration.
+The merged 2026-07-18 verified baseline is `1012 passed, 2 skipped, 3 warnings`,
+covering the persistent serial folder queue plus four deterministic production
+E2E scenarios: success, VLM outage, invalid VLM payload, and valid zero-clip.
+Tests must use temporary data and must not mutate historical databases, exports,
+labels, checkpoints, or writable configuration.
 
 ### Task API Endpoints (7 new)
 
@@ -206,6 +207,14 @@ historical databases, exports, labels, checkpoints, or writable configuration.
 The Gradio Control tab now reads/writes the task engine API instead of
 driving the legacy batch queue directly. Set the environment variable
 `GIFAGENT_LEGACY_QUEUE_UI=1` to restore the old queue-based control panel.
+
+The compatibility module preserves the latest persistent folder-queue
+behavior from the legacy Control UI. Directory identity is canonicalized so an
+active/pending path cannot be appended twice. One lease-owning worker processes
+folders serially and uses explicit starting/running/draining/cleanup handoffs.
+Per-video and per-GIF terminal lines are retained in the status log; an empty
+or failed GIF export returns a non-zero video result. Keep the queue modules and
+their regression tests when changing the Workbench entrypoint.
 
 ### Scripts
 

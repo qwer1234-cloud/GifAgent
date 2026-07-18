@@ -417,10 +417,22 @@ def summarize_checkpoint_status(cp: dict) -> dict:
     """Summarize checkpoint data into a flat status dict."""
     run = cp.get("last_run")
     if isinstance(run, dict):
+        completed = sum(
+            int(run.get(field, 0) or 0)
+            for field in (
+                "succeeded",
+                "dedup_skipped",
+                "skipped_reusable",
+                "skipped_limit",
+            )
+        )
+        failed = int(run.get("failed", 0) or 0)
+        processed = int(run.get("processed", 0) or 0)
+        planned = int(run.get("planned", 0) or 0)
         return {
-            "completed": int(run.get("succeeded", 0)) + int(run.get("dedup_skipped", 0)),
-            "failed": int(run.get("failed", 0)),
-            "total": int(run.get("planned", 0)),
+            "completed": completed,
+            "failed": failed,
+            "total": max(planned, processed, completed + failed),
             "current_video": run.get("current_video", "") or "",
         }
 

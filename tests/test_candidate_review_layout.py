@@ -3,6 +3,18 @@ from pathlib import Path
 import gradio as gr
 
 
+def test_control_layout_declares_fixed_summary_and_detailed_log():
+    from app.ui import legacy_candidate_review as candidate_review
+
+    source = Path(candidate_review.__file__).read_text(encoding="utf-8")
+    assert 'label="Batch Status"' in source
+    assert 'label="Detailed Output Log"' in source
+    assert 'elem_id="batch-status"' in source
+    assert 'elem_id="batch-log"' in source
+    assert "fn=start_batch_queue" in source
+    assert "inputs=[dir_input, limit_input, ext_input]" in source
+
+
 def test_folder_page_selects_first_candidate_for_preview(monkeypatch):
     from app.ui import candidate_review
 

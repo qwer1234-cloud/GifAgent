@@ -33,6 +33,7 @@ from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
+from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
 from app.services.export_cleanup import (
     ExportDirectoryBusyError,
     ExportDirectoryLock,
@@ -1171,6 +1172,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     ranked_clips = all_ranked_clips[:output_count]
 
     exported_bookmarks = []
+    gif_export_results = []
     potplayer_pbf_path = None
 
     for i, clip in enumerate(ranked_clips):
@@ -1197,8 +1199,8 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
 
         fps = GIF_FPS
 
-        subprocess.run(
-            [
+        attempt = run_gif_export_attempt(
+            palette_command=[
                 "ffmpeg",
                 "-y",
                 "-ss",
@@ -1211,12 +1213,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",
                 palette,
             ],
-            capture_output=True,
-            timeout=60,
-        )
-
-        subprocess.run(
-            [
+            gif_command=[
                 "ffmpeg",
                 "-y",
                 "-ss",
@@ -1231,15 +1228,20 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
                 out_gif,
             ],
-            capture_output=True,
-            timeout=60,
+            palette_path=palette,
+            output_path=out_gif,
+        )
+        gif_export_results.append(
+            {
+                "index": i + 1,
+                "path": out_gif,
+                "status": "OK" if attempt.success else "FAILED",
+                "size_bytes": attempt.size_bytes,
+                "error": attempt.error,
+            }
         )
 
-        if os.path.exists(palette):
-            os.remove(palette)
-
-        if os.path.exists(out_gif):
-            sz = os.path.getsize(out_gif)
+        if attempt.success:
             exported_bookmarks.append(
                 PotPlayerBookmark(
                     start_s=start,
@@ -1253,11 +1255,28 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                     or "",
                 )
             )
-            print(
-                f"  #{i+1:2d} w={worth:.2f} dur={duration:.1f}s "
-                f"[{'merged' if clip['frame_count'] > 1 else 'single'}:{clip['frame_count']}fr] "
-                f"{sz//1024:4d}KB t={int(ts)}s {r.get('emotional_core','?')}"
-            )
+        print(
+            format_gif_export_line(
+                video_name=video_name,
+                index=i + 1,
+                total=len(ranked_clips),
+                output_path=out_gif,
+                status="OK" if attempt.success else "FAILED",
+                worthiness=worth,
+                duration_s=duration,
+                timestamp_s=int(ts),
+                merged=clip["frame_count"] > 1,
+                frame_count=clip["frame_count"],
+                size_bytes=attempt.size_bytes,
+                emotional_core=r.get("emotional_core", "?"),
+                error=attempt.error,
+            ),
+            flush=True,
+        )
+
+    gif_attempted = len(gif_export_results)
+    gif_succeeded = sum(item["status"] == "OK" for item in gif_export_results)
+    gif_failed = gif_attempted - gif_succeeded
 
     if POTPLAYER_PBF_ENABLED and exported_bookmarks:
         potplayer_pbf_path = write_pbf_file(
@@ -1290,7 +1309,12 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         "deduped_clips": len(deduped_clips),
         "clusters_after_dedup": len(deduped_clips),
         "duplicate_groups": duplicate_groups,
-        "output_count": output_count,
+        "planned_output_count": output_count,
+        "output_count": gif_succeeded,
+        "gif_attempted": gif_attempted,
+        "gif_succeeded": gif_succeeded,
+        "gif_failed": gif_failed,
+        "gif_exports": gif_export_results,
         "preference_memory_enabled": PREFERENCE_MEMORY_ENABLED,
         "base_score_weight": BASE_SCORE_WEIGHT,
         "preference_score_weight": PREFERENCE_SCORE_WEIGHT,
@@ -1317,10 +1341,16 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 "emotional_core": clip["best_frame"].get("emotional_core"),
                 "aesthetic_notes": clip["best_frame"].get("aesthetic_notes"),
                 "reason": clip["best_frame"].get("reason"),
+                "export_status": gif_export_results[i]["status"],
+                "export_path": gif_export_results[i]["path"],
+                "export_error": gif_export_results[i]["error"],
             }
             for i, clip in enumerate(ranked_clips)
         ],
     }
+
+    if gif_failed:
+        raise SystemExit(1)
 
     return output
 
@@ -2591,28 +2621,45 @@ def _stage_gif_clip(
     print(f"  Exporting clip {clip_id}: {start_ts:.2f}s - {end_ts:.2f}s -> {gif_name}")
 
     palette_path = os.path.join(frames_dir, f"palette_{clip_id}.png")
-    subprocess.run(
-        [
+    attempt = run_gif_export_attempt(
+        palette_command=[
             "ffmpeg", "-y", "-ss", str(start_ts), "-t", str(end_ts - start_ts),
             "-i", video_path,
             "-vf", f"fps={GIF_FPS},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",
             palette_path,
         ],
-        capture_output=True, timeout=60,
-    )
-    if os.path.exists(palette_path) and os.path.getsize(palette_path) > 0:
-        subprocess.run(
-            [
+        gif_command=[
                 "ffmpeg", "-y", "-ss", str(start_ts), "-t", str(end_ts - start_ts),
                 "-i", video_path, "-i", palette_path,
                 "-lavfi", f"fps={GIF_FPS},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
                 gif_path,
             ],
-            capture_output=True, timeout=60,
-        )
+        palette_path=palette_path,
+        output_path=gif_path,
+    )
+    print(
+        format_gif_export_line(
+            video_name=video_name,
+            index=int(target_clip.get("rank", 1)),
+            total=len(clips),
+            output_path=gif_path,
+            status="OK" if attempt.success else "FAILED",
+            worthiness=float(target_clip.get("gif_worthiness", 0.0)),
+            duration_s=float(end_ts - start_ts),
+            timestamp_s=float(start_ts),
+            merged=int(target_clip.get("frame_count", 1)) > 1,
+            frame_count=int(target_clip.get("frame_count", 1)),
+            size_bytes=attempt.size_bytes,
+            emotional_core=(target_clip.get("best_frame") or {}).get("emotional_core", "?"),
+            error=attempt.error,
+        ),
+        flush=True,
+    )
 
-    if not os.path.exists(gif_path) or os.path.getsize(gif_path) == 0:
-        raise RuntimeError(f"GIF export failed for clip {clip_id}: {gif_path}")
+    if not attempt.success:
+        raise RuntimeError(
+            f"GIF export failed for clip {clip_id}: {gif_path}: {attempt.error}"
+        )
 
     gif_sha256 = hashlib.sha256()
     with open(gif_path, "rb") as f:

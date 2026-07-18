@@ -715,8 +715,9 @@ can be retried without repeating successful GIFs or earlier video stages.
 output as `needs_attention` instead of silently marking the video successful.
 
 The full production-path release gate covers success, VLM outage, invalid VLM
-payload, and valid zero-clip execution. The 2026-07-18 baseline is
-`940 passed, 2 skipped, 3 warnings`; the warnings are dependency deprecations.
+payload, valid zero-clip execution, and the persistent serial folder queue. The
+merged 2026-07-18 baseline is `1012 passed, 2 skipped, 3 warnings`; the warnings
+are dependency deprecations.
 
 ### Task API Endpoints (7 new)
 
@@ -754,6 +755,11 @@ uv run python scripts/smoke_task_engine.py --data-dir /tmp/smoke-test
 
 The Gradio Control tab now uses the task API instead of the legacy batch queue.
 Set `GIFAGENT_LEGACY_QUEUE_UI=1` to restore the old queue-based control panel.
+The compatibility layer retains the remote persistent folder queue: appended
+directories are canonicalized and deduplicated, processed serially under a
+single-worker lease, and recovered across launch, handoff, cleanup, or PID
+failures. Status output includes every video and every attempted GIF; failed or
+empty GIF exports make the video fail instead of being counted as successful.
 
 ### Config
 
