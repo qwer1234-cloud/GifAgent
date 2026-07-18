@@ -1,0 +1,30 @@
+{
+  "completed": {
+    "alpha_ok": {
+      "status": "ok",
+      "elapsed_s": 120,
+      "finished_at": "2026-07-13T01:00:00",
+      "fingerprint": "fp-alpha-ok"
+    },
+    "alpha_dup": {
+      "status": "dedup_skipped",
+      "duplicate_of": "alpha_ok",
+      "fingerprint": "fp-alpha-dup",
+      "finished_at": "2026-07-13T01:01:00"
+    }
+  },
+  "retryable": {
+    "beta_fail": {
+      "status": "failed",
+      "exit_code": 1,
+      "finished_at": "2026-07-13T02:00:00"
+    },
+    "loose_timeout": {
+      "status": "timeout",
+      "finished_at": "2026-07-13T03:00:00"
+    }
+  },
+  "last_run": {"status": "complete", "dir": "D:/videos/beta"},
+  "started_at": "2026-07-13T00:30:00",
+  "updated_at": "2026-07-13T03:00:00"
+}

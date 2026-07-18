@@ -1,0 +1,10 @@
+{
+  "status": "idle",
+  "current_job_id": null,
+  "jobs": {
+    "job-alpha": {"status": "completed", "finished_at": "2026-07-13T01:00:00"},
+    "job-alpha-dupe": {"status": "failed", "finished_at": "2026-07-13T01:05:00"},
+    "job-beta": {"status": "completed", "finished_at": "2026-07-13T02:00:00"}
+  },
+  "updated_at": "2026-07-13T02:00:00"
+}

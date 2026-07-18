@@ -78,7 +78,10 @@ media:
 vlm:
   provider: "ollama"
   model: "llava:13b"                  # 视觉模型
-  base_url: "http://localhost:11434"
+  base_url: "http://127.0.0.1:11434"
+  manage_lifecycle: true              # 启动/停止模型（true/false）
+  launch_mode: "wsl"                  # none（不管理）| native（ollama）| wsl（wsl ollama）
+  # 注意：launch_mode 不根据 URL 推断，必须显式设置。
 
 llm:
   provider: "anthropic_compatible"
@@ -237,6 +240,13 @@ uv run python app/ui/candidate_review.py
   `uv run pyinstaller --noconfirm build_exe.spec`.
   Output: `dist/GifAgentUI/GifAgentUI.exe`.
 
+For an in-place release, use `bash scripts/rebuild_exe.sh`. The script preserves
+both `dist/GifAgentUI/data/` and the writable
+`dist/GifAgentUI/configs/models.yaml`, so rebuilding does not reset the task
+history, GIF exports, labels, Preference Memory, databases, or settings edited
+through the UI. Do not replace only `GifAgentUI.exe`; the matching `_internal/`
+runtime must be released with it.
+
 ### Adaptive duplicate reduction tuning (2026-07-05)
 
 - Adaptive export now clears generated artifacts in the target video output
@@ -285,6 +295,13 @@ uv run python app/ui/candidate_review.py
 | POST | `/api/preference/profiles/build` | 构建新的偏好画像 |
 | POST | `/api/preference/profiles/{version}/publish` | 发布指定版本的偏好画像 |
 | POST | `/api/preference/evaluate` | 偏好画像发布门禁评估（holdout 评估） |
+| POST | `/api/tasks/commands` | (Phase 1) 任务引擎：下发控制命令（cancel/pause/resume） |
+| GET | `/api/tasks/commands/pending` | (Phase 1) 轮询待处理命令 |
+| GET | `/api/tasks/jobs` | (Phase 1) 列出所有任务及其状态统计 |
+| GET | `/api/tasks/jobs/{job_id}` | (Phase 1) 查看任务详情（含视频和阶段） |
+| GET | `/api/tasks/stages` | (Phase 1) 按状态/工作者/视频查询阶段 |
+| POST | `/api/tasks/export-candidates` | (Phase 1) 打包候选 GIF |
+| POST | `/api/tasks/import-legacy` | (Phase 1) 导入旧版队列/检查点状态 |
 
 ---
 
@@ -339,12 +356,14 @@ v2 架构采用两阶段设计避免 RAG 回音壁效应：
 ```
 GifAgent/
 ├── app/
-│   ├── main.py                       # FastAPI 应用（18 个端点）
+│   ├── main.py                       # FastAPI 应用（35+ 个端点）
 │   ├── config.py                     # YAML 配置加载
 │   ├── db.py                         # SQLite 连接 + 迁移 + Checkpoint
 │   ├── routers/
 │   │   ├── candidates.py             # 候选 GIF API（list + feedback）
-│   │   └── preference.py             # 偏好画像 API（build + publish + evaluate）
+│   │   ├── preference.py             # 偏好画像 API（build + publish + evaluate）
+│   │   ├── tasks.py                  # 任务引擎命令/状态 API（7 个端点）
+│   │   └── quality_lab.py            # 质量实验室 API（9 个端点）
 │   ├── services/
 │   │   ├── scanner.py                # 文件扫描、SHA256/pHash 去重
 │   │   ├── preprocess.py             # ffmpeg GIF 抽帧、缩略图
@@ -366,12 +385,35 @@ GifAgent/
 │   │   ├── preference_memory.py      # 偏好画像构建 + 发布服务
 │   │   ├── preference_types.py       # 偏好系统类型定义
 │   │   ├── preference_evaluation.py  # Holdout 评估服务
+│   │   ├── provenance.py             # Provenance 数据类
 │   │   └── reranker.py               # 偏好加权重排序器
+│   ├── quality_lab/                  # Phase 2: 质量实验室（benchmark 评估系统）
+│   │   ├── __init__.py               # 公共导出
+│   │   ├── models.py                 # 数据类（ExperimentConfig, ABSession 等）
+│   │   ├── schema.py                 # quality_lab.db DDL（10 张表）
+│   │   ├── manifests.py             # 不可变 benchmark manifest 管理
+│   │   ├── runner.py                 # ExperimentRunner 运行编排
+│   │   ├── metrics.py                # NumPy 质量指标（4 种）
+│   │   ├── calibration.py            # VLM 分数校准（PAV 等渗回归）
+│   │   ├── ab_review.py              # 盲测 A/B 评审服务
+│   │   └── promotion.py             # 冠军配置晋级/回滚
+│   ├── task_engine/                  # Phase 1: 可靠任务引擎
+│   │   ├── __init__.py               # 公共导出
+│   │   ├── models.py                 # 数据类
+│   │   ├── schema.py                 # DDL + 迁移
+│   │   ├── repository.py             # TaskRepository CRUD
+│   │   ├── fingerprints.py           # SHA-256 / 哈希工具
+│   │   ├── artifacts.py              # 制品提交与校验
+│   │   ├── legacy_import.py          # 旧版状态导入
+│   │   ├── stages.py                 # 阶段适配器协议
+│   │   ├── adaptive_adapter.py       # 自适应适配器
+│   │   └── worker.py                 # 单写入者工作循环
 │   └── ui/
 │       ├── review.py                 # Gradio 原始 GIF 审核界面（port 7860）
-│       └── candidate_review.py       # 候选 GIF 评分 + 批量控制面板（port 7861）
+│       ├── candidate_review.py       # 候选 GIF 评分 + 批量控制面板（port 7861）
+│       └── quality_lab_tab.py        # 质量实验室标签页（盲测 A/B、晋级、回滚）
 ├── configs/
-│   └── models.yaml                   # 主配置：模型、路径、阈值、偏好开关
+│   └── models.yaml                   # 主配置：模型、路径、阈值、偏好开关、任务引擎
 ├── scripts/
 │   ├── setup.bat                     # Windows 一键安装脚本
 │   ├── index_library.py              # 全量索引流水线（5 阶段）
@@ -395,7 +437,13 @@ GifAgent/
 │   ├── test_jur639.py                # JUR-639 专用测试
 │   ├── preference_memory.py          # 偏好记忆 CLI（status/build/publish）
 │   ├── evaluate_preference.py        # 偏好画像发布门禁评估
-│   └── export_gifs.py               # GIF 批量导出
+│   ├── export_gifs.py               # GIF 批量导出
+│   ├── task_worker.py                # 单写入者任务引擎工作进程
+│   ├── import_legacy_task_state.py   # 旧版队列/检查点状态导入
+│   ├── write_version_manifest.py     # 版本清单生成
+│   ├── smoke_active_preference.py    # 偏好学习冒烟测试（6 种反馈 + 构建 + 发布 + 评估 + 回滚）
+│   ├── smoke_task_engine.py          # 任务引擎冒烟测试
+│   └── smoke_quality_lab.py          # 质量实验室冒烟测试
 ├── tests/
 │   ├── test_json_guard.py            # JSON 解析测试
 │   ├── test_quality.py               # 质量校验测试
@@ -407,7 +455,16 @@ GifAgent/
 │   ├── test_preference_events.py      # 反馈事件测试
 │   ├── test_preference_profiles.py    # 偏好画像测试
 │   ├── test_preference_evaluation.py  # Holdout 评估测试
-│   └── test_preference_reranker.py    # 重排序器测试
+│   ├── test_preference_reranker.py    # 重排序器测试
+│   ├── test_version_manifest.py       # 版本清单和冒烟测试
+│   ├── test_quality_lab_api.py        # 质量实验室 API 测试
+│   └── task_engine/                   # 任务引擎测试套件
+│       ├── test_repository.py
+│       ├── test_artifacts.py
+│       ├── test_legacy_import.py
+│       ├── test_stage_adapter.py
+│       ├── test_fault_injection.py
+│       └── test_worker.py
 ├── data/                             # 运行时数据（gitignore）
 │   ├── library.db                    # SQLite 数据库
 │   ├── faiss/                        # FAISS 向量索引
@@ -471,9 +528,10 @@ uv run python scripts/preference_memory.py status --json
 
 ```bash
 uv run pytest tests/ -v
-# Current suite: 91 tests, 1 skipped.
-# 91 tests（1 skipped）: JSON 解析、placeholder 检测、emotional_core 归一化、
-# FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序
+# Current suite: 400+ tests.
+# 400+ tests: JSON 解析、placeholder 检测、emotional_core 归一化、
+# FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序、
+# 质量实验室 API、盲测 A/B、晋级/回滚
 ```
 
 ---
@@ -495,13 +553,23 @@ Preference Memory 是 GifAgent 的偏好学习子系统，从候选 GIF 的人�
 ### 架构
 
 ```
-候选 GIF 物化 → 人工评分（like/dislike/neutral/skip）
+候选 GIF 物化 → 人工评分（like/dislike/neutral/skip/quality_reject/favorite）
      ↓
-反馈事件记录（append-only，不可变事件日志）
+反馈事件记录（append-only，不可变事件日志，支持 correction 撤销）
      ↓
 偏好画像构建（7 道门禁 → 质心向量计算 → 确定性版本号）
+     │    ├─ 可配置 recency 衰减（指数半衰期，默认 90 天）
+     │    ├─ 6 种反馈含义（favorite = 2x like weight）
+     │    └─ scenario 级别子画像（按情感/标签分群）
      ↓
 Holdout 评估门禁（Like@20 / Dislike@20 / NDCG@20）
+     ↓
+Source-grouped 评估（Phase 3）:
+     ├─ base-vs-preference NDCG 对比
+     ├─ pairwise win rate（preference 胜率）
+     ├─ exploration diversity（源视频/场景多样性）
+     ├─ vector coverage（向量覆盖率）
+     └─ inactive fallback 分析
      ↓
 画像发布（explicit publish，非自动覆盖）
      ↓
@@ -514,10 +582,24 @@ Holdout 评估门禁（Like@20 / Dislike@20 / NDCG@20）
 |------|------|
 | `candidate_gifs` | 候选 GIF（来源、时间、路径、状态、评分） |
 | `candidate_vectors` | 候选向量索引 |
-| `preference_events` | 反馈事件日志（append-only） |
+| `candidate_vector_exclusions` | 向量排除记录（格式不支持或空帧等原因无法向量化） |
+| `favorite_gifs` | 收藏 GIF（绑定候选） |
+| `preference_events` | 反馈事件日志（append-only，支持 correction 撤销） |
 | `preference_profile_builds` | 画像构建历史记录 |
-| `preference_profiles` | 偏好画像内容 |
+| `preference_profiles` | 偏好画像内容（global + scenario 级别） |
 | `preference_profile_current` | 当前生效的画像版本 |
+| `preference_profile_publications` | 发布历史（含回滚记录） |
+
+### 反馈含义
+
+| Rating | 含义 | 在 Profile 中的处理 |
+|--------|------|---------------------|
+| `like` | 正面：符合用户偏好 | 计入 liked centroid，weight = 1.0 |
+| `dislike` | 负面：不符合用户偏好 | 计入 disliked centroid，weight = 1.0 |
+| `neutral` | 中性：无明显偏好 | 不计入画像构建 |
+| `skip` | 跳过：用户未评分 | 不计入画像构建 |
+| `quality_reject` | 质量否决：视觉/技术缺陷 | 不计入画像构建 |
+| `favorite` | 强烈正面：特别偏好 | 计入 liked centroid，weight = 2.0 |
 
 ### 功能开关
 
@@ -563,6 +645,572 @@ GUI 发布入口：Candidate Review 页面的 `Profile` 区域中，先点击
 # 门禁评估（需要 30+ 标定判断，训练/holdout 源视频不重叠）
 uv run python scripts/evaluate_preference.py --profile-version <version> --holdout data/holdout.jsonl
 ```
+
+### Source-grouped 评估（Phase 3）
+
+Phase 3 新增 `evaluate_source_grouped()` 方法，按 `source_video_sha256` 分组检查训练集和
+holdout 集的源视频隔离，并报告多维度的学习质量指标：
+
+| 指标 | 说明 |
+|------|------|
+| `source_video_integrity` | 训练/holdout 源视频重叠检测 |
+| `base_ndcg_at_20` | 纯 RAG 基线（`base_rag_similarity`）的 NDCG@20 |
+| `preference_ndcg_at_20` | 偏好增强后（`final_score`）的 NDCG@20 |
+| `ndcg_delta` | preference NDCG - base NDCG（正值表示偏好提升了排序质量） |
+| `pairwise_win_rate` | 偏好排名胜过基线排名的 liked 候选占比 |
+| `exploration_diversity` | 源视频和场景标签的多样性统计 |
+| `vector_coverage` | holdout 候选的向量覆盖率 |
+| `inactive_fallbacks` | 因缺少偏好分数而回退到 RAG 基线的候选占比 |
+
+### 配置文件参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `preference_memory.enabled` | `false` | 功能开关 |
+| `preference_memory.recency_enabled` | `true` | 启用 recency 衰减 |
+| `preference_memory.recency_half_life_days` | `90.0` | 半衰期（天） |
+| `preference_memory.favorite_weight` | `2.0` | favorite 评级权重 |
+| `preference_memory.like_weight` | `1.0` | like 评级权重 |
+| `preference_memory.dislike_weight` | `1.0` | dislike 评级权重 |
+| `preference_memory.scenario_min_feedback` | `8` | scenario 画像最低反馈数 |
+
+### 冒烟测试
+
+```bash
+# 验证完整的偏好学习生命周期
+uv run python scripts/smoke_active_preference.py
+```
+
+操作：创建候选数据集 → 记录全部 6 种反馈含义 → 构建并发布画像 → 展示解释 → 回滚。
+所有操作在内存 SQLite 中完成，不修改生产数据。
+
+---
+
+## Phase 1: Reliable Task Engine
+
+Phase 1 adds a production-grade task processing engine for adaptive GIF extraction and pipeline stages.
+
+### Architecture
+
+| Component | File | Role |
+|-----------|------|------|
+| Schema | `app/task_engine/schema.py` | 7 tables (task_jobs, task_videos, task_stages, task_artifacts, task_events, task_commands, task_migrations) |
+| Repository | `app/task_engine/repository.py` | `TaskRepository` — transactional CRUD, stage leasing (90s lease with heartbeat), cancellation |
+| Fingerprints | `app/task_engine/fingerprints.py` | `sha256_file()`, `canonical_hash()`, `canonical_json()` |
+| Artifacts | `app/task_engine/artifacts.py` | `commit_artifact()` with path-existence + SHA-256 validation |
+| Stages | `app/task_engine/stages.py` | `StageAdapter` protocol, `StageContext`, `StageResult` |
+| Adapter | `app/task_engine/adaptive_adapter.py` | Wraps existing adaptive pipeline as a stage adapter |
+| Worker | `app/task_engine/worker.py` | `TaskWorker` — single-writer lease loop with heartbeat, retry, cancellation |
+| Legacy Import | `app/task_engine/legacy_import.py` | One-shot migration from batch_queue_state.json + checkpoint |
+| Provenance | `app/services/provenance.py` | Captures git commit, config hash, model versions, prompt hashes |
+
+### Production Eight-Stage Pipeline
+
+Every video advances through real, independently leased stages:
+`discover -> sample -> vlm -> refine -> rank_dedup -> synthesize -> gif_clip -> materialize`.
+Each stage reads immutable upstream artifacts and atomically commits its own
+versioned manifest. `gif_clip` fans out to one stage per clip, so a failed GIF
+can be retried without repeating successful GIFs or earlier video stages.
+`materialize` starts only after all clip stages are terminal and reports partial
+output as `needs_attention` instead of silently marking the video successful.
+
+The full production-path release gate covers success, VLM outage, invalid VLM
+payload, and valid zero-clip execution. The 2026-07-18 baseline is
+`940 passed, 2 skipped, 3 warnings`; the warnings are dependency deprecations.
+
+### Task API Endpoints (7 new)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/tasks/commands` | Enqueue a command (cancel/pause/resume) |
+| GET | `/api/tasks/commands/pending` | Poll pending commands |
+| GET | `/api/tasks/jobs` | List all jobs with status counts |
+| GET | `/api/tasks/jobs/{job_id}` | Job detail with videos and stages |
+| GET | `/api/tasks/stages` | Query stages by status/worker/video |
+| POST | `/api/tasks/export-candidates` | Package candidate GIFs for export |
+| POST | `/api/tasks/import-legacy` | Import legacy queue/checkpoint state |
+
+### New Scripts
+
+```bash
+# Run the task worker (single-writer loop)
+uv run python scripts/task_worker.py [--once] [--poll 1.0] [--db data/task_state.db]
+
+# Import legacy batch queue state into task engine
+uv run python scripts/import_legacy_task_state.py \
+    --queue data/batch_queue_state.json \
+    --state data/batch_state.json \
+    --checkpoint data/batch_checkpoint.json \
+    --db data/task_state.db
+
+# Generate version manifest for packaged builds
+uv run python scripts/write_version_manifest.py --dist dist/GifAgentUI
+
+# Smoke test the task engine (requires temp dir, rejects production data)
+uv run python scripts/smoke_task_engine.py --data-dir /tmp/smoke-test
+```
+
+### Control Tab Cutover
+
+The Gradio Control tab now uses the task API instead of the legacy batch queue.
+Set `GIFAGENT_LEGACY_QUEUE_UI=1` to restore the old queue-based control panel.
+
+### Config
+
+```yaml
+task_engine:
+  enabled: true
+  db_path: "data/task_state.db"
+  poll_seconds: 1.0
+  lease_seconds: 90
+  max_attempts: 3
+  base_delay_seconds: 5
+  max_delay_seconds: 300
+```
+
+### Backup & Rollback
+
+Legacy import creates timestamped backups before any write transaction.
+Migration tracking via `task_migrations` table with SHA-256 migration IDs
+ensures idempotent re-import.
+
+Historical queues do not need to be force-rerun for a release. Preserve their
+databases and checkpoints, then use a small new-video smoke run when validating
+a rebuilt package.
+
+---
+
+## Phase 2: Quality Lab
+
+Phase 2 adds a systematic quality evaluation framework (`app/quality_lab/`) for
+comparing experiment configurations through frozen benchmark manifests, automated
+metric scorecards, blind A/B review, and champion promotion with rollback.
+
+### Architecture
+
+```
+app/quality_lab/
+├── __init__.py       # Public exports
+├── models.py         # Dataclasses (ExperimentConfig, ExperimentRun, BenchmarkItem, etc.)
+├── schema.py         # quality_lab.db DDL (10 tables) + connect_quality_db()
+├── manifests.py      # Immutable JSON manifest creation + loading
+├── runner.py         # ExperimentRunner — submits items as task jobs
+├── metrics.py        # NumPy metrics: ndcg_at_k, temporal_coverage, diversity_score, export_integrity
+├── calibration.py    # VLM score calibration: reliability diagram bins + PAV isotonic regression
+├── ab_review.py      # BlindReviewService — blind A/B session lifecycle
+└── promotion.py      # Champion promotion (6 gates) + rollback + history
+```
+
+### 24-Video Manifest Procedure
+
+To create a frozen benchmark manifest from a set of source videos:
+
+```bash
+# 1. Collect a diverse set of videos (e.g., 24) covering different
+#    duration buckets, resolutions, and content paces.
+# 2. For each video, compute its content fingerprint using
+#    app.services.video_fingerprint.
+# 3. Create BenchmarkItem objects with assigned splits.
+# 4. Freeze the manifest to an immutable JSON file.
+
+uv run python -c "
+import json, uuid
+from pathlib import Path
+from app.quality_lab.manifests import freeze_manifest, assign_splits
+from app.quality_lab.models import BenchmarkItem
+
+items = [
+    BenchmarkItem(
+        item_id=uuid.uuid4().hex,
+        source_path=str(Path('videos') / f'{name}.mp4'),
+        video_fingerprint=fingerprint,
+        duration_bucket=duration,
+        resolution_bucket=resolution,
+        pace_bucket=pace,
+        difficulty_tags=('action', 'dialog'),
+        split='tune',  # will be reassigned by assign_splits
+    )
+    for name, fingerprint, duration, resolution, pace in [
+        ('clip01', 'fp001', 'short', '720p', 'medium'),
+        # ... add all 24 clips
+    ]
+]
+
+# Deterministic tune/holdout split (70/30, seeded by content)
+split_items = assign_splits(items)
+
+# Freeze to immutable JSON (manifest_id = SHA-256 of content)
+manifest_id = freeze_manifest(split_items, Path('manifest.json'), version=1)
+print(f'Created manifest {manifest_id} with {len(split_items)} items')
+"
+```
+
+### Tune/Holdout Boundary
+
+- Items are assigned splits deterministically using a seed derived from all
+  items' content (fingerprint + buckets). Items sharing the same fingerprint
+  always receive the same split.
+- Default ratio: **70% tune / 30% holdout**.
+- Tune runs drive champion promotion; holdout runs guard against overfitting.
+- Both splits must have completed runs before promotion gates pass.
+- Holdout results appear in the scorecard but never influence promotion decisions.
+
+### Scorecard Definitions
+
+| Metric | Range | Description |
+|--------|-------|-------------|
+| `export_integrity` | [0, 1] | `succeeded / max(1, attempted)` — fraction of successful exports |
+| `temporal_coverage` | [0, 1] | Fraction of video timeline covered by union of exported clip intervals |
+| `ndcg_at_k` | [0, 1] | NDCG at position k for ranked relevance scores |
+| `diversity_score` | [0, 1] | Average pairwise cosine distance of exported clip vectors |
+
+### Calibration Command
+
+VLM score calibration produces reliability-diagram bins and fits a monotonic
+calibrator using the pool-adjacent-violators (PAV) algorithm:
+
+```bash
+uv run python -c "
+from app.quality_lab.calibration import calibration_curve, fit_monotonic_calibrator
+
+# Example: raw VLM scores vs binary ground-truth labels
+scores = [0.1, 0.3, 0.5, 0.7, 0.9]
+labels = [0, 0, 1, 1, 1]
+
+# Reliability curve
+bins = calibration_curve(scores, labels, bins=5)
+for b in bins:
+    print(f'  [{b.lower:.1f}, {b.upper:.1f}): mean_score={b.mean_score:.3f}, pos_rate={b.positive_rate:.3f}, count={b.count}')
+
+# PAV isotonic regression
+cal = fit_monotonic_calibrator(scores, labels)
+print(f'Thresholds: {cal.thresholds}')
+print(f'Values:     {cal.values}')
+"
+```
+
+### Blind A/B Review
+
+The `BlindReviewService` creates blind review sessions between two experiment
+runs. Clips are paired by source-video fingerprint and temporal proximity.
+Each reviewer sees opaque side tokens instead of config IDs.
+
+```bash
+uv run python -c "
+from app.quality_lab import connect_quality_db, BlindReviewService
+
+db = connect_quality_db()  # uses data/quality_lab.db
+service = BlindReviewService(db)
+
+# Create a session between two runs
+session = service.create_session(
+    run_a='<tune-run-id-a>', run_b='<tune-run-id-b>', seed=42
+)
+
+# Walk through unjudged pairs
+pair = service.next_pair(session.session_id)
+while pair:
+    print(f'Pair {pair.pair_index}: left={pair.left_token[:8]}... right={pair.right_token[:8]}...')
+    choice = input('Your choice (left/right/tie/both_bad): ')
+    service.record(session.session_id, str(pair.pair_index), choice)
+    pair = service.next_pair(session.session_id)
+
+# Reveal which config won
+result = service.reveal(session.session_id)
+print(f'Config A wins: {result.run_a_wins}, Config B wins: {result.run_b_wins}')
+"
+```
+
+### Champion Promotion
+
+Promotion gates a config through 6 checks before it becomes the champion:
+
+1. Config exists in `experiment_configs`
+2. Confirmation string matches config ID
+3. At least one completed tune run
+4. At least one completed holdout run
+5. At least one completed blind A/B session involving any of the config's runs
+6. Average `export_integrity` >= 0.9
+
+CLI promotion:
+
+```bash
+uv run python -c "
+from app.quality_lab import connect_quality_db
+from app.quality_lab.promotion import promote_config, list_champion_history
+
+db = connect_quality_db()
+result = promote_config('<config-id>', db_conn=db, confirmation='<config-id>')
+print(result['message'])
+print(f'Scorecard: {result[\"scorecard\"]}')
+"
+```
+
+### Rollback
+
+Rollback reverts to the previous champion config by finding the most recent
+promote event in `champion_history`:
+
+```bash
+uv run python -c "
+from app.quality_lab import connect_quality_db
+from app.quality_lab.promotion import rollback, list_champion_history
+
+db = connect_quality_db()
+result = rollback(db_conn=db)
+print(result['message'])
+
+# Verify history
+history = list_champion_history(db_conn=db)
+for event in history:
+    print(f'  {event[\"action\"]}: {event[\"config_id\"]} ({event[\"created_at\"]})')
+"
+```
+
+### Provenance Lookup
+
+Every experiment config records its provenance — git commit, config hash, model
+versions, and prompt hashes — enabling full reproducibility:
+
+```bash
+uv run python -c "
+import json
+from app.quality_lab import connect_quality_db
+
+db = connect_quality_db()
+rows = db.execute(
+    'SELECT config_id, provenance_json, created_at FROM experiment_configs ORDER BY created_at'
+).fetchall()
+for r in rows:
+    prov = json.loads(r['provenance_json'])
+    print(f'Config {r[\"config_id\"]}:')
+    print(f'  Git commit: {prov.get(\"git_commit\", \"unknown\")}')
+    print(f'  Config hash: {prov.get(\"config_hash\", \"unknown\")}')
+    print(f'  Created: {r[\"created_at\"]}')
+"
+```
+
+### Smoke Test
+
+A standalone smoke test validates the full quality-lab lifecycle without
+running VLM or creating real GIFs:
+
+```bash
+uv run python scripts/smoke_quality_lab.py --data-dir /tmp/quality-smoke
+```
+
+Operations: create two configs, create a 4-item manifest, complete runs with
+injected fake results, create a blind A/B session, record judgments, promote
+one config, roll back, and verify no source files changed.
+
+### Quality Lab API Endpoints (9 new)
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/quality/runs` | List all experiment runs |
+| GET | `/api/quality/runs/{run_id}` | Get a single run |
+| GET | `/api/quality/runs/{run_id}/scorecard` | Run metric scorecard |
+| POST | `/api/quality/ab-sessions` | Create blind A/B session |
+| POST | `/api/quality/ab-sessions/{session_id}/judgments` | Record judgment |
+| POST | `/api/quality/champions/{config_id}/promote` | Promote config to champion |
+| POST | `/api/quality/champions/rollback` | Rollback to previous champion |
+| GET | `/api/quality/champions/history` | Champion history events |
+| GET | `/api/quality/champions/current` | Current champion config |
+
+---
+
+## Phase 4: Library Workbench
+
+Phase 4 adds the **Library Workbench** (`app/ui/workbench.py`), a comprehensive Gradio-based
+management UI with 7 tabs for browsing, searching, reviewing, and curating the GIF library.
+The workbench replaces the separate candidate-review and control-panel UIs with a unified
+interface backed by a suite of new services.
+
+### Architecture
+
+```
+app/ui/
+├── workbench.py              # Shell: gr.Blocks with all 7 tabs
+├── api_client.py             # GifAgentApiClient (HTTP to FastAPI)
+├── components/
+│   ├── __init__.py
+│   ├── common.py             # Shared Gradio components
+│   └── timeline.py           # Timeline renderer (PotPlayer targets)
+└── tabs/
+    ├── __init__.py
+    ├── today.py              # Today / Attention Inbox
+    ├── control.py            # Queue / task control
+    ├── review.py             # Candidate review
+    ├── search.py             # Semantic + filtered search
+    ├── collections.py        # Smart collections + exports
+    ├── lab.py                # Quality Lab
+    ├── settings.py           # Config editor
+    └── profile.py            # Profile management
+
+app/services/
+├── workbench_schema.py       # FTS5 DDL, SearchQuery / SearchPage / CollectionSpec models
+├── library_search.py         # LibrarySearchService — FTS5 + vector search
+├── timeline.py               # load_timeline_window + potplayer_target
+├── media_relink.py           # propose_relinks / apply_relink by fingerprint
+├── collections.py            # CollectionService — create / refresh / freeze / export
+├── taste_map.py              # project_taste_map — 2D SVD projection
+├── narrative_curation.py     # curate_narrative — beat-based selection
+└── attention.py              # list_attention_items — cross-DB inbox
+```
+
+### 7 Tabs
+
+| Tab | Module | Purpose |
+|-----|--------|---------|
+| 今日 (Today) | `tabs/today.py` | Attention inbox: task failures, migration conflicts, profile publishes, high-value reviews, champion promotions |
+| 队列 (Queue) | `tabs/control.py` | Task engine job control: start/pause/resume/cancel batch processing |
+| 审核 (Review) | `tabs/review.py` | Candidate GIF review: paginated gallery, like/dislike/skip/favorite/quality_reject feedback |
+| 搜索 (Search) | `tabs/search.py` | Semantic + filtered search: full-text, tags, folder, duration, status, date ranges |
+| 合集 (Collections) | `tabs/collections.py` | Smart collections: generate, refresh, freeze, export (JSON manifest + PBF) |
+| 实验室 (Lab) | `tabs/lab.py` | Quality Lab: benchmark runs, blind A/B, champion promotion/rollback |
+| 设置 (Settings) | `tabs/settings.py` | Config editor + profile management + publish controls |
+
+### New Services
+
+#### LibrarySearchService (`library_search.py`)
+
+FTS5 + vector similarity search over `candidate_gifs`. Supports:
+- **Exact filters**: tags (JSON array), folder (substring), duration range, status list, date range
+- **Text search**: FTS5 BM25 ranking combined with cosine similarity against nomic-embed-text embeddings
+- **Pagination**: stable offset/limit, max 24 items per page
+- **Index rebuild**: resumable, per-batch commit, state tracked in `search_index_state`
+
+```python
+from app.services.library_search import LibrarySearchService, SearchQuery
+
+page = search_service.search(
+    SearchQuery(text="explosion", tags=("action",), min_duration=1.0),
+    limit=24, offset=0,
+)
+```
+
+#### Timeline (`timeline.py`)
+
+Loads scenes, candidates, and generated GIFs overlapping a viewport window.
+Thumbnail cap of 60 prevents memory blowout. Each `TimelineSpan` carries
+`base_score`, `preference_score`, and `thumbnail_path`.
+
+```python
+from app.services.timeline import load_timeline_window, potplayer_target
+
+window = load_timeline_window(conn, video_id="vid-001", start_sec=0, end_sec=120)
+url = potplayer_target("C:/videos/clip.mp4", 30.5)  # → potplayer://...?seek=30.5
+```
+
+#### Media Relink (`media_relink.py`)
+
+Detects candidates whose source video moved (fingerprint match, path mismatch).
+`propose_relinks()` returns `RelinkProposal` objects; `apply_relink()` updates
+paths atomically.
+
+#### CollectionService (`collections.py`)
+
+Create, refresh (search + farthest-first diversity selection), freeze (lock version),
+and export (JSON manifest + PBF binary) smart collections.
+
+```python
+from app.services.workbench_schema import CollectionSpec
+from app.services.collections import CollectionService
+
+service = CollectionService(conn, search_service)
+spec = CollectionSpec(name="Best Action", query=SearchQuery(tags=("action",)), target_count=20)
+collection = service.create(spec)
+version = service.refresh(collection.collection_id)
+report = service.export(collection.collection_id, Path("data/exports"))
+```
+
+#### Taste Map (`taste_map.py`)
+
+2D projection of candidate embedding vectors via centred SVD (no scikit-learn
+dependency). Returns `TastePoint(candidate_id, x, y)` list.
+
+```python
+from app.services.taste_map import project_taste_map
+
+points = project_taste_map(vectors_np, candidate_ids)
+```
+
+#### Narrative Curation (`narrative_curation.py`)
+
+Greedy beat-based candidate selection: assigns the best-fitting candidate to
+each narrative beat (opening, development, climax, ending) with diversity bonus
+for unused source videos.
+
+```python
+from app.services.narrative_curation import curate_narrative, CurationCandidate
+
+beats = curate_narrative(candidates, beats=("opening", "development", "climax", "ending"))
+```
+
+#### Attention Inbox (`attention.py`)
+
+Cross-DB aggregation of actionable items: task failures, SHA256 conflicts,
+profile publishes, high-value review candidates, champion promotions.
+Read-only; catches per-source connection errors so one locked DB never fails
+the whole inbox.
+
+```python
+from app.services.attention import list_attention_items
+
+items = list_attention_items(task_repo=repo, library_conn=lib, quality_conn=qual)
+```
+
+### Workbench Service Endpoints
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/workbench/search` | Search candidates (text, tags, folder, duration, status, dates) |
+| GET | `/api/workbench/timeline` | Load timeline window (scenes + candidates + generated GIFs) |
+| GET | `/api/workbench/attention` | Attention inbox items |
+| POST | `/api/workbench/relinks/scan` | Scan for media relink opportunities |
+| POST | `/api/workbench/relinks/apply` | Apply a relink proposal |
+| POST | `/api/workbench/collections` | Create a new collection |
+| POST | `/api/workbench/collections/{id}/refresh` | Refresh collection (search + diversity) |
+| POST | `/api/workbench/collections/{id}/freeze` | Freeze collection version |
+| POST | `/api/workbench/collections/{id}/export` | Export collection (JSON + PBF) |
+
+### Performance Characteristics
+
+- Search handles 10,000+ candidate rows in under 5 seconds per page.
+- Timeline caps thumbnails at 60 per viewport window.
+- Search results return at most 24 items per page (stable pagination).
+- Result payloads use static `preview_path` strings; full GIF bytes are never
+  embedded in API responses.
+- The search → select → create-collection workflow requires 3 primary UI actions.
+
+### Smoke Test
+
+```bash
+uv run python scripts/smoke_library_workbench.py
+```
+
+Validates: search, timeline, relink, collections (create/refresh/freeze/export),
+taste map projection, narrative curation, and attention inbox. Runs entirely
+in an in-memory SQLite database with synthetic vectors.
+
+### New Test File
+
+```
+tests/test_workbench_performance.py   # 10k-row performance, 60-thumbnail cap, UI action count
+```
+
+### Phase 4 Tasks (1-8) Output Summary
+
+| Task | Output |
+|------|--------|
+| 1: Workbench Shell | `workbench.py`, `api_client.py`, 7-tab `gr.Blocks`, modular UI boundary |
+| 2: Attention Inbox | `attention.py` — cross-DB aggregation, per-source error isolation |
+| 3: Semantic Search | `library_search.py`, `workbench_schema.py`, FTS5 + vector search |
+| 4: Moment Timeline | `timeline.py` — viewport window, 60-thumbnail cap, PotPlayer URLs |
+| 5: Media Relink | `media_relink.py` — fingerprint-based path correction |
+| 6: Collections | `collections.py` — create/refresh/freeze/export (JSON + PBF) |
+| 7: Taste Map + Narrative | `taste_map.py` (SVD projection), `narrative_curation.py` (beat selection) |
+| 8: Performance + Smoke | Performance tests (10k rows, 5s), smoke test, final docs |
 
 ---
 

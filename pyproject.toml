@@ -25,3 +25,10 @@ dev = [
     "pytest>=8.0",
     "respx>=0.21",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["scripts", "dist", ".venv", "data"]
+markers = [
+    "slow: mark test as slow (production E2E, ffmpeg/subprocess). Use -m slow to include; production gate must run --no-header.",
+]

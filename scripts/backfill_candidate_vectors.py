@@ -33,9 +33,9 @@ def main() -> None:
         help="SQLite database path, defaults to data/library.db",
     )
     parser.add_argument(
-        "--all-candidates",
+        "--feedback-only",
         action="store_true",
-        help="Backfill every candidate_gifs row instead of only like/dislike feedback targets",
+        help="Restrict to only like/dislike feedback targets (default: all candidates)",
     )
     parser.add_argument("--limit", type=int, default=None, help="Maximum vectors to insert")
     parser.add_argument("--dry-run", action="store_true", help="Count missing vectors without embedding")
@@ -52,7 +52,7 @@ def main() -> None:
         result = backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
-            only_feedback=not args.all_candidates,
+            only_feedback=args.feedback_only,
             dry_run=args.dry_run,
             limit=args.limit,
         )

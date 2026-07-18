@@ -128,6 +128,74 @@ def launch_gradio_app(gradio_app):
     gradio_app.launch(prevent_thread_lock=True, **launch_kwargs())
 
 
+def _start_task_worker():
+    """Start background task worker daemon thread.
+
+    Returns (stop_event, thread) if successful, or (None, None) on failure.
+    The caller should set the stop_event and join the thread on shutdown.
+
+    The SQLite connection is created *inside* the worker thread — a
+    connection made in the main thread cannot be used across threads
+    (``sqlite3.ProgrammingError``), which previously caused the worker to
+    exit immediately and silently.
+    """
+    import threading as _threading
+
+    from app.task_engine import (
+        AdaptivePipelineAdapter,
+        StageName,
+        TaskRepository,
+        TaskWorker,
+        connect_task_db,
+    )
+
+    try:
+        worker_id = f"launcher-{os.getpid()}"
+        stop_event = _threading.Event()
+
+        def _loop():
+            conn = None
+            try:
+                conn = connect_task_db()
+                repo = TaskRepository(conn)
+                all_stages: list[StageName] = [
+                    "discover",
+                    "sample",
+                    "vlm",
+                    "refine",
+                    "synthesize",
+                    "rank_dedup",
+                    "gif_clip",
+                    "materialize",
+                ]
+                adapters: dict[StageName, AdaptivePipelineAdapter] = {
+                    name: AdaptivePipelineAdapter(name) for name in all_stages
+                }
+                worker = TaskWorker(repo, worker_id, adapters)
+                worker.run_forever(poll_seconds=2.0, stop_event=stop_event)
+            except Exception as exc:
+                print(f"ERROR: task worker thread crashed: {exc}", flush=True)
+            finally:
+                if conn is not None:
+                    conn.close()
+
+        t = _threading.Thread(target=_loop, daemon=True, name="task-worker")
+        t.start()
+        print("Task worker started.")
+        return stop_event, t
+    except Exception as e:
+        print(f"WARNING: Could not start task worker: {e}", flush=True)
+        return None, None
+
+
+def _stop_worker(stop_event, thread):
+    """Signal the worker to stop and wait for it."""
+    if stop_event is not None:
+        stop_event.set()
+    if thread is not None:
+        thread.join(timeout=3.0)
+
+
 def _run_script_mode():
     """When invoked as `GifAgentUI.exe --run-script <path> [args...]`,
     run the given .py script via runpy instead of starting the GUI.
@@ -191,6 +259,9 @@ def main():
         thread=api_thread,
     )
 
+    # Start task worker background thread (daemon, drives pipeline stages)
+    worker_stop_event, worker_thread = _start_task_worker()
+
     # Start Gradio UI in a background thread (prevent_thread_lock=True makes
     # launch() return immediately; the server runs in Gradio's internal thread).
     from app.ui.candidate_review import app as gradio_app
@@ -198,6 +269,7 @@ def main():
         launch_gradio_app(gradio_app)
     except Exception as e:
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)
+        _stop_worker(worker_stop_event, worker_thread)
         os._exit(1)
     print("Starting Gradio on http://127.0.0.1:7861 ...")
 
@@ -205,6 +277,7 @@ def main():
     # up in 30s, exit instead of opening a window to a dead URL.
     if not _wait_for_url("http://127.0.0.1:7861", "Gradio", timeout=30):
         print("ERROR: Gradio did not become ready, exiting.", flush=True)
+        _stop_worker(worker_stop_event, worker_thread)
         try:
             gradio_app.close()
         except Exception:
@@ -221,10 +294,12 @@ def main():
     except Exception as e:
         print(f"ERROR: webview failed to start: {e}", flush=True)
     finally:
-        # Window closed (or start failed) — shut down Gradio cleanly, then exit.
-        # FastAPI runs in a daemon thread and is killed when the process exits.
-        # os._exit() avoids hanging on Gradio's non-daemon internal threads.
+        # Window closed (or start failed) — signal worker, shut down Gradio,
+        # then exit. FastAPI runs in a daemon thread and is killed when the
+        # process exits. os._exit() avoids hanging on Gradio's non-daemon
+        # internal threads.
         print("Window closed, shutting down servers...", flush=True)
+        _stop_worker(worker_stop_event, worker_thread)
         try:
             gradio_app.close()
         except Exception:

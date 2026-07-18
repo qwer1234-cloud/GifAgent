@@ -1,12 +1,14 @@
-"""P1-4: Candidate feedback API endpoint."""
+"""P1-4 / P3-6: Candidate feedback, review queue, pairwise, correction, and explanation API."""
 
 from __future__ import annotations
 
 import hashlib
+import json as std_json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
@@ -510,3 +512,273 @@ def undo_last_action():
     """Undo the newest active candidate review action."""
     conn = get_connection()
     return PreferenceEventService(conn).undo_last_candidate_action()
+
+
+# ── Phase 3 Task 6: Active review queue, pairwise, correction, explanation ──
+
+
+class PairwiseRequest(BaseModel):
+    winner_id: str
+    loser_id: str
+
+
+class CorrectionRequest(BaseModel):
+    replacement_rating: str = Field(
+        ...,
+        pattern=r"^(like|dislike|neutral|skip|quality_reject|favorite)$",
+    )
+    reason: str = Field(..., min_length=1)
+
+
+@router.get("/review-queue")
+def get_review_queue(
+    limit: int = Query(24, ge=1, le=100),
+    seed: int = Query(42, ge=0),
+):
+    """Return a priority-ordered review queue of candidate GIFs.
+
+    Each item exposes ``reason`` and ``reason_detail`` (Chinese) explaining
+    why it was selected — exploit, uncertain, or explore.
+    """
+    from app.services.review_queue import (
+        ReviewCandidate,
+        build_review_queue,
+    )
+
+    conn = get_connection()
+
+    # Fetch candidates with status 'candidate'
+    rows = conn.execute(
+        """SELECT candidate_id, source_video_sha256, base_rag_similarity,
+                  scenario_keys_json, artifact_path
+           FROM candidate_gifs WHERE status='candidate'"""
+    ).fetchall()
+
+    if not rows:
+        return {"queue": [], "total": 0, "limit": limit}
+
+    candidate_ids = [r["candidate_id"] for r in rows]
+    placeholders = ",".join(["?"] * len(candidate_ids))
+
+    # Fetch vectors
+    vector_rows = conn.execute(
+        f"""SELECT candidate_id, vector_blob
+             FROM candidate_vectors
+             WHERE candidate_id IN ({placeholders})
+               AND vector_type='clip'""",
+        candidate_ids,
+    ).fetchall()
+
+    vector_map: dict[str, np.ndarray] = {}
+    for vr in vector_rows:
+        vec = np.frombuffer(vr["vector_blob"], dtype=np.float32)
+        norm = np.linalg.norm(vec)
+        if norm > 0:
+            vec = vec / norm
+        vector_map[vr["candidate_id"]] = vec
+
+    # Resolve published profile for scoring.
+    current = conn.execute(
+        "SELECT profile_version FROM preference_profile_current WHERE slot='current'"
+    ).fetchone()
+
+    reranker = None
+    if current is not None:
+        from app.services.reranker import PreferenceReranker
+
+        reranker = PreferenceReranker(conn)
+
+    # Build ReviewCandidate objects.
+    review_candidates: list[ReviewCandidate] = []
+    for row in rows:
+        cid = row["candidate_id"]
+        vec = vector_map.get(cid)
+        if vec is None:
+            continue
+
+        preference_score = 0.5
+        calibrated_probability = 0.5
+
+        if reranker is not None:
+            scenario_keys = std_json.loads(
+                row["scenario_keys_json"] or "[]"
+            )
+            base_sim = row["base_rag_similarity"] or 0.5
+            result = reranker.score(
+                candidate_vector=vec,
+                base_rag_similarity=base_sim,
+                scenario_keys=scenario_keys,
+                profile_version=current["profile_version"],
+                enabled=True,
+            )
+            preference_score = result.get("final_score", 0.5)
+            # Clamp calibrated_probability away from boundaries.
+            calibrated_probability = max(0.01, min(0.99, preference_score))
+
+        review_candidates.append(ReviewCandidate(
+            candidate_id=cid,
+            source_video_sha256=row["source_video_sha256"],
+            preference_score=preference_score,
+            calibrated_probability=calibrated_probability,
+            vector=vec,
+            cluster_key=row["source_video_sha256"],
+        ))
+
+    queue = build_review_queue(review_candidates, limit=limit, seed=seed)
+
+    return {
+        "queue": [
+            {
+                "candidate_id": item.candidate_id,
+                "reason": item.reason,
+                "reason_detail": item.reason_detail,
+                "score": round(item.score, 6),
+            }
+            for item in queue
+        ],
+        "total": len(queue),
+        "limit": limit,
+    }
+
+
+@router.post("/pairwise")
+def pairwise(body: PairwiseRequest):
+    """Record a pairwise comparison between two candidates.
+
+    The winner receives a ``like`` event and the loser receives a ``dislike``
+    event, both annotated with the pairwise context.
+    """
+    conn = get_connection()
+
+    winner_row = conn.execute(
+        "SELECT source_video_sha256, scenario_keys_json FROM candidate_gifs WHERE candidate_id=?",
+        (body.winner_id,),
+    ).fetchone()
+    if winner_row is None:
+        raise HTTPException(status_code=404, detail=f"Winner {body.winner_id} not found")
+
+    loser_row = conn.execute(
+        "SELECT source_video_sha256, scenario_keys_json FROM candidate_gifs WHERE candidate_id=?",
+        (body.loser_id,),
+    ).fetchone()
+    if loser_row is None:
+        raise HTTPException(status_code=404, detail=f"Loser {body.loser_id} not found")
+
+    service = PreferenceEventService(conn)
+
+    winner_event = service.record_feedback(
+        target_type="candidate_gif",
+        target_id=body.winner_id,
+        rating="like",
+        source_video_sha256=winner_row["source_video_sha256"],
+        scenario_keys=std_json.loads(winner_row["scenario_keys_json"] or "[]"),
+        note=f"pairwise:winner over {body.loser_id}",
+    )
+
+    loser_event = service.record_feedback(
+        target_type="candidate_gif",
+        target_id=body.loser_id,
+        rating="dislike",
+        source_video_sha256=loser_row["source_video_sha256"],
+        scenario_keys=std_json.loads(loser_row["scenario_keys_json"] or "[]"),
+        note=f"pairwise:loser to {body.winner_id}",
+    )
+
+    return {
+        "winner_event_id": winner_event.event_id,
+        "loser_event_id": loser_event.event_id,
+    }
+
+
+@router.post("/events/{event_id}/correct")
+def correct_event(event_id: str, body: CorrectionRequest):
+    """Correct (supersede) a previous feedback event.
+
+    Creates a new ``correction``-kind event that points back to the original
+    via ``supersedes_event_id``.
+    """
+    conn = get_connection()
+
+    # Verify original event exists.
+    original = conn.execute(
+        "SELECT event_id FROM preference_events WHERE event_id=?",
+        (event_id,),
+    ).fetchone()
+    if original is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Preference event {event_id} not found",
+        )
+
+    service = PreferenceEventService(conn)
+    try:
+        correction = service.correct_feedback(
+            event_id=event_id,
+            replacement=body.replacement_rating,  # type: ignore[arg-type]
+            reason=body.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "event_id": correction.event_id,
+        "target_type": correction.target_type,
+        "target_id": correction.target_id,
+        "rating": correction.rating,
+        "event_kind": correction.event_kind,
+        "supersedes_event_id": correction.supersedes_event_id,
+        "created_at": correction.created_at,
+    }
+
+
+@router.get("/{candidate_id}/explanation")
+def get_explanation(candidate_id: str):
+    """Return an explainable ranking breakdown for a candidate.
+
+    Includes base quality, positive/negative similarity, nearest positive
+    example IDs (five or fewer), and the active preference profile version.
+    """
+    from app.services.ranking_explanations import compute_ranking_explanation
+
+    conn = get_connection()
+
+    row = conn.execute(
+        """SELECT candidate_id, base_rag_similarity, scenario_keys_json
+           FROM candidate_gifs WHERE candidate_id=?""",
+        (candidate_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Candidate {candidate_id} not found")
+
+    # Fetch the candidate's vector.
+    vec_row = conn.execute(
+        """SELECT vector_blob FROM candidate_vectors
+           WHERE candidate_id=? AND vector_type='clip'
+           LIMIT 1""",
+        (candidate_id,),
+    ).fetchone()
+    if vec_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No vector found for candidate {candidate_id}",
+        )
+
+    candidate_vector = np.frombuffer(vec_row["vector_blob"], dtype=np.float32)
+    norm = np.linalg.norm(candidate_vector)
+    if norm > 0:
+        candidate_vector = candidate_vector / norm
+
+    base_sim = row["base_rag_similarity"] or 0.5
+    scenario_keys = std_json.loads(row["scenario_keys_json"] or "[]")
+
+    result = compute_ranking_explanation(
+        conn=conn,
+        candidate_id=candidate_id,
+        candidate_vector=candidate_vector,
+        base_rag_similarity=base_sim,
+        scenario_keys=scenario_keys,
+        profile_version=None,
+        enabled=True,
+    )
+
+    return result

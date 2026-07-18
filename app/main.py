@@ -14,6 +14,9 @@ from app.services.indexer import index_all_annotated, get_index
 from app.services.scorer import score_all_unscored, score_media
 from app.routers.candidates import router as candidates_router
 from app.routers.preference import router as preference_router
+from app.routers.tasks import router as tasks_router
+from app.routers.quality_lab import router as quality_lab_router
+from app.routers.workbench import router as workbench_router
 
 _scheduler = ModelScheduler()
 _bg_processing = threading.Event()
@@ -29,6 +32,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="GifAgent", lifespan=lifespan)
 app.include_router(candidates_router)
 app.include_router(preference_router)
+app.include_router(tasks_router)
+app.include_router(quality_lab_router)
+app.include_router(workbench_router)
 
 
 @app.get("/api/status")

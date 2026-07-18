@@ -41,6 +41,8 @@ hiddenimports += ["httpx", "httpx._transports", "httpx._transports.default"]
 # App modules — explicitly include script-only imports that PyInstaller's
 # static analysis won't find (scripts/ are data files, not analyzed)
 hiddenimports += collect_submodules("app")
+hiddenimports += collect_submodules("app.task_engine")
+hiddenimports += collect_submodules("app.quality_lab")
 hiddenimports += [
     "app.services.video_fingerprint",
     "app.services.json_guard",
@@ -66,9 +68,35 @@ hiddenimports += [
     "app.services.export_cleanup",
     "app.services.candidate_vectors",
     "app.services.potplayer_bookmarks",
+    "app.services.library_search",
+    "app.services.workbench_schema",
+    "app.services.timeline",
+    "app.services.media_relink",
+    "app.services.collections",
+    "app.services.attention",
+    "app.services.taste_map",
+    "app.services.narrative_curation",
     "app.routers.candidates",
     "app.routers.preference",
+    "app.routers.quality_lab",
 ]
+
+# Phase 4 UI modules (workbench)
+for _m in [
+    "app.ui.workbench",
+    "app.ui.api_client",
+    "app.ui.components.common",
+    "app.ui.components.timeline",
+    "app.ui.tabs.today",
+    "app.ui.tabs.control",
+    "app.ui.tabs.review",
+    "app.ui.tabs.search",
+    "app.ui.tabs.collections",
+    "app.ui.tabs.lab",
+    "app.ui.tabs.settings",
+    "app.ui.tabs.profile",
+]:
+    hiddenimports.append(_m)
 
 # Include config file, scripts, and app package data
 datas += [("configs/models.yaml", "configs")]

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
@@ -163,3 +163,157 @@ def backfill_candidate_vectors(
             result["errors"].append({"candidate_id": candidate_id, "error": str(exc)})
 
     return result
+
+
+def backfill_missing_vectors(
+    conn: sqlite3.Connection,
+    embedder: EmbeddingFn,
+    *,
+    candidate_ids: Sequence[str] | None = None,
+    batch_size: int = 32,
+    embedding_model: str = REQUIRED_EMBEDDING_MODEL,
+    embedding_dim: int = REQUIRED_EMBEDDING_DIM,
+) -> BackfillReport:
+    """Resumable incremental backfill of missing candidate vectors.
+
+    When ``candidate_ids`` is *None* every candidate in
+    ``candidate_gifs`` is considered; otherwise only the given IDs are
+    processed.  Candidates that already have a vector or are recorded as
+    excluded are skipped.  Each batch is committed incrementally and
+    embedding failures are recorded as exclusions.
+    """
+    from app.services.preference_types import BackfillReport
+
+    if candidate_ids is not None:
+        placeholders = ",".join(["?"] * len(candidate_ids))
+        rows = conn.execute(
+            f"""SELECT cg.candidate_id, cg.source_video_path, cg.start_sec,
+                       cg.end_sec, cg.artifact_path, cg.preview_path,
+                       cg.vlm_summary_json, cg.tags_json, cg.scenario_keys_json
+                 FROM candidate_gifs cg
+                 WHERE cg.candidate_id IN ({placeholders})
+                 ORDER BY cg.created_at ASC, cg.candidate_id ASC""",
+            list(candidate_ids),
+        ).fetchall()
+    else:
+        rows = _candidate_rows(conn, only_feedback=False)
+
+    excluded_set = _load_excluded_ids(conn)
+
+    report: BackfillReport = {
+        "total": len(rows),
+        "inserted": 0,
+        "skipped_existing": 0,
+        "failed": 0,
+        "exclusions": [],
+        "batch_commits": 0,
+    }
+
+    pending: list[tuple[str, bytes]] = []
+    pending_exclusions: list[tuple[str, str]] = []
+
+    for row in rows:
+        candidate_id = row["candidate_id"]
+
+        if candidate_id in excluded_set:
+            report["skipped_existing"] += 1
+            continue
+
+        if _has_vector(
+            conn,
+            candidate_id,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+        ):
+            report["skipped_existing"] += 1
+            continue
+
+        text = build_candidate_embedding_text(row)
+        try:
+            blob = _vector_blob(embedder(text), embedding_dim=embedding_dim)
+            pending.append((candidate_id, blob))
+        except Exception as exc:
+            report["failed"] += 1
+            pending_exclusions.append(
+                (candidate_id, f"embedding_failed: {exc}")
+            )
+
+        # Commit batch when pending reaches batch_size or at end of loop.
+        if len(pending) + len(pending_exclusions) >= batch_size:
+            _flush_batch(
+                conn,
+                pending,
+                pending_exclusions,
+                report,
+                embedding_model=embedding_model,
+                embedding_dim=embedding_dim,
+            )
+
+    # Flush any remainder.
+    if pending or pending_exclusions:
+        _flush_batch(
+            conn,
+            pending,
+            pending_exclusions,
+            report,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+        )
+
+    return report
+
+
+def _load_excluded_ids(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(
+        "SELECT candidate_id FROM candidate_vector_exclusions"
+    ).fetchall()
+    return {row["candidate_id"] for row in rows}
+
+
+def _flush_batch(
+    conn: sqlite3.Connection,
+    pending: list[tuple[str, bytes]],
+    pending_exclusions: list[tuple[str, str]],
+    report: BackfillReport,
+    *,
+    embedding_model: str,
+    embedding_dim: int,
+) -> None:
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    for candidate_id, blob in pending:
+        conn.execute(
+            """INSERT OR REPLACE INTO candidate_vectors
+               (candidate_id, vector_type, embedding_model, embedding_dim,
+                vector_blob, normalized)
+               VALUES (?,?,?,?,?,?)""",
+            (candidate_id, "clip", embedding_model, embedding_dim, blob, 1),
+        )
+        report["inserted"] += 1
+        _cast_exclusions(report["exclusions"]).append(
+            {"candidate_id": candidate_id, "status": "inserted"}
+        )
+
+    for candidate_id, reason in pending_exclusions:
+        conn.execute(
+            """INSERT OR REPLACE INTO candidate_vector_exclusions
+               (candidate_id, reason, created_at)
+               VALUES (?,?,?)""",
+            (candidate_id, reason, now),
+        )
+        _cast_exclusions(report["exclusions"]).append(
+            {"candidate_id": candidate_id, "status": "excluded", "reason": reason}
+        )
+
+    conn.commit()
+    report["batch_commits"] += 1
+    pending.clear()
+    pending_exclusions.clear()
+
+
+def _cast_exclusions(
+    exclusions: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    return exclusions

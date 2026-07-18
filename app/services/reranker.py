@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from app.services.preference_types import ScoreBreakdown
+from app.services.preference_types import RerankerScoreBreakdown
 
 # ---------------------------------------------------------------------------
 # Nominal weight configuration (before renormalization)
@@ -81,7 +81,7 @@ class PreferenceReranker:
         scenario_keys: list[str],
         profile_version: str | None,
         enabled: bool,
-    ) -> ScoreBreakdown:
+    ) -> RerankerScoreBreakdown:
         """Compute the final score for a candidate.
 
         When ``enabled`` is ``False`` the baseline RAG similarity is returned
@@ -259,11 +259,36 @@ class PreferenceReranker:
                 )
             )
 
+        # ---- Compute positive / negative similarity for explanations -----
+        positive_similarity: float | None = None
+        positive_components: list[tuple[float, float]] = []
+        if "global_like" in active_weights:
+            positive_components.append(
+                (_NOMINAL_POSITIVE_WEIGHTS["global_like"], global_like_sim)
+            )
+        if "scenario_like" in active_weights:
+            positive_components.append(
+                (_NOMINAL_POSITIVE_WEIGHTS["scenario_like"], scenario_like_sim)
+            )
+        if positive_components:
+            w_total = sum(w for w, _ in positive_components)
+            positive_similarity = float(
+                sum(w * v for w, v in positive_components) / w_total
+            )
+
+        negative_similarity: float | None = (
+            float(global_dislike_sim)
+            if "global_dislike" in active_weights
+            else None
+        )
+
         return {
             "base_rag_similarity": base_rag_similarity,
             "profile_score": profile_score,
             "raw_score": raw_score,
             "final_score": final_score,
+            "positive_similarity": positive_similarity,
+            "negative_similarity": negative_similarity,
             "active_weights": active_weights,
             "inactive_reasons": inactive_reasons,
             "preference_profile_version": profile_version,
@@ -278,7 +303,7 @@ class PreferenceReranker:
         base_rag_similarity: float,
         *,
         inactive_reasons: dict[str, str] | None = None,
-    ) -> ScoreBreakdown:
+    ) -> RerankerScoreBreakdown:
         """Return a baseline ScoreBreakdown (no-op path)."""
         return {
             "base_rag_similarity": base_rag_similarity,

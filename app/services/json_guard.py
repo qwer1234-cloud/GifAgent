@@ -6,6 +6,8 @@ Replaces scattered _parse_json_response() copies across:
   - scripts/vlm_*.py
   - scripts/test_*.py
 """
+from __future__ import annotations
+
 import json, re
 from dataclasses import dataclass
 

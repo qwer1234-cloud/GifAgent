@@ -1,6 +1,6 @@
 """Pydantic models for validated VLM/LLM structured outputs."""
 from pydantic import BaseModel, Field
-from typing import Literal
+from typing import Literal, Optional
 
 EMOTIONS = Literal[
     "tension", "melancholy", "awe", "joy", "sadness", "catharsis",
@@ -33,4 +33,4 @@ class MediaAnnotation(BaseModel):
     aesthetic_notes: list[str] = Field(min_length=1, max_length=6)
     why_i_like_it: str = Field(min_length=12)
     tags: list[str] = Field(min_length=1, max_length=8)
-    scene_type: str | None = None
+    scene_type: Optional[str] = None

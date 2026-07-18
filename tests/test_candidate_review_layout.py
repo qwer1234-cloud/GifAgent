@@ -49,3 +49,32 @@ def test_review_shortcuts_include_like_neutral_dislike_and_favorite():
     assert "undo-btn" in REVIEW_SHORTCUTS_JS
     assert "ctrlKey" in REVIEW_SHORTCUTS_JS
     assert "INPUT" in REVIEW_SHORTCUTS_JS
+
+
+def test_control_tab_calls_build_control_tab():
+    """The Control tab uses ``build_control_tab`` from the new tab module."""
+    from app.ui import candidate_review
+
+    source = Path(candidate_review.__file__).read_text(encoding="utf-8")
+
+    # The new code path calls build_control_tab from the tabs sub-package
+    assert "build_control_tab(client)" in source
+
+
+def test_control_tab_uses_gif_agent_api_client():
+    """The Control tab instantiates ``GifAgentApiClient`` for the task API."""
+    from app.ui import candidate_review
+
+    source = Path(candidate_review.__file__).read_text(encoding="utf-8")
+
+    # The new code path creates a GifAgentApiClient instance
+    assert "GifAgentApiClient(API_BASE)" in source
+
+
+def test_control_tab_legacy_mode_guard_is_present():
+    """The legacy PID mode is activated by ``GIFAGENT_LEGACY_QUEUE_UI``."""
+    from app.ui import candidate_review
+
+    source = Path(candidate_review.__file__).read_text(encoding="utf-8")
+
+    assert "GIFAGENT_LEGACY_QUEUE_UI" in source

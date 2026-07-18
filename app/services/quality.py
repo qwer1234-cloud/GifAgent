@@ -1,4 +1,6 @@
 """VLM/LLM output quality validation — placeholder detection and field checks."""
+from __future__ import annotations
+
 from app.services.schemas import VALID_EMOTIONS, FrameAnalysis, MediaAnnotation
 
 

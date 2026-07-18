@@ -7,7 +7,7 @@ _config: dict[str, Any] = {}
 
 def load_config(path: str = "configs/models.yaml") -> dict[str, Any]:
     global _config
-    with open(path, "r") as f:
+    with open(path, "r", encoding="utf-8") as f:
         _config = yaml.safe_load(f)
     return _config
 
@@ -20,6 +20,13 @@ def get(key: str, default: Any = None) -> Any:
         else:
             return default
     return val if val is not None else default
+
+def set_config_override(config: dict) -> None:
+    """Replace the global config dict with *config* (used by stage mode)."""
+    import app.config as mod
+
+    mod._config = config
+
 
 _config_path = os.environ.get("GIFAGENT_CONFIG", "configs/models.yaml")
 if Path(_config_path).exists():

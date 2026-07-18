@@ -1,0 +1,28 @@
+{
+  "jobs": [
+    {
+      "job_id": "job-alpha",
+      "directory": "C:/videos/alpha",
+      "limit": 0,
+      "extensions": ".mp4,.mkv",
+      "added_at": "2026-07-13T00:00:00",
+      "videos": ["alpha_ok", "alpha_dup"]
+    },
+    {
+      "job_id": "job-alpha-dupe",
+      "directory": "c:\\videos\\alpha\\",
+      "limit": 5,
+      "extensions": ".mp4",
+      "added_at": "2026-07-13T00:05:00"
+    },
+    {
+      "job_id": "job-beta",
+      "directory": "D:/videos/beta",
+      "limit": 10,
+      "extensions": ".mp4",
+      "added_at": "2026-07-13T00:10:00",
+      "videos": ["beta_fail"]
+    }
+  ],
+  "updated_at": "2026-07-13T00:10:00"
+}

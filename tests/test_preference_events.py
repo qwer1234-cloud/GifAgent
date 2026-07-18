@@ -272,6 +272,243 @@ def test_latest_effective_ratings_multiple_targets():
     assert latest["candidate_gif:cand-b"].rating == "dislike"
 
 
+def test_correct_feedback_creates_correction_event():
+    """correct_feedback must create a correction event linked to the original."""
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec,
+            status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-corr", "run-1", "rc-corr", "video-1", "/v/sample.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+
+    svc = PreferenceEventService(conn)
+    original = svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-corr",
+        rating="like",
+        source_video_sha256="video-1",
+        scenario_keys=["tag:smile"],
+    )
+
+    correction = svc.correct_feedback(
+        event_id=original.event_id, replacement="dislike", reason="fat-finger"
+    )
+
+    assert correction.event_kind == "correction"
+    assert correction.supersedes_event_id == original.event_id
+    assert correction.rating == "dislike"
+    assert correction.target_id == "cand-corr"
+    assert correction.event_id != original.event_id
+
+    # Original row must still be "like".
+    original_row = conn.execute(
+        "SELECT rating FROM preference_events WHERE event_id=?",
+        (original.event_id,),
+    ).fetchone()
+    assert original_row["rating"] == "like", "Original row was mutated!"
+
+
+def test_correct_feedback_updates_candidate_status():
+    """Correction must update candidate_gifs.status to the new rating."""
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec,
+            status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-corr2", "run-1", "rc-corr2", "video-1", "/v/sample.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+
+    svc = PreferenceEventService(conn)
+    original = svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-corr2",
+        rating="like",
+        source_video_sha256="video-1",
+        scenario_keys=[],
+    )
+
+    svc.correct_feedback(
+        event_id=original.event_id, replacement="dislike", reason="changed mind"
+    )
+
+    status = conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id=?", ("cand-corr2",)
+    ).fetchone()["status"]
+    assert status == "disliked"
+
+
+def test_effective_feedback_excludes_undone():
+    """effective_feedback must not return undone events."""
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec,
+            status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-eff1", "run-1", "rc-eff1", "video-1", "/v/sample.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+
+    svc = PreferenceEventService(conn)
+    evt = svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-eff1",
+        rating="like",
+        source_video_sha256="video-1",
+        scenario_keys=[],
+    )
+
+    effective_before_undo = svc.effective_feedback()
+    assert any(e.event_id == evt.event_id for e in effective_before_undo)
+
+    svc.undo_last_candidate_action()
+
+    effective_after_undo = svc.effective_feedback()
+    assert not any(e.event_id == evt.event_id for e in effective_after_undo)
+
+
+def test_effective_feedback_excludes_superseded():
+    """effective_feedback must not return events that have been superseded."""
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec,
+            status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-eff2", "run-1", "rc-eff2", "video-1", "/v/sample.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+
+    svc = PreferenceEventService(conn)
+    original = svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-eff2",
+        rating="like",
+        source_video_sha256="video-1",
+        scenario_keys=[],
+    )
+
+    correction = svc.correct_feedback(
+        event_id=original.event_id, replacement="dislike", reason="mistake"
+    )
+
+    effective = svc.effective_feedback()
+
+    # Original must NOT be in effective.
+    assert not any(e.event_id == original.event_id for e in effective)
+    # Correction must be in effective.
+    assert any(e.event_id == correction.event_id for e in effective)
+
+
+def test_correct_feedback_invalid_rating_raises():
+    """correct_feedback with invalid replacement rating must raise."""
+    import pytest
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    svc = PreferenceEventService(conn)
+
+    with pytest.raises(ValueError, match="Invalid replacement rating"):
+        svc.correct_feedback(
+            event_id="nonexistent", replacement="bogus",  # type: ignore[arg-type]
+            reason="test",
+        )
+
+
+def test_correct_feedback_nonexistent_event_raises():
+    """correct_feedback with a non-existent event_id must raise."""
+    import pytest
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    svc = PreferenceEventService(conn)
+
+    with pytest.raises(ValueError, match="No preference event found"):
+        svc.correct_feedback(
+            event_id="prefevt_nonexistent", replacement="dislike", reason="test",
+        )
+
+
+def test_record_feedback_favorite_rating():
+    """record_feedback with rating='favorite' must succeed and not change status."""
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.preference_events import PreferenceEventService
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec,
+            status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-fav", "run-1", "rc-fav", "video-1", "/v/sample.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+
+    svc = PreferenceEventService(conn)
+    evt = svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-fav",
+        rating="favorite",
+        source_video_sha256="video-1",
+        scenario_keys=[],
+    )
+
+    assert evt.rating == "favorite"
+    assert evt.event_kind == "feedback"
+    assert evt.supersedes_event_id is None
+
+    # Status should remain "candidate" (favorite does not change status).
+    status = conn.execute(
+        "SELECT status FROM candidate_gifs WHERE candidate_id=?", ("cand-fav",)
+    ).fetchone()["status"]
+    assert status == "candidate"
+
+
 def test_scenario_keys_stored_in_event():
     import json
     from app.services.preference_schema import apply_preference_schema

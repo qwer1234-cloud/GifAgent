@@ -180,7 +180,7 @@ def _migrate(conn):
     conn.commit()
 
 def save_checkpoint(phase: str, last_media_id: str = "", batch_index: int = 0,
-                    total_processed: int = 0, total_failed: int = 0, extra: dict | None = None):
+                    total_processed: int = 0, total_failed: int = 0, extra=None):
     import json
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc).isoformat()
@@ -193,7 +193,7 @@ def save_checkpoint(phase: str, last_media_id: str = "", batch_index: int = 0,
     )
     conn.commit()
 
-def load_checkpoint(phase: str) -> dict | None:
+def load_checkpoint(phase: str):
     conn = get_connection()
     row = conn.execute(
         "SELECT * FROM processing_checkpoint WHERE phase=? ORDER BY id DESC LIMIT 1",

@@ -1,4 +1,5 @@
-"""P1-5: Preference profile API — build, list, publish, and evaluate profiles."""
+"""P1-5 / P3-6: Preference profile API — build, list, publish, preview, rollback,
+evaluate, and vector-health."""
 
 from __future__ import annotations
 
@@ -10,8 +11,9 @@ from pydantic import BaseModel
 
 from app.db import get_connection
 from app.services.preference_schema import apply_preference_schema
-from app.services.preference_memory import PreferenceMemoryService
+from app.services.preference_memory import PreferenceMemoryService, preview_profile
 from app.services.preference_evaluation import PreferenceEvaluationService
+from app.services.vector_health import inspect_vector_health
 
 router = APIRouter(prefix="/api/preference", tags=["preference"])
 
@@ -152,3 +154,89 @@ def evaluate_profile(body: EvaluateRequest):
         conn.close()
 
     return result
+
+
+# ── Phase 3 Task 6: Profile preview, rollback, vector-health ────────────────
+
+
+@router.post("/profiles/preview")
+def preview_profile_endpoint():
+    """Preview whether a profile build would pass all gates.
+
+    Returns gate reasons, metrics, and the computed profile_version --
+    *without* writing anything to the database.
+    """
+    conn = get_connection()
+    try:
+        apply_preference_schema(conn)
+
+        from app.services.preference_memory import ProfileBuildConfig
+
+        config = ProfileBuildConfig()
+        result = preview_profile(conn, config)
+        return {
+            "profile_version": result.profile_version,
+            "status": result.status,
+            "gate_reasons": list(result.gate_reasons),
+            "metrics": result.metrics,
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/profiles/{profile_version}/rollback")
+def rollback_profile(profile_version: str):
+    """Rollback to a previously completed profile version.
+
+    The rollback is recorded as a publication entry so history is preserved.
+    """
+    conn = get_connection()
+    try:
+        apply_preference_schema(conn)
+        service = PreferenceMemoryService(conn)
+        service.rollback(profile_version)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except sqlite3.OperationalError as exc:
+        conn.rollback()
+        if "locked" in str(exc).lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Database is busy while rolling back. Please retry.",
+            )
+        raise
+    finally:
+        conn.close()
+
+    return {"status": "rolled_back", "profile_version": profile_version}
+
+
+@router.get("/vector-health")
+def get_vector_health():
+    """Return vector coverage health -- total/available/missing/excluded.
+
+    Provides an overview of which candidates have embedding vectors for the
+    base embedding model.
+    """
+    conn = get_connection()
+    try:
+        apply_preference_schema(conn)
+        health = inspect_vector_health(
+            conn,
+            model="nomic-embed-text:latest",
+        )
+        return {
+            "total_candidates": health.total_candidates,
+            "available": health.available,
+            "missing": list(health.missing),
+            "excluded": [
+                {
+                    "candidate_id": exc.candidate_id,
+                    "reason": exc.reason,
+                    "created_at": exc.created_at,
+                }
+                for exc in health.excluded
+            ],
+        }
+    finally:
+        conn.close()

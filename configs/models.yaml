@@ -11,6 +11,12 @@ vlm:
   base_url: "http://127.0.0.1:11434"
   batch_size: 50
   max_batch_size: 100
+  # Task 4 (seventh-review): explicit lifecycle config.  URL never
+  # decides the launch mode; manage_lifecycle and launch_mode must be
+  # explicitly set.  launch_mode: none (no lifecycle), native (ollama),
+  # wsl (wsl ollama).
+  manage_lifecycle: true
+  launch_mode: "wsl"
 
 llm:
   provider: "openai_compatible"
@@ -49,6 +55,17 @@ preference_memory:
   base_score_weight: 0.50
   preference_score_weight: 0.50
 
+  # Profile build parameters (see ProfileBuildConfig in preference_types.py)
+  recency_enabled: true
+  # Half-life for recency decay: age_days / half_life -> weight = 0.5^(age/half)
+  recency_half_life_days: 90.0
+  # Rating weights used during centroid computation
+  favorite_weight: 2.0    # favorite = 2x influence of a standard "like"
+  like_weight: 1.0        # baseline positive signal
+  dislike_weight: 1.0     # baseline negative signal
+  # Minimum feedback events within a scenario key to build a scenario profile
+  scenario_min_feedback: 8
+
 adaptive:
   sample_interval: 10
   merge_gap: 15
@@ -71,6 +88,15 @@ adaptive:
   embedding_dedup_threshold: 0.90
   temporal_dedup_enabled: true
   temporal_dedup_min_gap_s: 12
+
+task_engine:
+  enabled: true
+  db_path: "data/task_state.db"
+  poll_seconds: 1.0
+  lease_seconds: 90
+  max_attempts: 3
+  base_delay_seconds: 5
+  max_delay_seconds: 300
 
 database:
   path: "data/library.db"
