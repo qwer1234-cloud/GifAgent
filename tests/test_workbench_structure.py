@@ -92,6 +92,13 @@ def test_build_workbench_function():
     assert isinstance(result, gr.Blocks)
 
 
+def test_launch_allowed_paths_are_a_list():
+    """Gradio 6 requires launch ``allowed_paths`` to be a concrete list."""
+    from app.ui.workbench import launch_kwargs
+
+    assert isinstance(launch_kwargs()["allowed_paths"], list)
+
+
 def test_navigation_tabs_present_exactly_once():
     """All 7 Chinese tab labels must appear exactly once in workbench.py."""
     from app.ui import workbench

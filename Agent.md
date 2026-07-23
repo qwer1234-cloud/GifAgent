@@ -184,11 +184,26 @@ state. Partial output uses `StageResult.outcome=needs_attention` and preserves
 successfully published GIFs.
 
 Release gate: compileall, the complete pytest suite, and `git diff --check`.
-The merged 2026-07-18 verified baseline is `1012 passed, 2 skipped, 3 warnings`,
+The 2026-07-23 verified baseline is `1014 passed, 2 skipped, 3 warnings`,
 covering the persistent serial folder queue plus four deterministic production
 E2E scenarios: success, VLM outage, invalid VLM payload, and valid zero-clip.
 Tests must use temporary data and must not mutate historical databases, exports,
 labels, checkpoints, or writable configuration.
+
+### Packaged Startup Compatibility (2026-07-23)
+
+- Gradio 6 requires `Blocks.launch(allowed_paths=...)` to receive a concrete
+  `list[str]`. Keep `_build_gradio_allowed_paths()` and `get_allowed_paths()`
+  list-valued; a tuple causes the packaged UI to exit after FastAPI starts.
+- `app.db.init_db()` must apply both `apply_search_schema()` and
+  `apply_collections_schema()` before the Workbench routers can serve requests.
+  These migrations are additive and preserve existing media, feedback,
+  Preference Memory, queue, and export records.
+- Regression coverage lives in `tests/test_workbench_structure.py` and
+  `tests/test_startup_schema.py`. A release smoke test must use isolated runtime
+  data and verify HTTP 200 from ports 8000 and 7861.
+- The verified EXE SHA-256 is
+  `D74BD753B8B57CD9E8ED149999059BCDAD5035D79E51552CDBE866F8E8373BED`.
 
 ### Task API Endpoints (7 new)
 
