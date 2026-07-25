@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.preference_memory import (
     REQUIRED_EMBEDDING_DIM,
     REQUIRED_EMBEDDING_MODEL,
@@ -113,11 +114,15 @@ def backfill_candidate_vectors(
     only_feedback: bool = False,
     dry_run: bool = False,
     limit: int | None = None,
+    progress_fn: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Create missing candidate_vectors rows for candidate GIFs."""
     rows = _candidate_rows(conn, only_feedback=only_feedback)
     result: dict[str, Any] = {
         "scanned": len(rows),
+        "total": len(rows),
+        "processed": 0,
+        "current_candidate": None,
         "missing": 0,
         "inserted": 0,
         "skipped_existing": 0,
@@ -129,8 +134,18 @@ def backfill_candidate_vectors(
         "embedding_dim": embedding_dim,
     }
 
+    def emit_progress() -> None:
+        if progress_fn is None:
+            return
+        try:
+            progress_fn(dict(result))
+        except Exception:
+            # Progress reporting must never interrupt durable vector writes.
+            pass
+
     for row in rows:
         candidate_id = row["candidate_id"]
+        result["current_candidate"] = candidate_id
         if _has_vector(
             conn,
             candidate_id,
@@ -138,12 +153,18 @@ def backfill_candidate_vectors(
             embedding_dim=embedding_dim,
         ):
             result["skipped_existing"] += 1
+            result["processed"] += 1
+            emit_progress()
             continue
 
         result["missing"] += 1
         if limit is not None and result["inserted"] >= limit:
+            result["processed"] += 1
+            emit_progress()
             continue
         if dry_run:
+            result["processed"] += 1
+            emit_progress()
             continue
 
         text = build_candidate_embedding_text(row)
@@ -158,9 +179,15 @@ def backfill_candidate_vectors(
             )
             conn.commit()
             result["inserted"] += 1
+        except EmbeddingServiceUnavailable:
+            # A missing/unreachable model service is transient. Do not turn it
+            # into per-candidate failures or continue an unproductive scan.
+            raise
         except Exception as exc:
             result["failed"] += 1
             result["errors"].append({"candidate_id": candidate_id, "error": str(exc)})
+        result["processed"] += 1
+        emit_progress()
 
     return result
 
@@ -232,6 +259,10 @@ def backfill_missing_vectors(
         try:
             blob = _vector_blob(embedder(text), embedding_dim=embedding_dim)
             pending.append((candidate_id, blob))
+        except EmbeddingServiceUnavailable:
+            # Service outages must pause the resumable job, not permanently
+            # exclude every candidate that has not been reached yet.
+            raise
         except Exception as exc:
             report["failed"] += 1
             pending_exclusions.append(

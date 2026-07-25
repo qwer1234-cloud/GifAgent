@@ -623,6 +623,11 @@ uv run python scripts/preference_memory.py build
 # Default scope is effective like/dislike feedback targets.
 uv run python scripts/backfill_candidate_vectors.py --db dist/GifAgentUI/data/library.db
 
+Profile 页面中的 `Backfill Missing Vectors` 会在后台以单个任务运行，并每两秒刷新
+`Vector Backfill` 状态。任务开始前会检查 Ollama 端点和配置的 embedding 模型；服务不可用时
+会立即标记为 `paused`，不会对每个 GIF 逐个等待连接超时。每个向量独立提交，重启后只处理
+仍缺失的向量，不会修改已有评分、数据库记录或导出目录。
+
 # 发布画像
 uv run python scripts/preference_memory.py publish --profile-version <version>
 ```

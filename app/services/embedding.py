@@ -17,19 +17,78 @@ from app.config import get
 
 EMBED_BASE = get("embedding.base_url", "http://127.0.0.1:11434")
 EMBED_TEXT_MODEL = get("embedding.text_model")
+
+
+class EmbeddingServiceUnavailable(RuntimeError):
+    """Raised when the configured Ollama embedding service cannot be used."""
+
+
+EMBED_CONNECT_TIMEOUT = 3.0
+EMBED_READ_TIMEOUT = 60.0
+
+
+def _embedding_timeout(*, read: float = EMBED_READ_TIMEOUT) -> httpx.Timeout:
+    """Keep connection failures short while allowing model inference time."""
+    return httpx.Timeout(
+        read,
+        connect=EMBED_CONNECT_TIMEOUT,
+        write=10.0,
+        pool=5.0,
+    )
+
+
+def check_embedding_service(model: Optional[str] = None) -> dict:
+    """Verify Ollama is reachable and has the configured embedding model."""
+    target_model = model or EMBED_TEXT_MODEL
+    if not target_model:
+        raise EmbeddingServiceUnavailable("No embedding model is configured")
+
+    try:
+        resp = httpx.get(
+            f"{EMBED_BASE}/api/tags",
+            timeout=_embedding_timeout(read=5.0),
+        )
+        if resp.status_code != 200:
+            raise EmbeddingServiceUnavailable(
+                f"Embedding service unavailable at {EMBED_BASE} "
+                f"(HTTP {resp.status_code})"
+            )
+        payload = resp.json()
+    except EmbeddingServiceUnavailable:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise EmbeddingServiceUnavailable(
+            f"Embedding service unavailable at {EMBED_BASE}: {exc}"
+        ) from exc
+
+    model_names = {
+        str(item.get("name") or item.get("model"))
+        for item in payload.get("models", [])
+        if isinstance(item, dict) and (item.get("name") or item.get("model"))
+    }
+    if target_model not in model_names:
+        raise EmbeddingServiceUnavailable(
+            f"Embedding model {target_model!r} not found at {EMBED_BASE}"
+        )
+    return {"base_url": EMBED_BASE, "model": target_model, "models": sorted(model_names)}
 EMBED_IMAGE_MODEL = get("embedding.image_model")
 
 
 def _ollama_embed(text: str, model: Optional[str] = None) -> List[float]:
     """Call Ollama /api/embeddings. Returns a list of floats."""
     model = model or EMBED_TEXT_MODEL
-    resp = httpx.post(
-        f"{EMBED_BASE}/api/embeddings",
-        json={"model": model, "prompt": text},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["embedding"]
+    try:
+        resp = httpx.post(
+            f"{EMBED_BASE}/api/embeddings",
+            json={"model": model, "prompt": text},
+            timeout=_embedding_timeout(),
+        )
+        resp.raise_for_status()
+        return resp.json()["embedding"]
+    except httpx.HTTPError as exc:
+        raise EmbeddingServiceUnavailable(
+            f"Embedding service unavailable at {EMBED_BASE}: {exc}"
+        ) from exc
 
 
 def _ollama_describe_image(image_path: str, model: Optional[str] = None) -> Optional[str]:
