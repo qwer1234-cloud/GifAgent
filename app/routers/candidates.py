@@ -120,7 +120,7 @@ def _parse_clip_times(path: Path) -> tuple[float, float]:
 def _materialize_filesystem_candidates_for_folder(conn, folder: Path) -> int:
     """Create candidate rows for GIFs in the exact selected folder only."""
     existing_paths: set[Path] = set()
-    for row in _candidate_rows(conn, status="all"):
+    for row in _candidate_rows(conn, status="all", folder=folder):
         artifact_path = _resolve_artifact_path(row["artifact_path"])
         if artifact_path is not None and artifact_path.parent == folder:
             existing_paths.add(artifact_path)
@@ -192,17 +192,56 @@ def _row_payload(row) -> dict:
     }
 
 
-def _candidate_rows(conn, *, status: str):
-    where_sql = ""
+def _folder_artifact_prefixes(folder: Path | None) -> list[str]:
+    """Return DB path prefixes for a selected folder.
+
+    Older candidate rows use paths relative to the process working directory,
+    while newer rows may contain absolute paths. Include both forms and both
+    Windows/POSIX separators so the SQL narrowing remains backward compatible.
+    """
+    if folder is None:
+        return []
+
+    folder = Path(folder).resolve(strict=False)
+    bases = [str(folder)]
+    try:
+        relative = folder.relative_to(Path.cwd())
+    except ValueError:
+        relative = None
+    if relative is not None and str(relative) not in ("", "."):
+        bases.append(str(relative))
+
+    prefixes: list[str] = []
+    for base in bases:
+        normalized = base.replace("/", "\\").rstrip("\\")
+        for separator in ("\\", "/"):
+            prefix = f"{normalized}{separator}%"
+            if prefix not in prefixes:
+                prefixes.append(prefix)
+    return prefixes
+
+
+def _candidate_rows(conn, *, status: str, folder: Path | None = None):
+    where_parts: list[str] = []
     params: list[object] = []
     if status == "candidate":
-        where_sql = "WHERE c.status=? AND fg.candidate_id IS NULL"
+        where_parts.append("c.status=?")
         params.append(status)
+        where_parts.append("fg.candidate_id IS NULL")
     elif status == "favorited":
-        where_sql = "WHERE fg.candidate_id IS NOT NULL"
+        where_parts.append("fg.candidate_id IS NOT NULL")
     elif status != "all":
-        where_sql = "WHERE c.status=?"
+        where_parts.append("c.status=?")
         params.append(status)
+
+    folder_prefixes = _folder_artifact_prefixes(folder)
+    if folder_prefixes:
+        where_parts.append(
+            "(" + " OR ".join("c.artifact_path LIKE ?" for _ in folder_prefixes) + ")"
+        )
+        params.extend(folder_prefixes)
+
+    where_sql = f"WHERE {' AND '.join(where_parts)}" if where_parts else ""
 
     return conn.execute(
         f"""
@@ -299,7 +338,7 @@ def list_candidates(
         rows = []
         status_counts: dict[str, int] = {}
         moved_errors: list[dict] = []
-        for row in _candidate_rows(conn, status="all"):
+        for row in _candidate_rows(conn, status="all", folder=folder_path):
             row_folder = _folder_for_row(row, folder_path)
             if row_folder != folder_path:
                 continue

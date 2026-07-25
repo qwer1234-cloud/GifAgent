@@ -7,13 +7,56 @@
 from __future__ import annotations
 
 import json
+import threading
+from datetime import datetime, timezone
+from typing import Any
 
 import gradio as gr
 import httpx
 
+from app.services.embedding import (
+    EmbeddingServiceUnavailable,
+    check_embedding_service,
+)
 from app.ui.components.common import _format_api_error
 
 API_BASE = "http://127.0.0.1:8000"
+
+_BACKFILL_STATE_LOCK = threading.Lock()
+_BACKFILL_THREAD: threading.Thread | None = None
+_BACKFILL_STATE: dict[str, Any] = {
+    "status": "idle",
+    "total": 0,
+    "processed": 0,
+    "scanned": 0,
+    "missing": 0,
+    "inserted": 0,
+    "skipped_existing": 0,
+    "failed": 0,
+    "current_candidate": None,
+    "error": None,
+    "started_at": None,
+    "finished_at": None,
+}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _backfill_snapshot() -> dict[str, Any]:
+    with _BACKFILL_STATE_LOCK:
+        return dict(_BACKFILL_STATE)
+
+
+def _set_backfill_state(**updates: Any) -> None:
+    with _BACKFILL_STATE_LOCK:
+        _BACKFILL_STATE.update(updates)
+
+
+def get_backfill_status() -> str:
+    """Return the current vector-backfill state for the Gradio timer."""
+    return json.dumps(_backfill_snapshot(), ensure_ascii=False, indent=2)
 
 # ---------------------------------------------------------------------------
 # Profile helpers
@@ -102,26 +145,115 @@ def publish_profile_and_refresh(profile_version: str | None):
     return result, dropdown, status
 
 
-def backfill_profile_vectors():
-    """Create missing vectors only for candidates with effective feedback."""
-    conn = None
-    try:
-        from app.db import get_connection
-        from app.services.candidate_vectors import backfill_candidate_vectors
-        from app.services.embedding import compute_text_embedding
+def _run_backfill_sync(progress_fn=None) -> dict[str, Any]:
+    """Run one resumable backfill pass after a cheap service preflight."""
+    # Do this before opening SQLite so an unavailable Ollama endpoint cannot
+    # turn into one long timeout per candidate.
+    check_embedding_service()
 
-        conn = get_connection()
-        result = backfill_candidate_vectors(
+    from app.db import get_connection
+    from app.services.candidate_vectors import backfill_candidate_vectors
+    from app.services.embedding import compute_text_embedding
+
+    conn = get_connection()
+    try:
+        return backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
             only_feedback=True,
+            progress_fn=progress_fn,
         )
-        return json.dumps(result, indent=2)
-    except Exception as e:
-        return json.dumps({"error": f"{type(e).__name__}: {e}"}, indent=2)
     finally:
-        if conn is not None:
-            conn.close()
+        conn.close()
+
+
+def backfill_profile_vectors():
+    """Compatibility entry point for a synchronous backfill pass.
+
+    The active UI uses :func:`start_backfill_vectors` so the Gradio request
+    thread remains responsive.  Keeping this function synchronous preserves
+    callers and makes service outages explicit instead of hiding them in a
+    per-candidate error list.
+    """
+    try:
+        result = _run_backfill_sync()
+        return json.dumps(
+            {"status": "completed", **result},
+            ensure_ascii=False,
+            indent=2,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        return json.dumps(
+            {"status": "paused", "error": str(exc)},
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {"status": "failed", "error": f"{type(exc).__name__}: {exc}"},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+
+def _backfill_progress(progress: dict[str, Any]) -> None:
+    _set_backfill_state(**progress)
+
+
+def _backfill_worker() -> None:
+    _set_backfill_state(status="checking", error=None)
+    try:
+        result = _run_backfill_sync(progress_fn=_backfill_progress)
+        _set_backfill_state(
+            status="completed",
+            **result,
+            finished_at=_now_iso(),
+            error=None,
+        )
+    except EmbeddingServiceUnavailable as exc:
+        _set_backfill_state(
+            status="paused",
+            error=str(exc),
+            finished_at=_now_iso(),
+        )
+    except Exception as exc:
+        _set_backfill_state(
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+            finished_at=_now_iso(),
+        )
+
+
+def start_backfill_vectors() -> str:
+    """Start at most one background backfill worker and return its state."""
+    global _BACKFILL_THREAD
+    with _BACKFILL_STATE_LOCK:
+        if _BACKFILL_THREAD is not None and _BACKFILL_THREAD.is_alive():
+            return json.dumps(dict(_BACKFILL_STATE), ensure_ascii=False, indent=2)
+
+        _BACKFILL_STATE.update(
+            {
+                "status": "starting",
+                "total": 0,
+                "processed": 0,
+                "scanned": 0,
+                "missing": 0,
+                "inserted": 0,
+                "skipped_existing": 0,
+                "failed": 0,
+                "current_candidate": None,
+                "error": None,
+                "started_at": _now_iso(),
+                "finished_at": None,
+            }
+        )
+        _BACKFILL_THREAD = threading.Thread(
+            target=_backfill_worker,
+            name="vector-backfill",
+            daemon=True,
+        )
+        _BACKFILL_THREAD.start()
+        return json.dumps(dict(_BACKFILL_STATE), ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +291,7 @@ def build_profile_tab() -> dict:
         outputs=[build_output, publish_profile_dropdown, profile_status],
     )
     backfill_vectors_btn.click(
-        fn=backfill_profile_vectors,
+        fn=start_backfill_vectors,
         outputs=[backfill_vectors_output],
     ).then(
         fn=load_profile_publish_choices,
@@ -177,6 +309,11 @@ def build_profile_tab() -> dict:
 
     profile_status_timer = gr.Timer(10)
     profile_status_timer.tick(fn=get_profile_status, outputs=[profile_status])
+    backfill_status_timer = gr.Timer(2)
+    backfill_status_timer.tick(
+        fn=get_backfill_status,
+        outputs=[backfill_vectors_output],
+    )
 
     return {
         "profile_status": profile_status,
@@ -189,4 +326,5 @@ def build_profile_tab() -> dict:
         "backfill_vectors_output": backfill_vectors_output,
         "publish_output": publish_output,
         "profile_status_timer": profile_status_timer,
+        "backfill_status_timer": backfill_status_timer,
     }

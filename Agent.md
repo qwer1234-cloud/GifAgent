@@ -457,6 +457,13 @@ By default the script embeds only candidates with effective like/dislike
 feedback. Use `--all-candidates` to fill every `candidate_gifs` row and
 `--dry-run` to count missing vectors without calling Ollama.
 
+The Candidate Review Profile panel runs this backfill in a single background
+worker and refreshes its progress every two seconds. It first checks the
+configured Ollama endpoint/model; if the service is unavailable, the job is
+marked `paused` immediately instead of waiting once per candidate. Each vector
+is committed independently, so restarting after Ollama recovers resumes from
+the remaining missing rows without changing existing ratings or exports.
+
 Profile publishing is available in the Candidate Review Profile panel. Click
 `Refresh Profiles`, choose a completed profile version, then click
 `Publish Selected Profile`. The panel calls

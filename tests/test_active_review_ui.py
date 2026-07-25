@@ -35,6 +35,7 @@ class TestReviewTabModule:
         assert "gallery" in components
         assert "candidate_id_input" in components
         assert "folder_dropdown" in components
+        assert "remaining_folder_count" in components
 
 
 class TestProfileTabModule:
@@ -61,6 +62,7 @@ class TestProfileTabModule:
         assert "build_btn" in components
         assert "publish_btn" in components
         assert "publish_profile_dropdown" in components
+        assert "backfill_status_timer" in components
 
     def test_profile_tab_preview_button_separate_from_publish(self):
         """Profile tab has separate preview and publish buttons."""
