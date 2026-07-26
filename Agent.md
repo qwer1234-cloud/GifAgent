@@ -18,25 +18,46 @@ Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/video
 - API key env var: `DEEPSEEK_API_KEY` (sk- prefix, DeepSeek native key)
 - LLM provider is `openai_compatible` (NOT anthropic_compatible — that was the old Ark setup)
 
-## Key Parameters (scripts/test_video_adaptive.py)
+## Key Parameters (`configs/models.yaml` → `adaptive`)
+
+Defaults below are the **adult-candidate v3** preset used by
+`scripts/test_video_adaptive.py` via `extract_config()`:
 
 ```python
-SAMPLE_INTERVAL = 10          # coarse sampling every N seconds
-MERGE_GAP = 15                # max gap to merge adjacent frames
-MERGE_SCORE_THRESHOLD = 0.50  # only merge when BOTH frames >= this
-WORTHINESS_THRESHOLD = 0.50   # min score to keep a frame
-REFINE_THRESHOLD = 0.65       # min score to trigger refinement sampling
-REFINE_RADIUS = 10            # seconds around high-score frame
-REFINE_INTERVAL = 10          # fine sampling interval
+SAMPLE_INTERVAL = 7           # coarse sampling every N seconds
+MERGE_GAP = 15                # max gap to continue a merge group
+MERGE_SCORE_THRESHOLD = 0.50  # both frames must be >= this to merge
+MAX_MERGE_SPAN_S = 24         # hard cap: flush group before span exceeds this
+MERGE_PEAK_THRESHOLD = 0.55   # multi-frame groups below this demote to best single
+WORTHINESS_THRESHOLD = 0.42   # min score to keep a frame
+REFINE_THRESHOLD = 0.55       # min score to trigger refinement sampling
+REFINE_RADIUS = 15            # seconds around high-score frame
+REFINE_INTERVAL = 5           # fine sampling interval
+MIN_BRIGHTNESS = 10           # grayscale mean; 0 disables dark prefilter
 OUTPUT_RATIO = 0.45           # fraction of deduped clips to export
-MAX_OUTPUT = 40               # hard cap per video
-EMBED_SIM_THRESHOLD = 0.90    # text embedding duplicate threshold
-TEMPORAL_DEDUP_MIN_GAP_S = 12 # keep highest score within peak-time window
+MAX_OUTPUT = 35               # hard cap per video (0 = unlimited in direct mode)
+EMBED_SIM_THRESHOLD = 0.88    # text embedding duplicate threshold
+TEMPORAL_DEDUP_MIN_GAP_S = 15 # keep highest score within peak-time window
 POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
 VLM_OPTIONS = {"temperature": 0.50, "top_p": 0.90, "top_k": 40}
 ```
 
-**Score-gated merge logic**: adjacent frames merge only when `gap <= MERGE_GAP` AND both frames' `gif_worthiness >= MERGE_SCORE_THRESHOLD`. This produces a mix of long multi-frame GIFs (sustained good moments) + short single-frame GIFs (isolated moments).
+Preset file: `configs/models.adult_candidate.yaml` (mirrors the same values).
+
+**Region-aware merge** (`app/services/clip_merge.py`): adjacent frames merge
+when `gap <= MERGE_GAP` AND both scores `>= MERGE_SCORE_THRESHOLD`, but groups
+are flushed before `end - start` would exceed `MAX_MERGE_SPAN_S`. Multi-frame
+groups whose peak score is below `MERGE_PEAK_THRESHOLD` demote to a single
+best-frame clip. This prevents dense high-score runs from collapsing into one
+mega-clip.
+
+**Adult scoring prompt**: set `GIFAGENT_SCORE_PROMPT_MODE=adult` to use the
+adult-friendly `SCORE_PROMPT_ADULT` (neutral GIF potential; does not treat
+low-light alone as BAD). Default / unset keeps the cinematic `SCORE_PROMPT`.
+A/B helper: `scripts/ab_lil_karina_run.ps1 -Phase optimized_v3`.
+
+**Dark-frame prefilter**: frames with grayscale mean `<= MIN_BRIGHTNESS` are
+dropped before VLM (configurable; set `0` to disable).
 
 **Duplicate reduction**: each adaptive run clears the target video output
 folder before exporting new GIFs, then applies text-embedding dedup followed by
@@ -116,6 +137,7 @@ app/
 │   ├── preference_*.py        # Preference Memory subsystem (6 tables)
 │   ├── reranker.py            # Score-gated preference reranker
 │   ├── provenance.py          # Provenance dataclass (git commit, config hash, model versions)
+│   ├── clip_merge.py          # Region-aware adaptive frame→clip merge
 │   └── candidates.py          # Candidate GIF materialization
 ├── quality_lab/               # Phase 2: Quality Lab benchmarking (see below)
 ├── task_engine/               # Phase 1: Reliable task processing engine (see below)
@@ -132,11 +154,13 @@ scripts/
 ├── smoke_active_preference.py # Smoke test for active preference learning lifecycle
 ├── smoke_quality_lab.py       # Smoke test for Quality Lab lifecycle
 ├── test_video_adaptive.py     # Core: adaptive GIF extraction (4 phases)
+├── ab_lil_karina_run.ps1      # Lil Karina A/B runner (baseline / optimized_v*)
 ├── test_video_batch.py        # Batch wrapper with checkpoint
 ├── pipeline_stage2.py         # Post-VLM LLM synthesis + FAISS rebuild
 └── vlm_loop.py                # Production VLM processing loop
 configs/
-└── models.yaml                # Main config (models, paths, preference_memory flag, task_engine)
+├── models.yaml                # Main config (models, paths, preference_memory, task_engine)
+└── models.adult_candidate.yaml# Adult adaptive preset mirror
 ```
 
 ## Phase 1: Reliable Task Engine
@@ -421,11 +445,11 @@ logs — state is derived solely from the task client. Key methods:
 
 ## test_video_adaptive.py — 4 Phases
 
-1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter
+1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter (`min_brightness`)
 2. **VLM scoring**: llava:13b scores each frame (0.0-1.0) → refinement around high-score regions
-3. **RAG + LLM synthesis**: FAISS search per clip → DeepSeek synthesizes summary/tags (non-fatal)
+3. **RAG + LLM synthesis**: region-aware merge (`clip_merge`) → FAISS search per clip → DeepSeek synthesizes summary/tags (non-fatal)
 3.5. **9-grid thumbnail**: select top-9 scored frames with pHash dedup (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` subfolder
-4. **GIF export**: ffmpeg palette two-pass, ranked by gif_worthiness
+4. **GIF export**: embedding + temporal dedup → rank by gif_worthiness → ffmpeg palette two-pass
 
 **Non-fatal LLM**: if LLM fails, GIFs still export. Synthesis metadata is skipped.
 
@@ -665,6 +689,20 @@ uv run pytest tests/test_workbench_performance.py -v
 | Candidate review loading | full candidate list + full GIF gallery | paged API + cached static thumbnails | much faster Web/GUI review |
 | Candidate click mapping | page index remapped into unfiltered list | current-page `gr.State` item list | Like/Dislike updates the clicked candidate |
 | **GIF output per 3 videos** | **5** | **306** | **61x increase** |
+
+## Adult Adaptive Tuning (2026-07-25)
+
+Lil Karina A/B (`scripts/ab_lil_karina_run.ps1`) on 3 videos:
+
+| Phase | GIF total | Notes |
+|-------|----------:|-------|
+| baseline (old cinematic defaults) | 15 | sample 10s, worthiness 0.50, embed 0.90 |
+| optimized v1 (dense + soft merge) | 3 | mega-clip collapse (`merge_score` too low) |
+| optimized v2 (region merge, loose dedup) | 94 | `max_merge_span_s=24`; too many near-dupes |
+| **optimized v3 (current default)** | **50** | embed 0.88, temporal 15s, ratio 0.45, max 35 |
+
+Also added: configurable `min_brightness`, `SCORE_PROMPT_ADULT` via
+`GIFAGENT_SCORE_PROMPT_MODE=adult`, and `app/services/clip_merge.py`.
 
 ## Production Release Gate (2026-07-18)
 

@@ -33,6 +33,7 @@ from app.db import init_db, get_connection
 from app.config import load_config, get
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
+from app.services.clip_merge import merge_scored_frames_into_clips
 from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
 from app.services.export_cleanup import (
     ExportDirectoryBusyError,
@@ -78,6 +79,36 @@ SCORE_PROMPT = (
     "admiration|intimacy|vulnerability|longing|desire|other\n"
     "NEVER output 'what you see', '2-3 observations', or pipe-delimited emotions."
 )
+
+# Adult-friendly scoring prompt applied in optimized A/B phase via
+# GIFAGENT_SCORE_PROMPT_MODE=adult (see get_score_prompt()).
+SCORE_PROMPT_ADULT = (
+    "Evaluate this video frame for short-GIF potential. Use the full 0.0-1.0 scale.\n"
+    "Output ONLY valid JSON with real, specific content. No template text.\n"
+    "Adult intimate content and cinematic content are equally eligible for high scores.\n\n"
+    '{"caption":"describe actual visible subjects, action, lighting, and composition",'
+    '"emotional_core":"one lowercase word","gif_worthiness":0.5,'
+    '"aesthetic_notes":["2-3 concrete visual observations"],'
+    '"reason":"why this specific moment works as a GIF (or why not)"}\n\n'
+    "gif_worthiness scale:\n"
+    "  0.0-0.2: BAD - uniform black/no visible subject, severe blur, empty static shot.\n"
+    "  0.3-0.5: AVERAGE - subject present but weak action/expression or flat framing.\n"
+    "  0.6-0.8: GOOD - clear subject, readable action or expression, strong moment.\n"
+    "  0.9-1.0: EXCELLENT - peak action/expression, clear subject, high GIF appeal.\n"
+    "Moody low-light with a clear subject can score HIGH. Do NOT penalize darkness alone.\n\n"
+    "CRITICAL: emotional_core = EXACTLY ONE lowercase word from: "
+    "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|"
+    "admiration|intimacy|vulnerability|longing|desire|other\n"
+    "NEVER output 'what you see', '2-3 observations', or pipe-delimited emotions."
+)
+
+
+def get_score_prompt() -> str:
+    """Return scoring prompt; adult mode via GIFAGENT_SCORE_PROMPT_MODE=adult."""
+    mode = (os.environ.get("GIFAGENT_SCORE_PROMPT_MODE") or "").strip().lower()
+    if mode in ("adult", "optimized", "nsfw"):
+        return SCORE_PROMPT_ADULT
+    return SCORE_PROMPT
 
 
 def safe_worth(value):
@@ -442,6 +473,16 @@ def extract_config(config_data: dict) -> dict:
         "merge_score_threshold": float(
             adaptive.get("merge_score_threshold", 0.55)
         ),
+        # Hard cap so dense high-score runs cannot collapse into one mega-clip.
+        "max_merge_span_s": float(adaptive.get("max_merge_span_s", 24)),
+        # Multi-frame groups whose peak is below this are demoted to singles.
+        # Defaults to refine_threshold when omitted.
+        "merge_peak_threshold": float(
+            adaptive.get(
+                "merge_peak_threshold",
+                adaptive.get("refine_threshold", 0.55),
+            )
+        ),
         "embed_sim_threshold": float(
             adaptive.get("embedding_dedup_threshold", 0.94)
         ),
@@ -470,6 +511,8 @@ def extract_config(config_data: dict) -> dict:
         "vlm_temperature": float(adaptive.get("vlm_temperature", 0.65)),
         "vlm_top_p": float(adaptive.get("vlm_top_p", 0.95)),
         "vlm_top_k": int(adaptive.get("vlm_top_k", 60)),
+        # 0 disables the dark-frame prefilter. Default 25 preserves legacy behavior.
+        "min_brightness": float(adaptive.get("min_brightness", 25)),
     }
 
 
@@ -552,12 +595,18 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
     MERGE_GAP = cfg["merge_gap"]
     MERGE_SCORE_THRESHOLD = cfg["merge_score_threshold"]
+    MAX_MERGE_SPAN_S = float(cfg.get("max_merge_span_s", 24))
+    MERGE_PEAK_THRESHOLD = float(
+        cfg.get("merge_peak_threshold", cfg.get("refine_threshold", 0.55))
+    )
     EMBED_SIM_THRESHOLD = cfg["embed_sim_threshold"]
     EMBED_DEDUP_ENABLED = cfg["embed_dedup_enabled"]
     TEMPORAL_DEDUP_ENABLED = cfg["temporal_dedup_enabled"]
     TEMPORAL_DEDUP_MIN_GAP_S = cfg["temporal_dedup_min_gap_s"]
     OUTPUT_RATIO = cfg["output_ratio"]
     MAX_OUTPUT = cfg["max_output"]
+    # 0 disables dark filter; default 25 matches legacy hard-coded threshold.
+    MIN_BRIGHTNESS = float(cfg.get("min_brightness", 25))
     GIF_FPS = cfg["gif_fps"]
     GIF_MAX_WIDTH = cfg["gif_max_width"]
     CLEAR_OUTPUT_DIR = cfg["clear_output_dir"]
@@ -606,6 +655,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     print(f"  Sampling {len(timestamps)} timestamps")
 
     sample_frames = []
+    dark_dropped = 0
     for i, ts in enumerate(timestamps):
         out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
         subprocess.run(
@@ -630,14 +680,19 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 img = Image.open(out_path).convert("L")
                 brightness = sum(img.getdata()) / max(1, img.width * img.height)
                 img.close()
-                if brightness > 25:
+                if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
                     sample_frames.append({"path": out_path, "timestamp": ts})
+                else:
+                    dark_dropped += 1
             except Exception:
                 pass
         if (i + 1) % 50 == 0:
             print(f"  [{i+1}/{len(timestamps)}] extracted, {len(sample_frames)} kept")
 
-    print(f"  Frames after dark filter: {len(sample_frames)}")
+    print(
+        f"  Frames after dark filter: {len(sample_frames)} "
+        f"(min_brightness={MIN_BRIGHTNESS}, dropped={dark_dropped})"
+    )
 
     # ---- Phase 2: VLM scoring ------------------------------------------
     print(f"\n[2/4] VLM scoring ({len(sample_frames)} frames)...")
@@ -661,7 +716,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                     f"{OLLAMA_BASE}/api/generate",
                     json={
                         "model": VLM_MODEL,
-                        "prompt": SCORE_PROMPT,
+                        "prompt": get_score_prompt(),
                         "images": [img_b64],
                         "stream": False,
                         "options": VLM_OPTIONS,
@@ -759,7 +814,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                     img = Image.open(out_path).convert("L")
                     brightness = sum(img.getdata()) / max(1, img.width * img.height)
                     img.close()
-                    if brightness > 25:
+                    if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
                         refine_frames.append({"path": out_path, "timestamp": ts})
                 except Exception:
                     pass
@@ -776,7 +831,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                         f"{OLLAMA_BASE}/api/generate",
                         json={
                             "model": VLM_MODEL,
-                            "prompt": SCORE_PROMPT,
+                            "prompt": get_score_prompt(),
                             "images": [img_b64],
                             "stream": False,
                             "options": VLM_OPTIONS,
@@ -811,47 +866,19 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     # ---- Phase 2.6: Merge adjacent frames into clip groups --------------
     print(f"\n[2.6/4] Merging adjacent frames into clips...")
 
-    scored.sort(key=lambda x: x["timestamp"])
+    clips = merge_scored_frames_into_clips(
+        scored,
+        merge_gap=MERGE_GAP,
+        merge_score_threshold=MERGE_SCORE_THRESHOLD,
+        max_merge_span_s=MAX_MERGE_SPAN_S,
+        peak_threshold=MERGE_PEAK_THRESHOLD,
+    )
 
-    clips = []
-    current_group = [scored[0]]
-
-    for r in scored[1:]:
-        gap = r["timestamp"] - current_group[-1]["timestamp"]
-        both_good = (
-            r["gif_worthiness"] >= MERGE_SCORE_THRESHOLD
-            and current_group[-1]["gif_worthiness"] >= MERGE_SCORE_THRESHOLD
-        )
-        if gap <= MERGE_GAP and both_good:
-            current_group.append(r)
-        else:
-            best = max(current_group, key=lambda x: x["gif_worthiness"])
-            clips.append(
-                {
-                    "start_ts": current_group[0]["timestamp"],
-                    "end_ts": current_group[-1]["timestamp"],
-                    "best_frame": best,
-                    "frame_count": len(current_group),
-                    "gif_worthiness": best["gif_worthiness"],
-                    "emotional_core": best.get("emotional_core", "?"),
-                }
-            )
-            current_group = [r]
-
-    if current_group:
-        best = max(current_group, key=lambda x: x["gif_worthiness"])
-        clips.append(
-            {
-                "start_ts": current_group[0]["timestamp"],
-                "end_ts": current_group[-1]["timestamp"],
-                "best_frame": best,
-                "frame_count": len(current_group),
-                "gif_worthiness": best["gif_worthiness"],
-                "emotional_core": best.get("emotional_core", "?"),
-            }
-        )
-
-    print(f"  Merged into {len(clips)} clips (merge_gap={MERGE_GAP}s)")
+    print(
+        f"  Merged into {len(clips)} clips "
+        f"(merge_gap={MERGE_GAP}s, max_span={MAX_MERGE_SPAN_S:.0f}s, "
+        f"peak>={MERGE_PEAK_THRESHOLD:.2f})"
+    )
     multi_frame = sum(1 for c in clips if c["frame_count"] > 1)
     print(f"  Multi-frame clips (crossing boundaries): {multi_frame}")
     single_frame = sum(1 for c in clips if c["frame_count"] == 1)
@@ -1294,10 +1321,16 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         "worthiness_distribution": bins,
         "synthesis": synthesis,
         "merge_gap": MERGE_GAP,
+        "merge_score_threshold": MERGE_SCORE_THRESHOLD,
+        "max_merge_span_s": MAX_MERGE_SPAN_S,
+        "merge_peak_threshold": MERGE_PEAK_THRESHOLD,
         "refine_radius": REFINE_RADIUS,
         "refine_interval": REFINE_INTERVAL,
         "output_ratio": OUTPUT_RATIO,
         "max_output": MAX_OUTPUT,
+        "min_brightness": MIN_BRIGHTNESS,
+        "dark_dropped": dark_dropped,
+        "score_prompt_mode": (os.environ.get("GIFAGENT_SCORE_PROMPT_MODE") or "default"),
         "embed_dedup_threshold": EMBED_SIM_THRESHOLD,
         "embed_dedup_enabled": EMBED_DEDUP_ENABLED,
         "temporal_dedup_enabled": TEMPORAL_DEDUP_ENABLED,
@@ -1879,6 +1912,7 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     total_duration = discover.get("duration_s", 0)
     SAMPLE_INTERVAL = cfg["sample_interval"]
     MAX_DURATION = cfg["max_duration"]
+    MIN_BRIGHTNESS = float(cfg.get("min_brightness", 25))
 
     # P1-3: Get stage_id from config for stable artifact_id computation.
     config_data = config_data or {}
@@ -1890,6 +1924,7 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     print(f"  Sampling {len(timestamps)} timestamps")
 
     sample_frames = []
+    dark_dropped = 0
     for i, ts in enumerate(timestamps):
         out_path = os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
         subprocess.run(
@@ -1902,19 +1937,26 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 img = Image.open(out_path).convert("L")
                 brightness = sum(img.getdata()) / max(1, img.width * img.height)
                 img.close()
-                if brightness > 25:
+                if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
                     sample_frames.append({"path": out_path, "timestamp": ts})
+                else:
+                    dark_dropped += 1
             except Exception:
                 pass
         if (i + 1) % 50 == 0:
             print(f"  [{i + 1}/{len(timestamps)}] extracted, {len(sample_frames)} kept")
 
-    print(f"  Frames after dark filter: {len(sample_frames)}")
+    print(
+        f"  Frames after dark filter: {len(sample_frames)} "
+        f"(min_brightness={MIN_BRIGHTNESS}, dropped={dark_dropped})"
+    )
 
     manifest = {
         "schema_version": 1,
         "stage": "sample",
         "frame_count": len(sample_frames),
+        "dark_dropped": dark_dropped,
+        "min_brightness": MIN_BRIGHTNESS,
         "timestamps": [f["timestamp"] for f in sample_frames],
         "frame_paths": [f["path"] for f in sample_frames],
         "sample_interval": SAMPLE_INTERVAL,
@@ -2088,7 +2130,7 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
         attempted_count += 1
         payload, error = _score_vlm_frame(
             base_url=vlm_base_url, model=vlm_model,
-            image_bytes=img_data, prompt=SCORE_PROMPT,
+            image_bytes=img_data, prompt=get_score_prompt(),
             options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
             timestamp=ts, frame_path=fpath,
             retry_delay_s=vlm_retry_delay,
@@ -2172,6 +2214,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     REFINE_RADIUS = cfg["refine_radius"]
     REFINE_INTERVAL = cfg["refine_interval"]
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
+    MIN_BRIGHTNESS = float(cfg.get("min_brightness", 25))
 
     # P0 (sixth-review §4): validate provider via shared helper, then use
     # the shared ``_score_vlm_frame`` for every scoring request so VLM and
@@ -2240,10 +2283,10 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 refine_extraction_failed += 1
                 print(f"  refine extract FAILED ts={ts}: decode {exc}")
                 continue
-            if brightness <= 25:
+            if brightness <= MIN_BRIGHTNESS and MIN_BRIGHTNESS > 0:
                 refine_extraction_failed += 1
                 print(f"  refine extract FAILED ts={ts}: "
-                      f"brightness={brightness:.1f} below 25")
+                      f"brightness={brightness:.1f} below {MIN_BRIGHTNESS}")
                 continue
             refine_frames.append({"path": out_path, "timestamp": ts})
             refine_extracted += 1
@@ -2264,7 +2307,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
             refine_attempted += 1
             payload, error = _score_vlm_frame(
                 base_url=vlm_base_url, model=vlm_model,
-                image_bytes=img_data, prompt=SCORE_PROMPT,
+                image_bytes=img_data, prompt=get_score_prompt(),
                 options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
                 timestamp=rf["timestamp"], frame_path=rf["path"],
                 retry_delay_s=vlm_retry_delay,
@@ -2332,6 +2375,10 @@ def _stage_synthesize(work_dir: str, cfg: dict, inputs: dict) -> dict:
 
     MERGE_GAP = cfg["merge_gap"]
     MERGE_SCORE_THRESHOLD = cfg["merge_score_threshold"]
+    MAX_MERGE_SPAN_S = float(cfg.get("max_merge_span_s", 24))
+    MERGE_PEAK_THRESHOLD = float(
+        cfg.get("merge_peak_threshold", cfg.get("refine_threshold", 0.55))
+    )
 
     # Build clip objects from scored frames
     clips_data = []
@@ -2343,9 +2390,6 @@ def _stage_synthesize(work_dir: str, cfg: dict, inputs: dict) -> dict:
             "emotional_core": sf.get("emotional_core", "?"),
             "caption": sf.get("caption", ""),
         })
-
-    # Sort by timestamp
-    clips_data.sort(key=lambda x: x["timestamp"])
 
     if not clips_data:
         manifest = {
@@ -2362,46 +2406,33 @@ def _stage_synthesize(work_dir: str, cfg: dict, inputs: dict) -> dict:
             "_artifacts": [_make_artifact(manifest_path, "synthesize_manifest")],
         }
 
-    # Merge adjacent frames into clips
+    # Region-aware merge (shared with direct mode)
+    merged = merge_scored_frames_into_clips(
+        clips_data,
+        merge_gap=MERGE_GAP,
+        merge_score_threshold=MERGE_SCORE_THRESHOLD,
+        max_merge_span_s=MAX_MERGE_SPAN_S,
+        peak_threshold=MERGE_PEAK_THRESHOLD,
+    )
     clips = []
-    current_group = [clips_data[0]]
-
-    for r in clips_data[1:]:
-        gap = r["timestamp"] - current_group[-1]["timestamp"]
-        both_good = (
-            r["gif_worthiness"] >= MERGE_SCORE_THRESHOLD
-            and current_group[-1]["gif_worthiness"] >= MERGE_SCORE_THRESHOLD
-        )
-        if gap <= MERGE_GAP and both_good:
-            current_group.append(r)
-        else:
-            best = max(current_group, key=lambda x: x["gif_worthiness"])
-            clips.append({
-                "start_ts": current_group[0]["timestamp"],
-                "end_ts": current_group[-1]["timestamp"],
-                "best_frame_ts": best["timestamp"],
-                "best_frame_path": best["path"],
-                "frame_count": len(current_group),
-                "gif_worthiness": best["gif_worthiness"],
-                "emotional_core": best.get("emotional_core", "?"),
-                "caption": best.get("caption", ""),
-            })
-            current_group = [r]
-
-    if current_group:
-        best = max(current_group, key=lambda x: x["gif_worthiness"])
+    for clip in merged:
+        best = clip["best_frame"]
         clips.append({
-            "start_ts": current_group[0]["timestamp"],
-            "end_ts": current_group[-1]["timestamp"],
+            "start_ts": clip["start_ts"],
+            "end_ts": clip["end_ts"],
             "best_frame_ts": best["timestamp"],
-            "best_frame_path": best["path"],
-            "frame_count": len(current_group),
-            "gif_worthiness": best["gif_worthiness"],
-            "emotional_core": best.get("emotional_core", "?"),
+            "best_frame_path": best.get("path", ""),
+            "frame_count": clip["frame_count"],
+            "gif_worthiness": clip["gif_worthiness"],
+            "emotional_core": clip.get("emotional_core", "?"),
             "caption": best.get("caption", ""),
         })
 
-    print(f"  Merged into {len(clips)} clips (merge_gap={MERGE_GAP}s)")
+    print(
+        f"  Merged into {len(clips)} clips "
+        f"(merge_gap={MERGE_GAP}s, max_span={MAX_MERGE_SPAN_S:.0f}s, "
+        f"peak>={MERGE_PEAK_THRESHOLD:.2f})"
+    )
 
     # LLM synthesis (non-fatal)
     for clip in clips:
@@ -2542,9 +2573,10 @@ def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -
         deduped_clips = temporal_dedup_clips(deduped_clips, min_gap_s=TEMPORAL_DEDUP_MIN_GAP_S)
         print(f"  Temporal dedup: {len(deduped_clips)} clips remain")
 
-    # Limit output
+    # Limit output. max_output<=0 means unlimited (same as direct mode).
     output_count = max(1, int(len(deduped_clips) * OUTPUT_RATIO))
-    output_count = min(output_count, MAX_OUTPUT)
+    if MAX_OUTPUT > 0:
+        output_count = min(output_count, MAX_OUTPUT)
     deduped_clips = sorted(deduped_clips, key=lambda c: c["gif_worthiness"], reverse=True)
     deduped_clips = deduped_clips[:output_count]
 

@@ -1,0 +1,26 @@
+# Adult-candidate adaptive overrides (v3: tighter near-dupe control).
+adaptive:
+  sample_interval: 7
+  merge_gap: 15
+  merge_score_threshold: 0.50
+  max_merge_span_s: 24
+  merge_peak_threshold: 0.55
+  worthiness_threshold: 0.42
+  refine_threshold: 0.55
+  refine_radius: 15
+  refine_interval: 5
+  max_duration: 10
+  min_brightness: 10
+  output_ratio: 0.45
+  max_output: 35
+  vlm_temperature: 0.50
+  vlm_top_p: 0.90
+  vlm_top_k: 40
+  gif_fps: 24
+  gif_max_width: 720
+  clear_output_dir: true
+  potplayer_pbf_enabled: true
+  embedding_dedup_enabled: true
+  embedding_dedup_threshold: 0.88
+  temporal_dedup_enabled: true
+  temporal_dedup_min_gap_s: 15
