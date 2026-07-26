@@ -12,7 +12,7 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 - **质量门禁**：统一的 JSON 解析器 + placeholder 检测 + Pydantic 模型校验，placeholder 率从 89% 降至 <1%
 - **向量索引**：基于 nomic-embed-text 的 FAISS 语义向量库，支持文本到 GIF 的跨模态检索（8109 向量 / 9221 媒体）
 - **RAG 增强**：两阶段自适应 GIF 提取，per-frame VLM 评分 + 时域 clip 合并 + FAISS 相似 GIF 检索
-- **智能采样**：15s 间隔粗采样 → 高分区域 10s 细采样，merge_gap=6s 自动合并相邻高分帧
+- **智能采样**：7s 粗采样 → 高分区域 5s 细采样；区域 merge（`max_merge_span_s=24`）+ embedding/时域去重后导出
 - **断点恢复**：VLM 处理循环自动恢复、per-frame DB commit、每 50 batch 模型重启防降速
 - **Preference Memory**：候选 GIF 物化 → 人工反馈收集 → 偏好画像构建 → 重排序，含 holdout 评估门禁
 - **批量处理**：视频目录批量处理 + checkpoint 断点续跑，支持 200+ 视频无人值守处理
@@ -150,7 +150,7 @@ uv run python scripts/inherit_and_index.py
 ### 第三步：自适应 GIF 提取（RAG 增强）
 
 ```bash
-# 单视频处理：15s 粗采样 → VLM 评分 → 10s 细采样 → clip 合并
+# 单视频处理：7s 粗采样 → VLM 评分 → 细采样 → 区域 merge → 去重导出
 uv run python scripts/test_video_adaptive.py --video <path/to/video.mp4>
 
 # 批量处理（带 checkpoint 断点续跑）
@@ -161,7 +161,7 @@ uv run python scripts/test_video_batch.py --dir "C:/path/to/videos"
 ```
 
 输出：
-- `data/exports/adaptive_test/{video_name}/`：每个视频的候选 GIF 片段（merge_gap=6s 合并）
+- `data/exports/adaptive_test/{video_name}/`：每个视频的候选 GIF 片段（区域 merge，默认 `max_merge_span_s=24`）
 - `data/exports/adaptive_test/{video_name}/Sample/`：9 宫格缩略图（`{video_name}_grid.jpg`）+ 9 张独立帧图（`{video_name}_sample_*.jpg`）
 - GIF 命名格式：`{video_name}@@@{seq}_{start_ms}ms-{end_ms}ms.gif`（旧的秒格式仅用于兼容读取）
 - `data/batch_checkpoint.json`：批量处理断点文件（含视频指纹，用于跨文件名去重）
@@ -247,16 +247,20 @@ history, GIF exports, labels, Preference Memory, databases, or settings edited
 through the UI. Do not replace only `GifAgentUI.exe`; the matching `_internal/`
 runtime must be released with it.
 
-### Adaptive duplicate reduction tuning (2026-07-05)
+### Adaptive duplicate reduction tuning (2026-07-05 / 2026-07-25)
 
 - Adaptive export now clears generated artifacts in the target video output
   folder before reprocessing, preventing stale GIFs from earlier runs from
   mixing with the new run.
-- The default adaptive config is stricter: `worthiness_threshold=0.50`,
-  `refine_threshold=0.65`, `output_ratio=0.45`, `max_output=40`.
-- Embedding dedup is enabled at `embedding_dedup_threshold=0.90`, then a
-  temporal dedup pass keeps only the highest-scored clip within a 12s peak-time
-  window.
+- Current adult-candidate defaults (`configs/models.yaml`):
+  `sample_interval=7`, `worthiness_threshold=0.42`, `refine_threshold=0.55`,
+  `max_merge_span_s=24`, `merge_peak_threshold=0.55`, `output_ratio=0.45`,
+  `max_output=35`, `min_brightness=10`.
+- Region-aware merge lives in `app/services/clip_merge.py` (span cap + peak
+  demotion) so dense high-score timelines do not collapse into one mega-clip.
+- Embedding dedup uses `embedding_dedup_threshold=0.88`, then temporal dedup
+  keeps the highest-scored clip within a 15s peak-time window.
+- Optional adult VLM scoring prompt: `GIFAGENT_SCORE_PROMPT_MODE=adult`.
 - Result JSON records both `embedding_deduped_clips` and final `deduped_clips`
   so each run shows how much was removed.
 
@@ -327,10 +331,10 @@ v2 架构采用两阶段设计避免 RAG 回音壁效应：
 2. **Pass 2**：每帧 caption → nomic-embed-text 向量化 → FAISS 检索 top-5 相似收藏 → 作为 RAG 上下文注入 LLM 综合
 
 自适应提取扩展（`test_video_adaptive.py`）：
-- 15s 间隔粗采样全片 → per-frame VLM 评分
-- 高分区域（>0.5）±15s 范围内 10s 细采样
-- 相邻高分帧按 merge_gap=6s 合并为连贯片段
-- FAISS embedding 去重（cosine > 0.95）避免重复导出
+- 7s 间隔粗采样全片 → per-frame VLM 评分（可配置 `min_brightness` 暗场预过滤）
+- 高分区域（≥ `refine_threshold`，默认 0.55）±`refine_radius` 内按 `refine_interval` 细采样
+- 区域 merge：双端门槛 + `max_merge_span_s` 硬封顶 + 弱峰值降级为单帧
+- Embedding 去重（默认 cosine ≥ 0.88）+ 时域去重（默认峰值间隔 15s）后按 `output_ratio` 导出
 
 ### 断点恢复机制
 
@@ -379,6 +383,7 @@ GifAgent/
 │   │   ├── llm_client.py             # LLM 客户端（Anthropic-compatible）
 │   │   ├── scenario.py               # 场景标签管理
 │   │   ├── video_fingerprint.py      # 视频指纹（时长+关键帧pHash，去重用）
+│   │   ├── clip_merge.py             # 自适应区域 merge（span 封顶 + 峰值降级）
 │   │   ├── candidates.py             # 候选 GIF 物化服务
 │   │   ├── preference_schema.py      # Preference Memory 数据库 DDL
 │   │   ├── preference_events.py      # 反馈事件记录服务
