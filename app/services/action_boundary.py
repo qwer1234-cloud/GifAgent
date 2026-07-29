@@ -170,18 +170,20 @@ def _repair_non_strict_config(
         values["max_duration_s"] = defaults.max_duration_s
     if values["fallback_mode"] != "fixed_window":
         values["fallback_mode"] = defaults.fallback_mode
-    if values["preferred_min_duration_s"] > values["preferred_max_duration_s"]:
-        values["preferred_min_duration_s"] = defaults.preferred_min_duration_s
-        if values["preferred_min_duration_s"] > values["preferred_max_duration_s"]:
-            values["preferred_max_duration_s"] = defaults.preferred_max_duration_s
-    if values["preferred_max_duration_s"] > values["max_duration_s"]:
-        values["preferred_max_duration_s"] = defaults.preferred_max_duration_s
-        if values["preferred_max_duration_s"] > values["max_duration_s"]:
-            values["max_duration_s"] = defaults.max_duration_s
-    if values["max_duration_s"] > values["analysis_window_s"]:
-        values["max_duration_s"] = defaults.max_duration_s
-        if values["max_duration_s"] > values["analysis_window_s"]:
-            values["analysis_window_s"] = defaults.analysis_window_s
+    duration_relationship_invalid = (
+        values["preferred_min_duration_s"] > values["preferred_max_duration_s"]
+        or values["preferred_max_duration_s"] > values["max_duration_s"]
+        or values["max_duration_s"] > values["analysis_window_s"]
+    )
+    if duration_relationship_invalid:
+        for name in (
+            "analysis_window_s",
+            "preferred_min_duration_s",
+            "preferred_max_duration_s",
+            "min_duration_s",
+            "max_duration_s",
+        ):
+            values[name] = getattr(defaults, name)
 
 
 def _motion_value(pair: TemporalPairEvidence) -> tuple[float, float]:
@@ -237,6 +239,7 @@ def _is_ambient_camera_motion(
     residual_energies: np.ndarray,
     active_threshold: float,
     active: np.ndarray,
+    fps: float,
 ) -> bool:
     if not pairs:
         return False
@@ -261,12 +264,17 @@ def _is_ambient_camera_motion(
         coherent_fraction = float(np.mean(scales * median_scale >= 0.0))
     if coherent_fraction < 0.70:
         return False
+    material_run_samples = max(2, round(0.5 * fps))
+    has_material_local_run = any(
+        end - start + 1 >= material_run_samples for start, end in _runs(active)
+    )
     # The required median-energy rule rejects uncompensated/global disruption.
-    # A substantial local active run is additional evidence that a subject is
-    # acting during otherwise coherent camera motion.
+    # A contiguous local residual run is additional evidence that a subject is
+    # acting during otherwise coherent camera motion. Window-wide active
+    # fraction is deliberately irrelevant: short complete actions are valid.
     return (
         float(np.median(residual_energies)) < active_threshold
-        and float(np.mean(active)) < 0.25
+        and not has_material_local_run
     )
 
 
@@ -422,7 +430,7 @@ def analyze_action_motion(
             (float(timestamps[start]), float(timestamps[end])) for start, end in active_index_runs
         )
         if _is_ambient_camera_motion(
-            sampled.pairs, residual_energies, active_threshold, active
+            sampled.pairs, residual_energies, active_threshold, active, config.scan_fps
         ):
             return ActionMotionAnalysis(
                 "ambient_camera_motion",

@@ -116,6 +116,14 @@ def write_subject_action_during_pan(path: Path) -> Path:
     return _write_video(path, _moving_subject, dx_per_frame=1.0)
 
 
+def write_short_subject_action_during_pan(path: Path) -> Path:
+    return _write_video(
+        path,
+        lambda frame, index: _moving_subject(frame, index, start=28, end=36),
+        dx_per_frame=1.0,
+    )
+
+
 def write_slow_upward_pan(path: Path) -> Path:
     return _write_video(path, lambda frame, index: _moving_subject(frame, 0), dy_per_frame=-1.1)
 

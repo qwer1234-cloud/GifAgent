@@ -21,6 +21,7 @@ from tests.action_media_fixtures import (
     write_paused_action_video,
     write_slow_upward_pan,
     write_start_move_settle_video,
+    write_short_subject_action_during_pan,
     write_subject_action_during_pan,
     write_turn_video,
     write_two_lobe_wave_video,
@@ -68,6 +69,17 @@ def test_subject_action_during_camera_pan_remains_subject_action(tmp_path):
     assert result.candidates
     assert result.candidates[0].start_s <= 2.75
     assert result.candidates[0].end_s >= 5.25
+
+
+def test_short_subject_action_during_camera_pan_remains_subject_action(tmp_path):
+    video = write_short_subject_action_during_pan(tmp_path / "short-pan-action.mp4")
+    result = analyze_action_motion(scan_video(video, 0.0, 8.0), 0.0, 8.0, 4.0, BASE_ACTION_CFG)
+
+    assert result.motion_type == "subject_action"
+    assert result.candidates
+    assert len(result.active_runs) == 1
+    assert result.active_runs[0][0] == pytest.approx(3.5, abs=0.5)
+    assert result.active_runs[0][1] == pytest.approx(4.5, abs=0.5)
 
 
 @pytest.mark.parametrize(
@@ -179,6 +191,22 @@ def test_non_strict_config_uses_defaults_for_malformed_optional_values():
     assert config.boundary_confidence_threshold == 0.65
     assert config.fallback_mode == "fixed_window"
     assert config.loop_adjust_s == 1.25
+
+
+def test_non_strict_config_convergently_repairs_dependent_durations():
+    config = ActionBoundaryConfig.from_mapping(
+        {
+            "preferred_max_duration_s": 100,
+            "max_duration_s": 100,
+            "analysis_window_s": 10,
+        }
+    )
+
+    assert config.analysis_window_s == 30.0
+    assert config.preferred_min_duration_s == 4.0
+    assert config.preferred_max_duration_s == 12.0
+    assert config.min_duration_s == 2.0
+    assert config.max_duration_s == 20.0
 
 
 def test_result_types_are_immutable_and_candidates_are_ranked_to_three(tmp_path):
