@@ -106,6 +106,19 @@ def test_hard_cut_splits_window(tmp_path: Path) -> None:
     assert all(segment.end_s - segment.start_s >= 2.0 for segment in result.segments)
 
 
+def test_boundary_at_anchor_drops_candidate_instead_of_selecting_other_shot(tmp_path: Path) -> None:
+    video = write_hard_cut_video(tmp_path / "hard_cut_at_anchor.mp4")
+    # The post-cut side is shorter than the two-second minimum, leaving only
+    # the pre-cut segment; it must not be silently selected for an anchor in
+    # the boundary safety margin.
+    result = guard_candidate_window(video, 0.0, 4.0, 3.0, BASE_CFG)
+
+    assert result.transition_action == "drop"
+    assert result.segments == ()
+    assert result.anchor_segment is None
+    assert result.anchor_ts_s == 3.0
+
+
 def test_static_media_is_kept_without_transition_evidence(tmp_path: Path) -> None:
     video = write_static_video(tmp_path / "static.mp4")
     result = guard_candidate_window(video, 0.0, 4.0, 2.0, BASE_CFG)
@@ -131,6 +144,15 @@ def test_crossfade_splits_without_using_single_frame_score(tmp_path: Path) -> No
 
     assert result.soft_transition_count >= 1
     assert result.transition_action == "split"
+
+
+def test_high_soft_threshold_suppresses_crossfade_classification(tmp_path: Path) -> None:
+    video = write_crossfade_video(tmp_path / "crossfade_high_threshold.mp4")
+    config = {**BASE_CFG, "transition_soft_threshold": 0.95}
+    result = guard_candidate_window(video, 0.0, 6.0, 1.0, config)
+
+    assert result.soft_transition_count == 0
+    assert result.transition_action == "keep"
 
 
 def test_single_flash_is_not_a_cut(tmp_path: Path) -> None:

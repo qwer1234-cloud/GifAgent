@@ -107,6 +107,14 @@ class TransitionGuardResult:
     transition_risk: float
     guard_reason: str
     guard_error: str | None = None
+    # Preserve the caller's requested window and make the segment selected for
+    # its score anchor explicit.  ``segments`` remains the complete fan-out
+    # set for a valid split; ``anchor_segment`` is the one containing the
+    # original best-frame timestamp.
+    original_start_s: float = 0.0
+    original_end_s: float = 0.0
+    anchor_ts_s: float = 0.0
+    anchor_segment: GuardSegment | None = None
 
     def to_dict(self) -> dict[str, object]:
         """Return JSON-safe primitive values with a stable field layout."""
@@ -120,6 +128,10 @@ class TransitionGuardResult:
             "transition_risk": self.transition_risk,
             "guard_reason": self.guard_reason,
             "guard_error": self.guard_error,
+            "original_start_s": self.original_start_s,
+            "original_end_s": self.original_end_s,
+            "anchor_ts_s": self.anchor_ts_s,
+            "anchor_segment": asdict(self.anchor_segment) if self.anchor_segment else None,
         }
 
 
@@ -139,11 +151,12 @@ class _PairMetric:
         return min(1.0, 0.45 * self.histogram_distance + 0.30 * self.edge_distance + 0.25 * self.luma_change)
 
 
-def _result_error(message: str) -> TransitionGuardResult:
+def _result_error(message: str, start_s: float = 0.0, end_s: float = 0.0, anchor_ts_s: float = 0.0) -> TransitionGuardResult:
     return TransitionGuardResult(
         transition_action="unverified", segments=(), boundaries=(), hard_cut_count=0,
         soft_transition_count=0, motion_type="unknown", transition_risk=1.0,
         guard_reason="media scan could not be verified", guard_error=message,
+        original_start_s=start_s, original_end_s=end_s, anchor_ts_s=anchor_ts_s,
     )
 
 
@@ -290,15 +303,20 @@ def guard_candidate_window(
     except (TypeError, ValueError):
         return _result_error("window timestamps must be numeric")
     if not all(math.isfinite(value) for value in (start_s, end_s, anchor_ts_s)) or end_s <= start_s:
-        return _result_error("window timestamps are invalid")
+        return _result_error("window timestamps are invalid", start_s, end_s, anchor_ts_s)
     if not config.enabled:
-        return TransitionGuardResult("keep", (GuardSegment(start_s, end_s),), (), 0, 0, "disabled", 0.0, "transition guard disabled")
+        segment = GuardSegment(start_s, end_s)
+        return TransitionGuardResult(
+            "keep", (segment,), (), 0, 0, "disabled", 0.0,
+            "transition guard disabled", original_start_s=start_s,
+            original_end_s=end_s, anchor_ts_s=anchor_ts_s, anchor_segment=segment,
+        )
     try:
         pairs = _scan_pairs(Path(video_path), start_s, end_s, config)
     except (cv2.error, OSError, ValueError) as exc:
-        return _result_error(str(exc))
+        return _result_error(str(exc), start_s, end_s, anchor_ts_s)
     if len(pairs) < 2:
-        return _result_error("window was too short or contained too few decodable frames")
+        return _result_error("window was too short or contained too few decodable frames", start_s, end_s, anchor_ts_s)
 
     evidence = [_evidence(pair, config) for pair in pairs]
     confirmed: list[BoundaryEvidence] = []
@@ -344,7 +362,25 @@ def guard_candidate_window(
     motion_type = "coherent_camera_motion" if stable_motion else "static_or_local_motion"
     risk = max((item.confidence for item in unique), default=0.0)
     if not segments:
-        return TransitionGuardResult("drop", (), tuple(unique), hard_count, soft_count, motion_type, risk, "transition margins left no exportable segment")
+        return TransitionGuardResult(
+            "drop", (), tuple(unique), hard_count, soft_count, motion_type, risk,
+            "transition margins left no exportable segment", original_start_s=start_s,
+            original_end_s=end_s, anchor_ts_s=anchor_ts_s,
+        )
+    anchor_segment = next(
+        (segment for segment in segments if segment.start_s <= anchor_ts_s <= segment.end_s),
+        None,
+    )
+    # Splits deliberately retain every viable segment for the downstream
+    # candidate fan-out.  A single retained segment, however, must still be
+    # the segment that contains the original score anchor; otherwise keeping
+    # it would silently move the candidate to the other side of an edit.
+    if anchor_segment is None and len(segments) == 1:
+        return TransitionGuardResult(
+            "drop", (), tuple(unique), hard_count, soft_count, motion_type, risk,
+            "anchor timestamp falls inside a transition safety margin",
+            original_start_s=start_s, original_end_s=end_s, anchor_ts_s=anchor_ts_s,
+        )
     if len(segments) > 1:
         action, reason = "split", "confirmed transition boundaries split the candidate window"
     elif unique:
@@ -353,4 +389,8 @@ def guard_candidate_window(
         action, reason = "trim", "window was clamped to a clean segment"
     else:
         action, reason = "keep", "no confirmed transition boundary"
-    return TransitionGuardResult(action, segments, tuple(unique), hard_count, soft_count, motion_type, risk, reason)
+    return TransitionGuardResult(
+        action, segments, tuple(unique), hard_count, soft_count, motion_type, risk, reason,
+        original_start_s=start_s, original_end_s=end_s, anchor_ts_s=anchor_ts_s,
+        anchor_segment=anchor_segment,
+    )
