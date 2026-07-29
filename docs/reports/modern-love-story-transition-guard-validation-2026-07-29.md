@@ -90,8 +90,8 @@ Manual review table:
 Focused and production-path regressions after these fixes passed: **34 passed**
 (`test_adaptive_direct_transition`, transition guard/window/candidate/merge,
 adaptive config/help, and the two task-engine production suites). A complete
-`uv run pytest -q` completed with **1,029 passed, 11 failed, 2 skipped** in
-131.76 seconds. All 11 failures are pre-existing/unrelated
+`uv run pytest -q` completed with **1,030 passed, 11 failed, 2 skipped, and 4
+warnings** in 130.41 seconds. All 11 failures are pre-existing/unrelated
 `tests/test_version_manifest.py` failures: the child manifest process decodes
 `git` output with the Windows GBK codec, raises `UnicodeDecodeError`, then
 dereferences `result.stdout` when it is `None`. No transition-guard test failed.
