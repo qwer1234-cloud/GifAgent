@@ -31,6 +31,7 @@ def merge_scored_frames_into_clips(
     merge_score_threshold: float,
     max_merge_span_s: float = 24.0,
     peak_threshold: float | None = None,
+    shot_boundaries: list[float] | tuple[float, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge timestamp-sorted scored frames into clip dicts.
 
@@ -41,6 +42,8 @@ def merge_scored_frames_into_clips(
        ``max_merge_span_s`` (hard cap against mega-clips).
     3. If ``peak_threshold`` is set and a multi-frame group's best score is
        below it, demote to a single-frame clip of the best frame only.
+    4. A supplied shot boundary prevents a merge when it lies after the
+       previous frame and at or before the next frame.
     """
     if not frames:
         return []
@@ -52,6 +55,10 @@ def merge_scored_frames_into_clips(
         else None
     )
     max_span = max(0.0, float(max_merge_span_s))
+    boundaries = tuple(sorted(float(boundary) for boundary in shot_boundaries or ()))
+
+    def crosses_shot_boundary(previous_timestamp: float, timestamp: float) -> bool:
+        return any(previous_timestamp < boundary <= timestamp for boundary in boundaries)
 
     clips: list[dict[str, Any]] = []
     current: list[dict[str, Any]] = [ordered[0]]
@@ -82,7 +89,11 @@ def merge_scored_frames_into_clips(
         span_if_added = float(frame["timestamp"]) - float(current[0]["timestamp"])
         within_span = max_span <= 0 or span_if_added <= max_span
 
-        if gap <= merge_gap and both_good and within_span:
+        crosses_boundary = crosses_shot_boundary(
+            float(prev["timestamp"]), float(frame["timestamp"])
+        )
+
+        if gap <= merge_gap and both_good and within_span and not crosses_boundary:
             current.append(frame)
         else:
             flush()

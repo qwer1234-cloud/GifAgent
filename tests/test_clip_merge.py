@@ -67,3 +67,14 @@ def test_peak_threshold_demotes_weak_multi_frame():
     assert len(clips) == 1
     assert clips[0]["frame_count"] == 1
     assert clips[0]["gif_worthiness"] == 0.48
+
+
+def test_boundary_breaks_high_score_merge():
+    clips = merge_scored_frames_into_clips(
+        [_f(0, 0.8), _f(5, 0.8), _f(10, 0.8)],
+        merge_gap=15,
+        merge_score_threshold=0.5,
+        max_merge_span_s=24,
+        shot_boundaries=[7.0],
+    )
+    assert [clip["frame_count"] for clip in clips] == [2, 1]
