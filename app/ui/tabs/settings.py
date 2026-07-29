@@ -14,7 +14,7 @@ import gradio as gr
 import httpx
 import yaml
 
-from app.services.action_boundary import ActionBoundaryConfig
+from app.services.action_config import freeze_action_config
 
 API_BASE = "http://127.0.0.1:8000"
 CONFIG_FILE = "configs/models.yaml"
@@ -285,75 +285,57 @@ def save_config(
         sort_keys=False,
     )
 
-    cfg.setdefault("llm", {})
-    cfg["llm"]["provider"] = llm_provider
-    cfg["llm"]["model"] = llm_model
-    cfg["llm"]["api_key_env"] = llm_api_key_env
-    cfg["llm"]["base_url"] = llm_base_url
-    cfg["llm"]["temperature"] = float(llm_temperature)
-    cfg["llm"]["max_tokens"] = int(llm_max_tokens)
-    cfg["llm"]["timeout_s"] = int(llm_timeout)
-
-    cfg.setdefault("vlm", {})
-    cfg["vlm"]["model"] = vlm_model
-    cfg["vlm"]["base_url"] = vlm_base_url
-
-    cfg.setdefault("adaptive", {})
-    cfg["adaptive"]["sample_interval"] = int(ad_sample_interval)
-    cfg["adaptive"]["merge_gap"] = int(ad_merge_gap)
-    cfg["adaptive"]["merge_score_threshold"] = float(ad_merge_score_threshold)
-    cfg["adaptive"]["worthiness_threshold"] = float(ad_worthiness_threshold)
-    cfg["adaptive"]["refine_threshold"] = float(ad_refine_threshold)
-    cfg["adaptive"]["max_duration"] = float(ad_max_duration)
-    cfg["adaptive"]["transition_guard_enabled"] = bool(ad_transition_guard_enabled)
-    cfg["adaptive"]["transition_min_duration_s"] = float(ad_transition_min_duration_s)
-    cfg["adaptive"]["transition_boundary_margin_s"] = float(ad_transition_boundary_margin_s)
-    cfg["adaptive"]["action_guard_enabled"] = bool(ad_action_guard_enabled)
-    cfg["adaptive"]["action_vlm_verify_enabled"] = bool(ad_action_vlm_verify_enabled)
-    cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
-    cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
-    cfg["adaptive"]["max_output"] = int(ad_max_output)
-    cfg["adaptive"]["gif_fps"] = int(ad_gif_fps)
-
-    adaptive = cfg["adaptive"]
-    action_values = {
-        "action_guard_enabled": adaptive.get("action_guard_enabled", True),
-        "action_vlm_verify_enabled": adaptive.get(
-            "action_vlm_verify_enabled", True
-        ),
-        "action_analysis_version": adaptive.get("action_analysis_version", 1),
-        "action_analysis_window_s": adaptive.get(
-            "action_analysis_window_s", 30.0
-        ),
-        "action_preferred_min_duration_s": adaptive.get(
-            "action_preferred_min_duration_s", 4.0
-        ),
-        "action_preferred_max_duration_s": adaptive.get(
-            "action_preferred_max_duration_s", 12.0
-        ),
-        "action_min_duration_s": adaptive.get("min_duration", 2.0),
-        "action_max_duration_s": adaptive.get("max_duration", 20.0),
-        "action_scan_fps": adaptive.get("action_scan_fps", 4.0),
-        "action_boundary_confidence_threshold": adaptive.get(
-            "action_boundary_confidence_threshold", 0.65
-        ),
-        "action_loop_adjust_s": adaptive.get("action_loop_adjust_s", 0.75),
-        "action_vlm_min_worthiness": adaptive.get(
-            "action_vlm_min_worthiness", 0.60
-        ),
-        "action_fallback_mode": adaptive.get(
-            "action_fallback_mode", "fixed_window"
-        ),
-    }
     try:
-        ActionBoundaryConfig.from_mapping(action_values, strict=True)
-    except ValueError as exc:
-        return f"配置错误：{exc}", original_raw
+        cfg.setdefault("llm", {})
+        cfg["llm"]["provider"] = llm_provider
+        cfg["llm"]["model"] = llm_model
+        cfg["llm"]["api_key_env"] = llm_api_key_env
+        cfg["llm"]["base_url"] = llm_base_url
+        cfg["llm"]["temperature"] = float(llm_temperature)
+        cfg["llm"]["max_tokens"] = int(llm_max_tokens)
+        cfg["llm"]["timeout_s"] = int(llm_timeout)
 
-    cfg.setdefault("preference_memory", {})
-    cfg["preference_memory"]["enabled"] = bool(pm_enabled)
-    cfg["preference_memory"]["base_score_weight"] = float(pm_base_score_weight)
-    cfg["preference_memory"]["preference_score_weight"] = float(pm_preference_score_weight)
+        cfg.setdefault("vlm", {})
+        cfg["vlm"]["model"] = vlm_model
+        cfg["vlm"]["base_url"] = vlm_base_url
+
+        cfg.setdefault("adaptive", {})
+        adaptive = cfg["adaptive"]
+        adaptive["sample_interval"] = int(ad_sample_interval)
+        adaptive["merge_gap"] = int(ad_merge_gap)
+        adaptive["merge_score_threshold"] = float(ad_merge_score_threshold)
+        adaptive["worthiness_threshold"] = float(ad_worthiness_threshold)
+        adaptive["refine_threshold"] = float(ad_refine_threshold)
+        adaptive["max_duration"] = float(ad_max_duration)
+        adaptive["transition_guard_enabled"] = bool(
+            ad_transition_guard_enabled
+        )
+        adaptive["transition_min_duration_s"] = float(
+            ad_transition_min_duration_s
+        )
+        adaptive["transition_boundary_margin_s"] = float(
+            ad_transition_boundary_margin_s
+        )
+        adaptive["action_guard_enabled"] = bool(ad_action_guard_enabled)
+        adaptive["action_vlm_verify_enabled"] = bool(
+            ad_action_vlm_verify_enabled
+        )
+        adaptive["vlm_temperature"] = float(ad_vlm_temperature)
+        adaptive["output_ratio"] = float(ad_output_ratio)
+        adaptive["max_output"] = int(ad_max_output)
+        adaptive["gif_fps"] = int(ad_gif_fps)
+        freeze_action_config(adaptive)
+
+        cfg.setdefault("preference_memory", {})
+        cfg["preference_memory"]["enabled"] = bool(pm_enabled)
+        cfg["preference_memory"]["base_score_weight"] = float(
+            pm_base_score_weight
+        )
+        cfg["preference_memory"]["preference_score_weight"] = float(
+            pm_preference_score_weight
+        )
+    except (TypeError, ValueError) as exc:
+        return f"配置错误：{exc}", original_raw
 
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:

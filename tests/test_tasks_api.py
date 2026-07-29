@@ -146,6 +146,9 @@ def test_create_job_recomputes_config_hash_not_trusting_request(
         "adaptive": {"sample_interval": 4, "max_output": 60},
         "models": {},
         "video_paths": [],
+        "action_config_hash": extract_config(
+            {"adaptive": {"sample_interval": 4, "max_output": 60}}
+        )["action_config_hash"],
     }
     assert persisted["config_hash"] == canonical_hash(expected_business)
 
@@ -184,7 +187,8 @@ def test_create_job_freezes_action_config_and_hashes_threshold_changes(
         json={
             "directory": str(second_dir),
             "config_json": {
-                "adaptive": {"action_boundary_confidence_threshold": 0.75}
+                "adaptive": {"action_boundary_confidence_threshold": 0.75},
+                "action_config_hash": "STALE_ACTION_HASH",
             },
         },
     )
@@ -204,11 +208,19 @@ def test_create_job_freezes_action_config_and_hashes_threshold_changes(
         assert first_snapshot["adaptive"][key] == value
     assert first_snapshot["config_hash"] != second_snapshot["config_hash"]
 
-    first_frozen = extract_config(first_snapshot)
-    second_frozen = extract_config(second_snapshot)
-    assert first_frozen["action_config_hash"] == extract_config(
+    direct_action_hash = extract_config(
         {"adaptive": action_adaptive}
     )["action_config_hash"]
+    assert first_snapshot["action_config_hash"] == direct_action_hash
+    assert second_snapshot["action_config_hash"] != "STALE_ACTION_HASH"
+    assert (
+        first_snapshot["action_config_hash"]
+        != second_snapshot["action_config_hash"]
+    )
+
+    first_frozen = extract_config(first_snapshot)
+    second_frozen = extract_config(second_snapshot)
+    assert first_frozen["action_config_hash"] == direct_action_hash
     assert first_frozen["action_config_hash"] != second_frozen["action_config_hash"]
 
 

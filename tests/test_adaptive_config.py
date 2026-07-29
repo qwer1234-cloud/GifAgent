@@ -69,6 +69,12 @@ def test_action_config_hash_is_canonical_and_action_only():
     unrelated = extract_config(
         {"adaptive": {**adaptive, "sample_interval": 99}}
     )
+    stale_snapshot = extract_config(
+        {
+            "adaptive": adaptive,
+            "action_config_hash": "STALE_ACTION_HASH",
+        }
+    )
 
     action_subset = {
         key: value
@@ -88,6 +94,7 @@ def test_action_config_hash_is_canonical_and_action_only():
     assert cfg["action_config_hash"] == expected
     assert reordered["action_config_hash"] == expected
     assert unrelated["action_config_hash"] == expected
+    assert stale_snapshot["action_config_hash"] == expected
 
 
 def test_settings_action_checkboxes_load_after_transition_fields(
@@ -136,6 +143,36 @@ def test_settings_reject_invalid_action_relationship_without_writing(
         "", "", "", "", "0.3", "2048", "120",
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "3",
+        True, "2", "0.25", True, True,
+        "0.65", "1.0", "0", "24",
+        False, "0.5", "0.5", "",
+    )
+
+    assert "配置错误" in status
+    assert config_path.read_text(encoding="utf-8") == original
+
+
+def test_settings_reject_malformed_number_without_writing(
+    tmp_path, monkeypatch,
+):
+    config_path = tmp_path / "models.yaml"
+    original = yaml.safe_dump(
+        {
+            "adaptive": {
+                "min_duration": 2,
+                "max_duration": 20,
+                "action_preferred_max_duration_s": 12,
+            }
+        },
+        sort_keys=False,
+    )
+    config_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(settings, "CONFIG_FILE", str(config_path))
+
+    status, _ = settings.save_config(
+        "", "", "", "", "0.3", "2048", "120",
+        "", "",
+        "10", "12", "0.55", "0.2", "0.5", "not-a-number",
         True, "2", "0.25", True, True,
         "0.65", "1.0", "0", "24",
         False, "0.5", "0.5", "",
