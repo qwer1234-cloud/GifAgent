@@ -37,6 +37,9 @@ CONFIG_FIELD_KEYS = (
     "adaptive.worthiness_threshold",
     "adaptive.refine_threshold",
     "adaptive.max_duration",
+    "adaptive.transition_guard_enabled",
+    "adaptive.transition_min_duration_s",
+    "adaptive.transition_boundary_margin_s",
     "adaptive.vlm_temperature",
     "adaptive.output_ratio",
     "adaptive.max_output",
@@ -62,6 +65,9 @@ CONFIG_FIELD_HELP = {
     "adaptive.worthiness_threshold": "帧被认为值得导出为 GIF 的最低评分。",
     "adaptive.refine_threshold": "达到此评分的帧会触发周边时间段的细采样。",
     "adaptive.max_duration": "单个导出 GIF 的最长时长，单位为秒。",
+    "adaptive.transition_guard_enabled": "是否启用转场保护；关闭后仅新任务跳过转场检测，历史结果不会删除。",
+    "adaptive.transition_min_duration_s": "转场切分后允许导出的最短片段时长，单位为秒。",
+    "adaptive.transition_boundary_margin_s": "检测到转场时在边界两侧保留的安全间隔，单位为秒。",
     "adaptive.vlm_temperature": "视觉模型评分时的随机性；较低值通常更稳定。",
     "adaptive.output_ratio": "从去重后的候选片段中导出的比例，范围通常为 0 到 1。",
     "adaptive.max_output": "每个视频最多导出的 GIF 数量；填写 0 表示不设上限。",
@@ -140,10 +146,11 @@ def config_field_kwargs(key: str) -> dict[str, str | bool]:
 
 def config_checkbox_kwargs(key: str) -> dict[str, str | bool]:
     """Keep a Checkbox's native, clickable label visible beside the tooltip."""
+    elem_id = "preference-memory-enabled" if key == "preference_memory.enabled" else f"config-{key.replace('.', '-')}"
     return {
         "label": config_field_name(key),
         "container": False,
-        "elem_id": "preference-memory-enabled",
+        "elem_id": elem_id,
     }
 
 
@@ -158,16 +165,22 @@ def config_checkbox(key: str, **kwargs):
 
 CONFIG_TOOLTIP_JS = f"""
 (() => {{
+    const tooltipFields = [
+        {{ selector: '#preference-memory-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['preference_memory.enabled'], ensure_ascii=False)} }},
+        {{ selector: '#config-adaptive-transition-guard-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.transition_guard_enabled'], ensure_ascii=False)} }},
+    ];
     const attach = () => {{
-        const label = document.querySelector('#preference-memory-enabled label');
-        if (!label || label.querySelector('.preference-tooltip-icon')) return;
-        const icon = document.createElement('span');
-        icon.className = 'config-tooltip-icon preference-tooltip-icon';
-        icon.tabIndex = 0;
-        icon.textContent = '?';
-        icon.title = {json.dumps(CONFIG_FIELD_HELP['preference_memory.enabled'], ensure_ascii=False)};
-        icon.setAttribute('aria-label', icon.title);
-        label.append(icon);
+        tooltipFields.forEach((field) => {{
+            const label = document.querySelector(field.selector);
+            if (!label || label.querySelector('.preference-tooltip-icon')) return;
+            const icon = document.createElement('span');
+            icon.className = 'config-tooltip-icon preference-tooltip-icon';
+            icon.tabIndex = 0;
+            icon.textContent = '?';
+            icon.title = field.help;
+            icon.setAttribute('aria-label', icon.title);
+            label.append(icon);
+        }});
     }};
     requestAnimationFrame(attach);
     setTimeout(attach, 250);
@@ -189,7 +202,7 @@ def load_config():
         return (
             [str(e)] * 7,
             [str(e)] * 2,
-            [str(e)] * 10,
+            [str(e)] * 13,
             [False, "0.50", "0.50"],
             "",
         )
@@ -219,6 +232,9 @@ def load_config():
         str(adaptive.get("worthiness_threshold", 0.2)),
         str(adaptive.get("refine_threshold", 0.5)),
         str(adaptive.get("max_duration", 10)),
+        bool(adaptive.get("transition_guard_enabled", True)),
+        str(adaptive.get("transition_min_duration_s", 2.0)),
+        str(adaptive.get("transition_boundary_margin_s", 0.25)),
         str(adaptive.get("vlm_temperature", 0.65)),
         str(adaptive.get("output_ratio", 1.0)),
         str(adaptive.get("max_output", 0)),
@@ -240,6 +256,8 @@ def save_config(
     ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
     ad_worthiness_threshold, ad_refine_threshold,
     ad_max_duration,
+    ad_transition_guard_enabled, ad_transition_min_duration_s,
+    ad_transition_boundary_margin_s,
     ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
     pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_text,
 ):
@@ -270,6 +288,9 @@ def save_config(
     cfg["adaptive"]["worthiness_threshold"] = float(ad_worthiness_threshold)
     cfg["adaptive"]["refine_threshold"] = float(ad_refine_threshold)
     cfg["adaptive"]["max_duration"] = float(ad_max_duration)
+    cfg["adaptive"]["transition_guard_enabled"] = bool(ad_transition_guard_enabled)
+    cfg["adaptive"]["transition_min_duration_s"] = float(ad_transition_min_duration_s)
+    cfg["adaptive"]["transition_boundary_margin_s"] = float(ad_transition_boundary_margin_s)
     cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
     cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
     cfg["adaptive"]["max_output"] = int(ad_max_output)
@@ -356,6 +377,15 @@ def build_settings_tab(context) -> None:
                 ad_worthiness_threshold = config_textbox("adaptive.worthiness_threshold", value="")
                 ad_refine_threshold = config_textbox("adaptive.refine_threshold", value="")
                 ad_max_duration = config_textbox("adaptive.max_duration", value="")
+                ad_transition_guard_enabled = config_checkbox(
+                    "adaptive.transition_guard_enabled", value=True
+                )
+                ad_transition_min_duration_s = config_textbox(
+                    "adaptive.transition_min_duration_s", value=""
+                )
+                ad_transition_boundary_margin_s = config_textbox(
+                    "adaptive.transition_boundary_margin_s", value=""
+                )
                 ad_vlm_temperature = config_textbox("adaptive.vlm_temperature", value="")
                 with gr.Row():
                     with gr.Column(min_width=160):
@@ -393,7 +423,9 @@ def build_settings_tab(context) -> None:
         vlm_model, vlm_base_url,
         ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
         ad_worthiness_threshold, ad_refine_threshold,
-        ad_max_duration, ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
+        ad_max_duration, ad_transition_guard_enabled, ad_transition_min_duration_s,
+        ad_transition_boundary_margin_s, ad_vlm_temperature, ad_output_ratio,
+        ad_max_output, ad_gif_fps,
         pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_yaml,
     ]
     save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])

@@ -64,6 +64,24 @@ folder before exporting new GIFs, then applies text-embedding dedup followed by
 temporal dedup. The result JSON records `embedding_deduped_clips` and final
 `deduped_clips`.
 
+**Transition guard**: the Settings tab exposes only
+`adaptive.transition_guard_enabled`, `adaptive.transition_min_duration_s`, and
+`adaptive.transition_boundary_margin_s`; scan/motion thresholds remain in YAML
+and the frozen job snapshot. It runs before dedup/export: clean windows are
+kept or trimmed, transition-crossing windows are split, and windows with no
+exportable segment or an anchor in a safety margin are dropped. Coherent slow
+camera motion is classified as `coherent_camera_motion`, so motion alone does
+not cause a split/drop. Result JSON records `transition_guard` counts
+(`input`, `split`, `trim`, `drop`, `unverified`, `hard_cut`,
+`soft_transition`, `motion`) plus per-result action/risk/reason. Validate with:
+
+```powershell
+uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_config.py tests/test_tasks_api.py
+```
+
+Disabling the guard affects new runs only; it never deletes historical GIFs,
+task records, or result data, so re-enable it for rollback.
+
 **PotPlayer bookmarks**: adaptive export writes `{video_name}.pbf` in the same
 export folder when `potplayer_pbf_enabled=true`. Each successful GIF contributes
 one bookmark at the GIF start time, with the title carrying rank, interval,

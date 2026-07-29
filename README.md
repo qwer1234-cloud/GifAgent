@@ -264,6 +264,26 @@ runtime must be released with it.
 - Result JSON records both `embedding_deduped_clips` and final `deduped_clips`
   so each run shows how much was removed.
 
+### 转场保护（Transition Guard）
+
+在设置页可配置 `adaptive.transition_guard_enabled`、
+`adaptive.transition_min_duration_s`（切分后最短可导出时长）和
+`adaptive.transition_boundary_margin_s`（转场边界安全间隔）；更细的扫描、
+运动补偿和阈值仍保留在 YAML 与任务快照中。保护器会在去重和导出前检测硬切与
+软转场：可安全的窗口会保留或修边，跨转场的窗口会切分，边界余量不足或锚点落在
+安全区内时会丢弃。连贯的慢速镜头运动会被识别为 `coherent_camera_motion`，不会仅因
+画面运动而切分或丢弃。
+
+结果 JSON 的 `transition_guard` 汇总 `input`、`split`、`trim`、`drop`、
+`unverified`、`hard_cut`、`soft_transition` 和 `motion`，每个导出结果也记录
+`transition_action`、风险和原因。验证命令：
+
+```powershell
+uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_config.py tests/test_tasks_api.py
+```
+
+关闭保护只影响之后创建的新运行；已生成 GIF、历史任务和结果数据不会被删除。
+
 ### PotPlayer bookmark export (2026-07-08)
 
 - Adaptive GIF export now writes `{video_name}.pbf` beside the generated GIFs
