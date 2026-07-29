@@ -172,7 +172,11 @@ def _fallback_result(
     config: ActionBoundaryConfig,
     reason: str,
 ) -> ActionBoundaryResult:
-    duration = min(config.preferred_max_duration_s, safe_end_s - safe_start_s)
+    duration = min(
+        20.0,
+        config.preferred_max_duration_s,
+        safe_end_s - safe_start_s,
+    )
     start_s = anchor_ts_s - duration * 0.4
     end_s = anchor_ts_s + duration * 0.6
     if start_s < safe_start_s:
@@ -700,6 +704,18 @@ def materialize_action_candidates(
                 if selected_index is not None and result.action_fallback_reason
                 else fallback_reason
             )
+            if any(
+                segment.end_s - segment.start_s > 20.0 + 1e-9
+                for segment in result.segments
+            ):
+                result = _fallback_result(
+                    analysis=analysis,
+                    safe_start_s=safe_start_s,
+                    safe_end_s=safe_end_s,
+                    anchor_ts_s=anchor_ts_s,
+                    config=action_config,
+                    reason=reason,
+                )
             result = replace(result, action_fallback_reason=reason)
             action_metrics["fallback"] = int(action_metrics["fallback"]) + 1
             fallback_reasons[str(reason)] += 1

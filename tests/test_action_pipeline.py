@@ -293,6 +293,40 @@ def test_unverified_action_uses_transition_clamped_fixed_window(monkeypatch):
     assert result.action_metrics["fallback_reasons"] == {"unverified": 1}
 
 
+def test_valid_thirty_second_config_keeps_one_hard_capped_fallback(monkeypatch):
+    monkeypatch.setattr(
+        action_pipeline,
+        "guard_candidate_window",
+        lambda *args, **kwargs: _guard((3.0, 33.0)),
+    )
+    monkeypatch.setattr(
+        action_pipeline,
+        "analyze_action_motion",
+        lambda *args, **kwargs: ActionMotionAnalysis(
+            "unknown", (), (), (), (), 0.0, "unverified"
+        ),
+    )
+
+    result = _run(
+        clip=_clip(anchor_s=15.0),
+        scored_frames=[_frame(15.0)],
+        config={
+            **ACTION_PIPELINE_CFG,
+            "action_analysis_window_s": 30.0,
+            "action_preferred_max_duration_s": 30.0,
+            "action_max_duration_s": 30.0,
+        },
+    )
+
+    assert len(result.clips) == 1
+    assert result.clips[0]["start_ts"] == pytest.approx(7.0)
+    assert result.clips[0]["end_ts"] == pytest.approx(27.0)
+    assert result.clips[0]["end_ts"] - result.clips[0]["start_ts"] == 20.0
+    assert result.clips[0]["action_boundary_mode"] == "fallback_fixed"
+    assert result.action_metrics["fallback"] == 1
+    assert result.action_metrics["output"] == 1
+
+
 @pytest.mark.parametrize(
     ("anchor_s", "expected_start_s", "expected_end_s"),
     ((5.0, 0.0, 30.0), (50.0, 38.0, 68.0), (95.0, 70.0, 100.0)),
