@@ -197,3 +197,95 @@ def test_direct_action_export_uses_exact_guarded_window_capped_at_twenty_seconds
     assert result["top_clips"][0]["start_ts"] == 2.0
     assert result["top_clips"][0]["end_ts"] == 22.0
     assert result["top_clips"][0]["duration"] <= 20.0
+
+
+def test_direct_and_staged_action_splits_match_before_ranking(
+    tmp_path, monkeypatch
+):
+    """Both execution modes consume identical shared materialized children."""
+    from tests.test_adaptive_direct_action import _action_clip, _materialization
+    from tests.test_adaptive_direct_transition import (
+        _cfg,
+        _run_direct_pipeline_fixture,
+    )
+
+    action_children = (
+        _action_clip(2.0, 7.0, split_index=1, split_count=2),
+        _action_clip(8.0, 14.0, split_index=2, split_count=2),
+    )
+    seen_caches = []
+
+    def fake_materialize(**kwargs):
+        seen_caches.append(kwargs["evidence_cache"])
+        return _materialization(action_children, split=1)
+
+    monkeypatch.setattr(
+        test_video_adaptive,
+        "materialize_action_candidates",
+        fake_materialize,
+    )
+    direct = _run_direct_pipeline_fixture(
+        tmp_path,
+        monkeypatch,
+        max_output=2,
+        cfg_overrides={"action_guard_enabled": True},
+    )
+
+    staged_work = tmp_path / "staged-work"
+    staged_export = tmp_path / "staged-export"
+    staged_work.mkdir()
+    staged_export.mkdir()
+    synth = {
+        "schema_version": 1,
+        "stage": "synthesize",
+        "clips": [{
+            "start_ts": 2.0,
+            "end_ts": 14.0,
+            "best_frame_ts": 7.0,
+            "frame_count": 2,
+            "gif_worthiness": 0.9,
+        }],
+        "scored_frames": [],
+    }
+    synth_path = staged_work / "synthesize_manifest.json"
+    synth_path.write_text(json.dumps(synth), encoding="utf-8")
+    cfg = _cfg()
+    cfg.update(
+        action_guard_enabled=True,
+        action_config_hash="fixture-action-hash",
+        max_output=2,
+    )
+    test_video_adaptive._stage_rank_dedup(
+        str(tmp_path / "source.mp4"),
+        str(staged_export),
+        str(staged_work),
+        cfg,
+        {"synthesize_manifest": [{"path": str(synth_path)}]},
+        {
+            "vlm": {
+                "provider": "ollama",
+                "model": "fixture",
+                "base_url": "http://fixture.invalid",
+            }
+        },
+    )
+    staged = json.loads(
+        (staged_work / "rank_dedup_manifest.json").read_text(encoding="utf-8")
+    )
+
+    fields = (
+        "start_ts",
+        "end_ts",
+        "action_split_index",
+        "action_split_count",
+    )
+    direct_windows = sorted(
+        tuple(clip[field] for field in fields) for clip in direct["top_clips"]
+    )
+    staged_windows = sorted(
+        tuple(clip[field] for field in fields) for clip in staged["clips"]
+    )
+    assert staged_windows == direct_windows
+    assert len({clip["clip_id"] for clip in staged["clips"]}) == 2
+    assert len(seen_caches) == 2
+    assert seen_caches[0] is not seen_caches[1]

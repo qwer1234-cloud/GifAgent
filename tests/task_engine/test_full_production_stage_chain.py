@@ -151,16 +151,27 @@ def _make_full_config(work_base: Path, export_base: Path, vlm_port: int,
         },
         "adaptive": {
             "sample_interval": kw.get("sample_interval", 2),
-            "max_duration": 1, "refine_threshold": 0.6,
+            "max_duration": 20, "refine_threshold": 0.6,
             "refine_radius": 1, "refine_interval": 1,
             "worthiness_threshold": 0.5, "merge_gap": 2,
             "merge_score_threshold": 0.55, "gif_fps": 24,
             "gif_max_width": 720, "output_ratio": 1.0,
-            "max_output": 60, "min_duration": 0.5,
-            # Staged rank/dedup now runs the transition guard.  Match its
-            # minimum segment length to this tiny deterministic fixture.
-            "transition_min_duration_s": 0.5,
+            "max_output": 60, "min_duration": 2.0,
+            # Staged rank/dedup now runs the shared action guard.  Keep this
+            # tiny deterministic fixture within the production 2-20s range.
+            "transition_min_duration_s": 2.0,
             "transition_boundary_margin_s": 0.1,
+            "action_guard_enabled": True,
+            "action_vlm_verify_enabled": False,
+            "action_analysis_version": 1,
+            "action_analysis_window_s": 30.0,
+            "action_preferred_min_duration_s": 4.0,
+            "action_preferred_max_duration_s": 12.0,
+            "action_scan_fps": 4.0,
+            "action_boundary_confidence_threshold": 0.65,
+            "action_loop_adjust_s": 0.75,
+            "action_vlm_min_worthiness": 0.60,
+            "action_fallback_mode": "fixed_window",
             "potplayer_pbf_enabled": True,
             "embedding_dedup_enabled": False,
             "temporal_dedup_enabled": True,
@@ -270,7 +281,7 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
         "temporal_dedup_enabled": False, "temporal_dedup_min_gap_s": 1,
         # The guard may accept half-second scan segments, but rank/dedup must
         # discard them because gif_clip requires this 1.5-second minimum.
-        "output_ratio": 1.0, "max_output": 0, "min_duration": 1.5,
+        "output_ratio": 1.0, "max_output": 0, "min_duration": 2.0,
         "max_duration": max_duration, "worthiness_threshold": 0.5,
         "vlm_temperature": 0.0, "vlm_top_p": 1.0, "vlm_top_k": 1,
         "gif_fps": 8, "gif_max_width": 128,
@@ -279,14 +290,25 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
         "transition_scan_width": 128, "transition_motion_compensation": True,
         "transition_hard_threshold": 0.40, "transition_soft_threshold": 0.30,
         "transition_soft_run_frames": 3, "transition_rescore_split_segments": False,
+        "action_guard_enabled": True, "action_vlm_verify_enabled": False,
+        "action_analysis_version": 1, "action_analysis_window_s": 7.0,
+        "action_preferred_min_duration_s": 2.0,
+        "action_preferred_max_duration_s": 3.0, "action_scan_fps": 4.0,
+        "action_boundary_confidence_threshold": 0.65,
+        "action_loop_adjust_s": 0.75, "action_vlm_min_worthiness": 0.60,
+        "action_fallback_mode": "fixed_window",
+        "action_config_hash": "a" * 64,
     }
     inputs = {"synthesize_manifest": [{"path": str(synth_path)}]}
     _stage_rank_dedup(str(video_path), str(export_dir), str(work_dir), cfg, inputs, {})
     rank_path = work_dir / "rank_dedup_manifest.json"
     rank = json.loads(rank_path.read_text(encoding="utf-8"))
 
+    assert rank["schema_version"] == 2
     assert rank["transition_guard"]["split"] >= 1
+    assert rank["action_guard"]["input"] == len(synth_manifest["clips"])
     assert any(c["caption"] == "slow pan" for c in rank["clips"])
+    assert len({c["clip_id"] for c in rank["clips"]}) == len(rank["clips"])
     for clip in rank["clips"]:
         assert clip["end_ts"] - clip["start_ts"] >= cfg["min_duration"] - 1e-6
         assert clip["end_ts"] - clip["start_ts"] <= max_duration + 1e-6
@@ -300,8 +322,22 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
     gif_manifests = list(work_dir.glob("gif_clip_*_manifest.json"))
     assert gif_manifests
     for path in gif_manifests:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        assert manifest["end_ts"] - manifest["start_ts"] <= max_duration + 1e-6
+        gif_manifest = json.loads(path.read_text(encoding="utf-8"))
+        rank_clip = next(
+            clip for clip in rank["clips"]
+            if clip["clip_id"] == gif_manifest["clip_id"]
+        )
+        assert gif_manifest["schema_version"] == 2
+        assert gif_manifest["start_ts"] == rank_clip["start_ts"]
+        assert gif_manifest["end_ts"] == rank_clip["end_ts"]
+        assert (
+            gif_manifest["action_boundary_mode"]
+            == rank_clip["action_boundary_mode"]
+        )
+        assert (
+            gif_manifest["end_ts"] - gif_manifest["start_ts"]
+            <= max_duration + 1e-6
+        )
 
 
 # ---------------------------------------------------------------------------

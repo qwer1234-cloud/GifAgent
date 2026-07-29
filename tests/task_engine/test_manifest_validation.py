@@ -185,6 +185,145 @@ class TestManifestValidation:
         result = validate_manifest_json(data, "sample_manifest")
         assert result["frame_count"] == 10
 
+    def test_rank_manifest_v2_requires_action_metadata(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{
+                "clip_id": "clip-1",
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+            }],
+            "action_guard": {},
+        }
+
+        with pytest.raises(ValueError, match="action_boundary_mode"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+            )
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("start_ts", float("nan")),
+            ("end_ts", float("inf")),
+            ("action_boundary_confidence", float("-inf")),
+        ],
+    )
+    def test_rank_manifest_v2_rejects_nonfinite_action_fields(
+        self, field, value
+    ):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        clip = {
+            "clip_id": "clip-1",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+        }
+        clip[field] = value
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [clip],
+            "action_guard": {
+                "action_config_hash": "a" * 64,
+                "action_analysis_version": 1,
+                "input": 1,
+                "output": 1,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+            },
+        }
+        with pytest.raises(ValueError, match=field):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+            )
+
+    @pytest.mark.parametrize("duration", [1.999, 20.001])
+    def test_rank_manifest_v2_enforces_action_duration(self, duration):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{
+                "clip_id": "clip-1",
+                "start_ts": 2.0,
+                "end_ts": 2.0 + duration,
+                "action_boundary_mode": "cv",
+                "action_boundary_confidence": None,
+                "action_vlm_verified": False,
+                "action_analysis_version": 1,
+                "guarded_export_window": True,
+            }],
+            "action_guard": {
+                "action_config_hash": "a" * 64,
+                "action_analysis_version": 1,
+                "input": 1,
+                "output": 1,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+            },
+        }
+        with pytest.raises(ValueError, match="duration"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+            )
+
+    def test_schema_v1_rank_and_gif_manifests_remain_valid(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        rank = {
+            "schema_version": 1,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{"clip_id": "legacy"}],
+        }
+        gif = {
+            "schema_version": 1,
+            "stage": "gif_clip",
+            "clip_id": "legacy",
+            "gif_path": "legacy.gif",
+        }
+        assert validate_manifest_json(
+            json.dumps(rank).encode("utf-8"), "rank_dedup_manifest"
+        )["schema_version"] == 1
+        assert validate_manifest_json(
+            json.dumps(gif).encode("utf-8"), "gif_clip_manifest"
+        )["schema_version"] == 1
+
+    def test_gif_manifest_v2_requires_action_metadata(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+        }
+        with pytest.raises(ValueError, match="action_boundary_mode"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "gif_clip_manifest",
+            )
+
 
 class TestManifestSchemaVersion:
     """P1-2: ``schema_version`` must be a positive integer in the supported

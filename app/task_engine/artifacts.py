@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -855,9 +856,11 @@ _MANIFEST_VALIDATORS: dict[str, dict] = {
         "required_fields": ["schema_version", "stage", "clips"],
     },
     "rank_dedup_manifest": {
+        "versions": [1, 2],
         "required_fields": ["schema_version", "stage", "clips", "clip_count"],
     },
     "gif_clip_manifest": {
+        "versions": [1, 2],
         "required_fields": ["schema_version", "stage", "clip_id", "gif_path"],
     },
     "gif_file": {
@@ -870,6 +873,115 @@ _MANIFEST_VALIDATORS: dict[str, dict] = {
         "required_fields": ["schema_version", "stage", "gif_count"],
     },
 }
+
+
+_ACTION_CLIP_REQUIRED_FIELDS = (
+    "action_boundary_mode",
+    "action_boundary_confidence",
+    "action_vlm_verified",
+    "action_analysis_version",
+    "guarded_export_window",
+    "start_ts",
+    "end_ts",
+)
+_ACTION_NULLABLE_NUMERIC_FIELDS = (
+    "action_start_ts",
+    "action_peak_ts",
+    "action_end_ts",
+    "action_completeness_score",
+    "action_boundary_confidence",
+    "loop_quality_score",
+)
+
+
+def _require_v2_field(
+    value: dict, field: str, *, context: str
+) -> object:
+    if field not in value:
+        raise ValueError(f"{context} missing required field: {field}")
+    return value[field]
+
+
+def _finite_number(
+    value: object, field: str, *, context: str, nullable: bool = False
+) -> float | None:
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{context} {field} must be a finite number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"{context} {field} must be a finite number")
+    return parsed
+
+
+def _validate_action_clip_v2(clip: object, *, context: str) -> None:
+    if not isinstance(clip, dict):
+        raise ValueError(f"{context} must be an object")
+    for field in _ACTION_CLIP_REQUIRED_FIELDS:
+        _require_v2_field(clip, field, context=context)
+
+    mode = clip["action_boundary_mode"]
+    if not isinstance(mode, str) or not mode.strip():
+        raise ValueError(
+            f"{context} action_boundary_mode must be a non-empty string"
+        )
+    start_ts = _finite_number(clip["start_ts"], "start_ts", context=context)
+    end_ts = _finite_number(clip["end_ts"], "end_ts", context=context)
+    duration = float(end_ts) - float(start_ts)
+    if duration < 2.0 - 1e-9 or duration > 20.0 + 1e-9:
+        raise ValueError(
+            f"{context} duration {duration:.6f}s is outside [2.0, 20.0]"
+        )
+    if not isinstance(clip["action_vlm_verified"], bool):
+        raise ValueError(f"{context} action_vlm_verified must be a boolean")
+    version = clip["action_analysis_version"]
+    if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+        raise ValueError(
+            f"{context} action_analysis_version must be a positive integer"
+        )
+    if clip["guarded_export_window"] is not True:
+        raise ValueError(f"{context} guarded_export_window must be true")
+
+    for field in _ACTION_NULLABLE_NUMERIC_FIELDS:
+        if field in clip:
+            _finite_number(
+                clip[field], field, context=context, nullable=True
+            )
+
+
+def _validate_action_guard_v2(value: object) -> None:
+    context = "rank_dedup_manifest action_guard"
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    for field in (
+        "action_config_hash",
+        "action_analysis_version",
+        "input",
+        "output",
+        "cv_ms",
+        "vlm_ms",
+        "total_ms",
+    ):
+        _require_v2_field(value, field, context=context)
+    action_hash = value["action_config_hash"]
+    if not isinstance(action_hash, str) or not action_hash.strip():
+        raise ValueError(
+            f"{context} action_config_hash must be a non-empty string"
+        )
+    version = value["action_analysis_version"]
+    if isinstance(version, bool) or not isinstance(version, int) or version <= 0:
+        raise ValueError(
+            f"{context} action_analysis_version must be a positive integer"
+        )
+    for field in ("input", "output"):
+        count = value[field]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"{context} {field} must be a non-negative integer")
+    for field in ("cv_ms", "vlm_ms", "total_ms"):
+        elapsed = _finite_number(value[field], field, context=context)
+        if float(elapsed) < 0.0:
+            raise ValueError(f"{context} {field} must be non-negative")
 
 
 def validate_manifest_json(
@@ -923,6 +1035,8 @@ def validate_manifest_json(
     # For rank_dedup: verify clip_count == len(clips)
     if artifact_kind == "rank_dedup_manifest":
         clips = data.get("clips", [])
+        if not isinstance(clips, list):
+            raise ValueError("rank_dedup_manifest clips must be an array")
         clip_count = data.get("clip_count", len(clips))
         if clip_count != len(clips):
             raise ValueError(
@@ -935,5 +1049,21 @@ def validate_manifest_json(
             raise ValueError("rank_dedup_manifest has a clip with empty clip_id")
         if len(set(clip_ids)) != len(clip_ids):
             raise ValueError("rank_dedup_manifest has duplicate clip_ids")
+        if data.get("schema_version") == 2:
+            for index, clip in enumerate(clips):
+                _validate_action_clip_v2(
+                    clip,
+                    context=f"rank_dedup_manifest clips[{index}]",
+                )
+            action_guard = _require_v2_field(
+                data, "action_guard", context="rank_dedup_manifest"
+            )
+            _validate_action_guard_v2(action_guard)
+
+    if (
+        artifact_kind == "gif_clip_manifest"
+        and data.get("schema_version") == 2
+    ):
+        _validate_action_clip_v2(data, context="gif_clip_manifest")
 
     return data

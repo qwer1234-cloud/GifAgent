@@ -138,6 +138,22 @@ def safe_worth(value):
     return 0.5  # fallback
 
 
+def _temporal_media_duration(duration_s: float, scan_fps: float) -> float:
+    """Return the last in-media instant for inclusive temporal sampling."""
+    duration_s = float(duration_s)
+    scan_fps = float(scan_fps)
+    if duration_s <= 0.0 or scan_fps <= 0.0:
+        return duration_s
+    last_sample_s = max(0.0, duration_s - (0.5 / scan_fps))
+    return math.nextafter(last_sample_s, 0.0)
+
+
+def _ffmpeg_seconds(value: float) -> str:
+    """Format seconds without scientific notation (unsupported by FFmpeg)."""
+    rendered = f"{float(value):.9f}".rstrip("0").rstrip(".")
+    return rendered if rendered and rendered != "-0" else "0"
+
+
 # ---------------------------------------------------------------------------
 # P0 (sixth-review §4): shared VLM client - single scoring entry point for
 # both _stage_vlm and _stage_refine.  Ensures provider validation, failure
@@ -691,9 +707,7 @@ def run_pipeline(
     total_duration = float(probe.stdout.strip())
     print(f"  Duration: {total_duration:.0f}s ({total_duration/60:.0f} min)")
 
-    timestamps = list(
-        range(SAMPLE_INTERVAL, int(total_duration) - int(MAX_DURATION), SAMPLE_INTERVAL)
-    )
+    timestamps = list(range(SAMPLE_INTERVAL, int(total_duration), SAMPLE_INTERVAL))
     print(f"  Sampling {len(timestamps)} timestamps")
 
     sample_frames = []
@@ -1044,7 +1058,9 @@ def run_pipeline(
             video_path=video_path,
             clip=clip,
             scored_frames=scored,
-            total_duration_s=total_duration,
+            total_duration_s=_temporal_media_duration(
+                total_duration, float(cfg["transition_scan_fps"])
+            ),
             config=action_materializer_config,
             evidence_cache=evidence_cache,
             frame_scorer=frame_scorer,
@@ -1456,9 +1472,9 @@ def run_pipeline(
                 "ffmpeg",
                 "-y",
                 "-ss",
-                str(start),
+                _ffmpeg_seconds(start),
                 "-t",
-                str(duration),
+                _ffmpeg_seconds(duration),
                 "-i",
                 video_path,
                 "-vf",
@@ -1469,9 +1485,9 @@ def run_pipeline(
                 "ffmpeg",
                 "-y",
                 "-ss",
-                str(start),
+                _ffmpeg_seconds(start),
                 "-t",
-                str(duration),
+                _ffmpeg_seconds(duration),
                 "-i",
                 video_path,
                 "-i",
@@ -2208,16 +2224,13 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     discover = _read_upstream_manifest(inputs, "discover_manifest", "sample")
     total_duration = discover.get("duration_s", 0)
     SAMPLE_INTERVAL = cfg["sample_interval"]
-    MAX_DURATION = cfg["max_duration"]
     MIN_BRIGHTNESS = float(cfg.get("min_brightness", 25))
 
     # P1-3: Get stage_id from config for stable artifact_id computation.
     config_data = config_data or {}
     stage_id = config_data.get("_stage_id", "")
 
-    timestamps = list(
-        range(SAMPLE_INTERVAL, int(total_duration) - int(MAX_DURATION), SAMPLE_INTERVAL)
-    )
+    timestamps = list(range(SAMPLE_INTERVAL, int(total_duration), SAMPLE_INTERVAL))
     print(f"  Sampling {len(timestamps)} timestamps")
 
     sample_frames = []
@@ -2818,12 +2831,53 @@ def _stage_rank_dedup(
     OUTPUT_RATIO = cfg["output_ratio"]
     MAX_OUTPUT = cfg["max_output"]
 
+    MIN_DURATION = float(cfg["min_duration"])
+    MAX_DURATION = float(cfg["max_duration"])
+
+    transition_guard = {
+        key: 0
+        for key in (
+            "input",
+            "split",
+            "trim",
+            "drop",
+            "unverified",
+            "hard_cut",
+            "soft_transition",
+            "motion",
+        )
+    }
+    action_guard = {
+        "action_config_hash": cfg.get("action_config_hash"),
+        "action_analysis_version": int(
+            cfg.get("action_analysis_version", 1)
+        ),
+        "input": 0,
+        "output": 0,
+        "cv": 0,
+        "extended": 0,
+        "trimmed": 0,
+        "split": 0,
+        "ambient_motion": 0,
+        "vlm_checked": 0,
+        "vlm_succeeded": 0,
+        "vlm_failed": 0,
+        "fallback": 0,
+        "low_loop_quality": 0,
+        "cv_ms": 0.0,
+        "vlm_ms": 0.0,
+        "total_ms": 0.0,
+        "fallback_reasons": {},
+    }
+
     if not clips:
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "stage": "rank_dedup",
             "clip_count": 0,
             "clips": [],
+            "transition_guard": transition_guard,
+            "action_guard": action_guard,
             "output_key": "rank_dedup",
         }
         manifest_path = _save_manifest(work_dir, "rank_dedup", manifest)
@@ -2832,9 +2886,6 @@ def _stage_rank_dedup(
             "clip_count": 0,
             "_artifacts": [_make_artifact(manifest_path, "rank_dedup_manifest")],
         }
-
-    MIN_DURATION = float(cfg["min_duration"])
-    MAX_DURATION = float(cfg["max_duration"])
 
     probe = subprocess.run(
         [
@@ -2850,15 +2901,16 @@ def _stage_rank_dedup(
     except ValueError as exc:
         raise RuntimeError("ffprobe returned no usable video duration for rank/dedup") from exc
 
-    # The staged equivalent of direct-mode phase 2.65.  Build a bounded
-    # window first; guard and fan-out then retain only safe segments.  This
-    # must happen before candidates receive embeddings, temporal dedup, or IDs.
-    transition_guard = {key: 0 for key in (
-        "input", "split", "trim", "drop", "unverified", "hard_cut",
-        "soft_transition", "motion",
-    )}
+    # Use the same transition-first action materializer as direct mode.  One
+    # evidence cache is shared by the entire staged call so overlapping
+    # candidates reuse the same temporal decode.
     clean_clips: list[dict] = []
-    guard_rescore_enabled = bool(cfg.get("transition_rescore_split_segments", True))
+    evidence_cache = TemporalEvidenceCache()
+    action_materializer_config = {
+        **cfg,
+        "action_min_duration_s": MIN_DURATION,
+        "action_max_duration_s": MAX_DURATION,
+    }
     vlm_cfg: dict | None = None
     vlm_options = {
         "temperature": cfg["vlm_temperature"], "top_p": cfg["vlm_top_p"],
@@ -2866,73 +2918,145 @@ def _stage_rank_dedup(
     }
 
     for clip_index, clip in enumerate(clips):
-        window = build_export_window(
-            clip, total_duration_s=total_duration, min_duration_s=MIN_DURATION,
-            max_duration_s=MAX_DURATION,
-        )
-        anchor_ts = float(clip.get("best_frame_ts", (window.start_s + window.end_s) / 2))
-        guard_result = guard_candidate_window(
-            video_path, window.start_s, window.end_s, anchor_ts, cfg
-        )
-        transition_guard["input"] += 1
-        action = guard_result.transition_action
-        if action in transition_guard:
-            transition_guard[action] += 1
-        transition_guard["hard_cut"] += guard_result.hard_cut_count
-        transition_guard["soft_transition"] += guard_result.soft_transition_count
-        if guard_result.motion_type == "coherent_camera_motion":
-            transition_guard["motion"] += 1
+        def resolve_vlm() -> dict:
+            nonlocal vlm_cfg
+            if vlm_cfg is None:
+                vlm_cfg = _validate_vlm_provider(config_data)
+            return vlm_cfg
 
-        for segment_index, candidate in enumerate(
-            build_guarded_clips(clip, guard_result, scored_frames, MIN_DURATION)
-        ):
-            # This marker records that start/end are final guarded windows,
-            # not pre-guard evidence that gif_clip may expand or reinterpret.
-            candidate["guarded_export_window"] = True
-            if candidate.get("needs_rescore"):
-                if not guard_rescore_enabled:
-                    continue
-                if vlm_cfg is None:
-                    vlm_cfg = _validate_vlm_provider(config_data)
-                midpoint = (float(candidate["start_ts"]) + float(candidate["end_ts"])) / 2
-                frame_path = os.path.join(
-                    work_dir, f"guard_{clip_index:04d}_{segment_index:02d}_{midpoint:.3f}.jpg"
+        def frame_scorer(timestamp_s: float, label: str) -> dict | None:
+            provider = resolve_vlm()
+            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label))
+            frame_path = os.path.join(
+                work_dir,
+                f"action_{clip_index:04d}_{safe_label}_{timestamp_s:.3f}.jpg",
+            )
+            try:
+                extracted = subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-ss", str(timestamp_s), "-i",
+                        video_path, "-vf", "scale=640:-1", "-vframes", "1",
+                        frame_path,
+                    ],
+                    capture_output=True,
+                    timeout=15,
                 )
-                try:
-                    extracted = subprocess.run(
-                        ["ffmpeg", "-y", "-ss", str(midpoint), "-i", video_path,
-                         "-vf", "scale=640:-1", "-vframes", "1", frame_path],
-                        capture_output=True, timeout=15,
+                if extracted.returncode != 0 or not os.path.exists(frame_path):
+                    return None
+                with open(frame_path, "rb") as frame_file:
+                    payload, error = _score_vlm_frame(
+                        base_url=provider.get("base_url", OLLAMA_BASE),
+                        model=provider.get("model", "llava:13b"),
+                        image_bytes=frame_file.read(),
+                        prompt=get_score_prompt(),
+                        options=vlm_options,
+                        threshold=cfg["worthiness_threshold"],
+                        timestamp=timestamp_s,
+                        frame_path=frame_path,
+                        retry_delay_s=float(
+                            provider.get("retry_delay_s", 2.0)
+                        ),
                     )
-                    if extracted.returncode != 0 or not os.path.exists(frame_path):
-                        continue
-                    with open(frame_path, "rb") as frame_file:
-                        payload, error = _score_vlm_frame(
-                            base_url=vlm_cfg.get("base_url", OLLAMA_BASE),
-                            model=vlm_cfg.get("model", "llava:13b"),
-                            image_bytes=frame_file.read(), prompt=get_score_prompt(),
-                            options=vlm_options,
-                            threshold=cfg["worthiness_threshold"], timestamp=midpoint,
-                            frame_path=frame_path,
-                            retry_delay_s=float(vlm_cfg.get("retry_delay_s", 2.0)),
-                        )
-                    if payload is None:
-                        print(f"  Guard rescore dropped segment at {midpoint:.2f}s: {error}")
-                        continue
-                    candidate.update(
-                        best_frame=payload, best_frame_ts=midpoint,
-                        best_frame_path=frame_path, frame_count=1,
-                        gif_worthiness=payload["gif_worthiness"], needs_rescore=False,
+                if payload is None:
+                    print(
+                        "  Action rescore dropped segment at "
+                        f"{timestamp_s:.2f}s: {error}"
                     )
-                except Exception as exc:
-                    print(f"  Guard rescore dropped segment at {midpoint:.2f}s: {exc}")
-                    continue
-            clean_clips.append(candidate)
+                return payload
+            except Exception as exc:
+                print(
+                    "  Action rescore dropped segment at "
+                    f"{timestamp_s:.2f}s: {exc}"
+                )
+                return None
+
+        def sequence_generator(image_bytes: bytes, prompt: str) -> str:
+            provider = resolve_vlm()
+            response = httpx.post(
+                f"{provider.get('base_url', OLLAMA_BASE)}/api/generate",
+                json={
+                    "model": provider.get("model", "llava:13b"),
+                    "prompt": prompt,
+                    "images": [
+                        base64.b64encode(image_bytes).decode("utf-8")
+                    ],
+                    "stream": False,
+                    "options": vlm_options,
+                },
+                timeout=120,
+            )
+            response.raise_for_status()
+            raw_response = response.json().get("response", "")
+            return raw_response if isinstance(raw_response, str) else ""
+
+        materialized = materialize_action_candidates(
+            video_path=video_path,
+            clip=clip,
+            scored_frames=scored_frames,
+            total_duration_s=_temporal_media_duration(
+                total_duration, float(cfg["transition_scan_fps"])
+            ),
+            config=action_materializer_config,
+            evidence_cache=evidence_cache,
+            frame_scorer=frame_scorer,
+            sequence_generator=sequence_generator,
+        )
+        for candidate in materialized.clips:
+            normalized_candidate = dict(candidate)
+            if not bool(cfg.get("action_guard_enabled", True)):
+                normalized_candidate.setdefault(
+                    "action_boundary_mode", "disabled"
+                )
+                normalized_candidate.setdefault(
+                    "action_boundary_confidence", None
+                )
+                normalized_candidate.setdefault(
+                    "action_vlm_verified", False
+                )
+                normalized_candidate.setdefault(
+                    "action_analysis_version",
+                    int(cfg.get("action_analysis_version", 1)),
+                )
+            clean_clips.append(normalized_candidate)
+        for name in transition_guard:
+            transition_guard[name] += int(
+                materialized.transition_metrics.get(name, 0)
+            )
+        for name in (
+            "input",
+            "output",
+            "cv",
+            "extended",
+            "trimmed",
+            "split",
+            "ambient_motion",
+            "vlm_checked",
+            "vlm_succeeded",
+            "vlm_failed",
+            "fallback",
+            "low_loop_quality",
+        ):
+            action_guard[name] += int(
+                materialized.action_metrics.get(name, 0)
+            )
+        for name in ("cv_ms", "vlm_ms", "total_ms"):
+            elapsed = float(materialized.action_metrics.get(name, 0.0))
+            if math.isfinite(elapsed):
+                action_guard[name] += max(0.0, elapsed)
+        reasons = materialized.action_metrics.get("fallback_reasons", {})
+        if isinstance(reasons, dict):
+            grouped_reasons = action_guard["fallback_reasons"]
+            for reason, count in reasons.items():
+                reason_key = str(reason)
+                grouped_reasons[reason_key] = (
+                    int(grouped_reasons.get(reason_key, 0)) + int(count)
+                )
 
     print(
         f"  Guard: {transition_guard['input']} input -> {len(clean_clips)} clean candidates "
         f"(split={transition_guard['split']}, trim={transition_guard['trim']}, "
-        f"drop={transition_guard['drop']}, unverified={transition_guard['unverified']})"
+        f"drop={transition_guard['drop']}, unverified={transition_guard['unverified']}, "
+        f"action_split={action_guard['split']}, fallback={action_guard['fallback']})"
     )
 
     import numpy as np
@@ -3008,11 +3132,12 @@ def _stage_rank_dedup(
     print(f"  Final: {len(deduped_clips)} deduped clips")
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "rank_dedup",
         "clip_count": len(deduped_clips),
         "clips": deduped_clips,
         "transition_guard": transition_guard,
+        "action_guard": action_guard,
         "output_key": "rank_dedup",
     }
     manifest_path = _save_manifest(work_dir, "rank_dedup", manifest)
@@ -3079,6 +3204,11 @@ def _stage_gif_clip(
         start_ts = float(target_clip["start_ts"])
         end_ts = float(target_clip["end_ts"])
         duration = end_ts - start_ts
+        if duration < 2.0 - 1e-6 or duration > 20.0 + 1e-6:
+            raise ValueError(
+                f"rank_dedup clip {clip_id} guarded action duration "
+                f"{duration:.6f}s is outside [2.000000, 20.000000]"
+            )
     else:
         window = build_export_window(
             target_clip,
@@ -3091,7 +3221,13 @@ def _stage_gif_clip(
         duration = window.duration_s
     if start_ts < 0 or end_ts > total_duration + 1e-6:
         raise ValueError(f"rank_dedup clip {clip_id} has an out-of-video window")
-    if duration < MIN_DURATION - 1e-6 or duration > MAX_DURATION + 1e-6:
+    if (
+        not target_clip.get("guarded_export_window")
+        and (
+            duration < MIN_DURATION - 1e-6
+            or duration > MAX_DURATION + 1e-6
+        )
+    ):
         raise ValueError(
             f"rank_dedup clip {clip_id} duration {duration:.6f}s is outside "
             f"[{MIN_DURATION:.6f}, {MAX_DURATION:.6f}]"
@@ -3104,15 +3240,17 @@ def _stage_gif_clip(
     print(f"  Exporting clip {clip_id}: {start_ts:.2f}s - {end_ts:.2f}s -> {gif_name}")
 
     palette_path = os.path.join(frames_dir, f"palette_{clip_id}.png")
+    ffmpeg_start = _ffmpeg_seconds(start_ts)
+    ffmpeg_duration = _ffmpeg_seconds(end_ts - start_ts)
     attempt = run_gif_export_attempt(
         palette_command=[
-            "ffmpeg", "-y", "-ss", str(start_ts), "-t", str(end_ts - start_ts),
+            "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
             "-i", video_path,
             "-vf", f"fps={GIF_FPS},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",
             palette_path,
         ],
         gif_command=[
-                "ffmpeg", "-y", "-ss", str(start_ts), "-t", str(end_ts - start_ts),
+                "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
                 "-i", video_path, "-i", palette_path,
                 "-lavfi", f"fps={GIF_FPS},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
                 gif_path,
@@ -3150,7 +3288,9 @@ def _stage_gif_clip(
             gif_sha256.update(chunk)
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": (
+            2 if rank_manifest.get("schema_version") == 2 else 1
+        ),
         "stage": "gif_clip",
         "clip_id": clip_id,
         "gif_path": os.path.abspath(gif_path),
@@ -3158,8 +3298,34 @@ def _stage_gif_clip(
         "sha256": gif_sha256.hexdigest(),
         "start_ts": start_ts,
         "end_ts": end_ts,
+        "duration_s": duration,
+        "size_bytes": int(attempt.size_bytes),
+        "status": "succeeded",
         "output_key": f"gif_clip:{clip_id}",
     }
+    if manifest["schema_version"] == 2:
+        for field in (
+            "action_boundary_mode",
+            "action_start_ts",
+            "action_peak_ts",
+            "action_end_ts",
+            "action_completeness_score",
+            "action_boundary_confidence",
+            "loop_quality_score",
+            "action_split_reason",
+            "action_split_index",
+            "action_split_count",
+            "action_vlm_verified",
+            "action_fallback_reason",
+            "action_analysis_version",
+            "guarded_export_window",
+            "transition_action",
+            "transition_risk",
+            "motion_type",
+            "guard_reason",
+        ):
+            if field in target_clip:
+                manifest[field] = target_clip[field]
     manifest_path = _save_manifest(work_dir, f"gif_clip_{clip_id}", manifest)
 
     return {
