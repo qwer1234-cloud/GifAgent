@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
 import math
+from types import MappingProxyType
 from typing import Any, Mapping
 
 import numpy as np
@@ -107,22 +108,27 @@ class ActionMotionAnalysis:
     analysis_error: str | None = None
 
 
-class _ImmutableDiagnostics(dict[str, float | int | str | None]):
-    def _reject_mutation(self, *_args: Any, **_kwargs: Any) -> None:
-        raise TypeError("action diagnostics are immutable")
+class _ImmutableDiagnostics(Mapping[str, float | int | str | None]):
+    __slots__ = ("_values",)
 
-    __setitem__ = _reject_mutation
-    __delitem__ = _reject_mutation
-    clear = _reject_mutation
-    pop = _reject_mutation
-    popitem = _reject_mutation
-    setdefault = _reject_mutation
-    update = _reject_mutation
+    def __init__(
+        self, values: Mapping[str, float | int | str | None] | None = None
+    ) -> None:
+        object.__setattr__(self, "_values", MappingProxyType(dict(values or {})))
+
+    def __getitem__(self, key: str) -> float | int | str | None:
+        return self._values[key]
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self) -> int:
+        return len(self._values)
 
     def __deepcopy__(
         self, memo: dict[int, Any]
     ) -> "_ImmutableDiagnostics":
-        return _ImmutableDiagnostics(self)
+        return self
 
 
 @dataclass(frozen=True)
@@ -152,7 +158,7 @@ class ActionBoundaryResult:
     action_vlm_verified: bool
     action_fallback_reason: str | None
     action_analysis_version: int = 1
-    diagnostics: dict[str, float | int | str | None] = field(
+    diagnostics: Mapping[str, float | int | str | None] = field(
         default_factory=_ImmutableDiagnostics
     )
     analysis_error: str | None = None
@@ -161,7 +167,9 @@ class ActionBoundaryResult:
         object.__setattr__(self, "diagnostics", _ImmutableDiagnostics(self.diagnostics))
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["diagnostics"] = dict(self.diagnostics)
+        return payload
 
 
 def _parse_bool(value: Any) -> bool:
