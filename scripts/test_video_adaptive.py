@@ -609,7 +609,13 @@ def _should_manage_vlm_lifecycle(config_data: dict | None, launch_mode: str | No
 # ---- Core pipeline (shared by both modes) -------------------------
 
 
-def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -> dict:
+def run_pipeline(
+    video_path: str,
+    frames_dir: str,
+    export_dir: str,
+    cfg: dict,
+    vlm_runtime: VlmRuntimeConfig | None = None,
+) -> dict:
     """Run phases 1-4 of the adaptive extraction pipeline.
 
     Returns the full ``output`` dict with all scores, clips, and paths.
@@ -652,7 +658,8 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         "num_think": 0,
     }
 
-    VLM_MODEL = "llava:13b"
+    VLM_MODEL = vlm_runtime.model if vlm_runtime else "llava:13b"
+    VLM_BASE_URL = vlm_runtime.base_url if vlm_runtime else OLLAMA_BASE
     LLM_MODEL = llm_model_name()
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -728,10 +735,10 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     print(f"\n[2/4] VLM scoring ({len(sample_frames)} frames)...")
 
     if is_local_llm():
-        stop_model(LLM_MODEL.split("/")[-1].split(":")[0])
-    stop_model("nomic-embed-text")
+        stop_model(LLM_MODEL.split("/")[-1].split(":")[0], vlm_runtime)
+    stop_model("nomic-embed-text", vlm_runtime)
     time.sleep(5)
-    if not wait_model(VLM_MODEL):
+    if not wait_model(VLM_MODEL, vlm_runtime):
         print("ERROR: VLM not responding")
         sys.exit(1)
 
@@ -743,7 +750,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         for attempt in range(3):
             try:
                 resp = httpx.post(
-                    f"{OLLAMA_BASE}/api/generate",
+                    f"{VLM_BASE_URL}/api/generate",
                     json={
                         "model": VLM_MODEL,
                         "prompt": get_score_prompt(),
@@ -858,7 +865,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
             for attempt in range(3):
                 try:
                     resp = httpx.post(
-                        f"{OLLAMA_BASE}/api/generate",
+                        f"{VLM_BASE_URL}/api/generate",
                         json={
                             "model": VLM_MODEL,
                             "prompt": get_score_prompt(),
@@ -930,7 +937,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         "motion": 0,
     }
     guarded_clips = []
-    vlm_model, vlm_base_url = _resolve_vlm_config(None)
+    vlm_model, vlm_base_url = VLM_MODEL, VLM_BASE_URL
     guard_rescore_enabled = bool(cfg.get("transition_rescore_split_segments", True))
 
     for clip_index, clip in enumerate(clips):
@@ -1537,7 +1544,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
 
 def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
     """Run the full adaptive pipeline with lock, cleanup, and result persistence."""
-    load_config()
+    config_data = load_config()
     init_db()
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -1581,7 +1588,12 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
         if removed:
             print(f"Cleaned previous export artifacts: {removed}")
 
-    output = run_pipeline(video_path, FRAMES_DIR, EXPORT_DIR, cfg)
+    # Direct execution must honor the configured VLM endpoint/model, just as
+    # staged jobs do.  The module default is only a legacy fallback.
+    vlm_runtime = _resolve_vlm_runtime(config_data)
+    output = run_pipeline(
+        video_path, FRAMES_DIR, EXPORT_DIR, cfg, vlm_runtime=vlm_runtime
+    )
 
     # Save result
     with open("data/adaptive_test_result.json", "w", encoding="utf-8") as f:
@@ -2920,11 +2932,18 @@ def _stage_gif_clip(
         text=True,
     )
     total_duration = float(probe.stdout.strip())
-    # Rank/dedup has already calculated, guarded, and bounded this window.
-    # Export it verbatim: a transition decision must never originate here.
-    start_ts = float(target_clip["start_ts"])
-    end_ts = float(target_clip["end_ts"])
-    duration = end_ts - start_ts
+    # Rank/dedup has already calculated and guarded this window.  Apply the
+    # shared export bound at the ffmpeg boundary as a final invariant: staged
+    # manifests from older workers may still contain an uncapped merged span.
+    window = build_export_window(
+        target_clip,
+        total_duration_s=total_duration,
+        min_duration_s=MIN_DURATION,
+        max_duration_s=MAX_DURATION,
+    )
+    start_ts = window.start_s
+    end_ts = window.end_s
+    duration = window.duration_s
     if start_ts < 0 or end_ts > total_duration + 1e-6:
         raise ValueError(f"rank_dedup clip {clip_id} has an out-of-video window")
     if duration < MIN_DURATION - 1e-6 or duration > MAX_DURATION + 1e-6:
