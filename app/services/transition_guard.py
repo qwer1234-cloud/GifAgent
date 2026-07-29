@@ -111,9 +111,9 @@ class TransitionGuardResult:
     # its score anchor explicit.  ``segments`` remains the complete fan-out
     # set for a valid split; ``anchor_segment`` is the one containing the
     # original best-frame timestamp.
-    original_start_s: float = 0.0
-    original_end_s: float = 0.0
-    anchor_ts_s: float = 0.0
+    original_start_s: float | None = 0.0
+    original_end_s: float | None = 0.0
+    anchor_ts_s: float | None = 0.0
     anchor_segment: GuardSegment | None = None
 
     def to_dict(self) -> dict[str, object]:
@@ -151,12 +151,22 @@ class _PairMetric:
         return min(1.0, 0.45 * self.histogram_distance + 0.30 * self.edge_distance + 0.25 * self.luma_change)
 
 
-def _result_error(message: str, start_s: float = 0.0, end_s: float = 0.0, anchor_ts_s: float = 0.0) -> TransitionGuardResult:
+def _finite_or_none(value: object) -> float | None:
+    """Prevent malformed caller timestamps from leaking NaN/Infinity to JSON."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _result_error(message: str, start_s: object = 0.0, end_s: object = 0.0, anchor_ts_s: object = 0.0) -> TransitionGuardResult:
     return TransitionGuardResult(
         transition_action="unverified", segments=(), boundaries=(), hard_cut_count=0,
         soft_transition_count=0, motion_type="unknown", transition_risk=1.0,
         guard_reason="media scan could not be verified", guard_error=message,
-        original_start_s=start_s, original_end_s=end_s, anchor_ts_s=anchor_ts_s,
+        original_start_s=_finite_or_none(start_s), original_end_s=_finite_or_none(end_s),
+        anchor_ts_s=_finite_or_none(anchor_ts_s),
     )
 
 

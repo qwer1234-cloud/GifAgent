@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import cv2
@@ -127,6 +128,17 @@ def test_static_media_is_kept_without_transition_evidence(tmp_path: Path) -> Non
     assert result.hard_cut_count == 0
     assert result.soft_transition_count == 0
     assert result.to_dict()["guard_error"] is None
+
+
+def test_nonfinite_timestamps_produce_strict_json_safe_error_result(tmp_path: Path) -> None:
+    video = write_static_video(tmp_path / "static_nonfinite.mp4")
+    result = guard_candidate_window(video, float("nan"), float("inf"), float("nan"), BASE_CFG)
+
+    assert result.transition_action == "unverified"
+    assert result.original_start_s is None
+    assert result.original_end_s is None
+    assert result.anchor_ts_s is None
+    json.dumps(result.to_dict(), allow_nan=False)
 
 
 def test_slow_upward_motion_is_kept(tmp_path: Path) -> None:
