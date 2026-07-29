@@ -180,7 +180,6 @@ def _repair_non_strict_config(
             "analysis_window_s",
             "preferred_min_duration_s",
             "preferred_max_duration_s",
-            "min_duration_s",
             "max_duration_s",
         ):
             values[name] = getattr(defaults, name)

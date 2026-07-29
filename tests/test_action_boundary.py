@@ -209,6 +209,22 @@ def test_non_strict_config_convergently_repairs_dependent_durations():
     assert config.max_duration_s == 20.0
 
 
+def test_non_strict_duration_repair_preserves_valid_independent_minimum():
+    config = ActionBoundaryConfig.from_mapping(
+        {
+            "preferred_max_duration_s": 100,
+            "max_duration_s": 100,
+            "analysis_window_s": 10,
+            "min_duration_s": 3,
+        }
+    )
+
+    assert config.min_duration_s == 3.0
+    assert config.preferred_min_duration_s <= config.preferred_max_duration_s
+    assert config.preferred_max_duration_s <= config.max_duration_s
+    assert config.max_duration_s <= config.analysis_window_s
+
+
 def test_result_types_are_immutable_and_candidates_are_ranked_to_three(tmp_path):
     result = analyze_action_motion(
         scan_video(write_start_move_settle_video(tmp_path / "ranked.mp4"), 0.0, 8.0),
