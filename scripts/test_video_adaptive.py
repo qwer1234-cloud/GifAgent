@@ -2932,18 +2932,24 @@ def _stage_gif_clip(
         text=True,
     )
     total_duration = float(probe.stdout.strip())
-    # Rank/dedup has already calculated and guarded this window.  Apply the
-    # shared export bound at the ffmpeg boundary as a final invariant: staged
-    # manifests from older workers may still contain an uncapped merged span.
-    window = build_export_window(
-        target_clip,
-        total_duration_s=total_duration,
-        min_duration_s=MIN_DURATION,
-        max_duration_s=MAX_DURATION,
-    )
-    start_ts = window.start_s
-    end_ts = window.end_s
-    duration = window.duration_s
+    # Guarded segments are already exact safe intervals.  Re-centering them
+    # here could expand a split segment across its confirmed boundary.  Older
+    # rank/dedup manifests have no such marker, so retain the shared bounded
+    # window fallback for their legacy uncapped merged spans.
+    if target_clip.get("guarded_export_window"):
+        start_ts = float(target_clip["start_ts"])
+        end_ts = float(target_clip["end_ts"])
+        duration = end_ts - start_ts
+    else:
+        window = build_export_window(
+            target_clip,
+            total_duration_s=total_duration,
+            min_duration_s=MIN_DURATION,
+            max_duration_s=MAX_DURATION,
+        )
+        start_ts = window.start_s
+        end_ts = window.end_s
+        duration = window.duration_s
     if start_ts < 0 or end_ts > total_duration + 1e-6:
         raise ValueError(f"rank_dedup clip {clip_id} has an out-of-video window")
     if duration < MIN_DURATION - 1e-6 or duration > MAX_DURATION + 1e-6:

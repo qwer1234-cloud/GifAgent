@@ -17,7 +17,7 @@ sample of 30 scored frames at the requester's direction. The user's prior
 | Resolved media file | `C:\Users\sunhao\Desktop\ToWatch\现代爱情故事.1991.BD1080p.国英双语中字.mp4\现代爱情故事.1991.BD1080p.国英双语中字.mp4` |
 | Source duration | `7068.032000` seconds |
 | Export root | `data\exports\transition_guard_validation` |
-| Direct command | `uv run python -u scripts/test_video_adaptive.py --video <ASCII temporary hardlink to the resolved media> --export-dir data\exports\transition_guard_validation` |
+| Direct command | `uv run python -u scripts/test_video_adaptive.py --video C:\Users\sunhao\AppData\Local\Temp\transition_guard_modern_love_73d767815d1e4df7b63709557e55482e.mp4 --export-dir data\exports\transition_guard_validation` |
 | Reason for hardlink | The requested path is a directory containing the MP4, and this Windows FFmpeg build cannot open the Unicode media path directly. The hardlink references the same source bytes; no source video was copied or modified. |
 | Config SHA-256 | `EB5BBE2BCBBF34F010E19F4EF1EB2B7AE4F30D7884F4841192BA2C7633AC7372` (`configs/models.yaml`) |
 | Guard algorithm version | Not explicitly versioned in source; validated implementation is `app.services.transition_guard.guard_candidate_window` exercised by `tests/test_transition_guard.py`. |
