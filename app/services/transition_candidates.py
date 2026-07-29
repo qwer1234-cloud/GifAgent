@@ -32,6 +32,8 @@ def build_guarded_clips(
     # Keep every supplied segment here so this pure mapper cannot silently
     # discard a guard-approved candidate (including boundary-margin segments).
     _ = min_duration_s
+    if guard_result.transition_action == "drop":
+        return []
     candidates: list[dict[str, Any]] = []
 
     for segment in guard_result.segments:

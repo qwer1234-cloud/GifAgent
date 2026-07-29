@@ -81,3 +81,23 @@ def test_drop_result_returns_no_candidates():
         scored_frames=[_f(1.0, 0.7)],
         min_duration_s=2.0,
     ) == []
+
+
+def test_drop_result_with_defensive_segment_returns_no_candidates():
+    result = TransitionGuardResult(
+        transition_action="drop",
+        segments=(GuardSegment(0.0, 5.0),),
+        boundaries=(),
+        hard_cut_count=1,
+        soft_transition_count=0,
+        motion_type="static_or_local_motion",
+        transition_risk=0.95,
+        guard_reason="transition margins left no exportable segment",
+    )
+
+    assert build_guarded_clips(
+        clip={"start_ts": 0.0, "end_ts": 5.0},
+        guard_result=result,
+        scored_frames=[_f(1.0, 0.7)],
+        min_duration_s=2.0,
+    ) == []
