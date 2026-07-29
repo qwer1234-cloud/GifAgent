@@ -132,27 +132,39 @@ class TemporalEvidenceCache:
                 source_fps = capture.get(cv2.CAP_PROP_FPS)
                 if not math.isfinite(source_fps) or source_fps <= 0:
                     source_fps = config.fps
-                wanted = set(indexes)
-                first_source_index = max(0, int(round(min(indexes) * source_fps / config.fps)))
+                frame_count = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+                source_indexes = {
+                    int(round(index * source_fps / config.fps))
+                    for index in indexes
+                }
+                if frame_count > 0:
+                    source_indexes = {index for index in source_indexes if 0 <= index < frame_count}
+                if not source_indexes:
+                    raise TemporalMediaError("requested temporal range has no decodable source frames")
+                wanted = {
+                    int(round(index * config.fps / source_fps))
+                    for index in source_indexes
+                }
+                first_source_index = min(source_indexes)
                 capture.set(cv2.CAP_PROP_POS_FRAMES, first_source_index)
-                decoded_any = False
                 while wanted:
                     ok, image = capture.read()
                     if not ok:
                         break
                     source_index = int(round(capture.get(cv2.CAP_PROP_POS_FRAMES) - 1))
+                    if source_index > max(source_indexes):
+                        break
                     sample_index = int(round(source_index * config.fps / source_fps))
                     if sample_index not in wanted:
                         continue
                     gray, hsv = _resize(image, config.width)
                     key = (_identity(path), config.fps, config.width, sample_index)
+                    is_new = key not in self._frames
                     self._frames[key] = TemporalFrame(sample_index, sample_index / config.fps, gray, hsv)
-                    self.decoded_frame_count += 1
-                    decoded_any = True
+                    if is_new:
+                        self.decoded_frame_count += 1
                     wanted.remove(sample_index)
-                # Reaching EOF after useful samples is normal at an inclusive
-                # end boundary.  A first-read failure gets one clean retry.
-                if decoded_any:
+                if not wanted:
                     return
                 if attempt == 1:
                     raise TemporalMediaError("OpenCV could not decode the requested source video samples")
@@ -179,8 +191,6 @@ class TemporalEvidenceCache:
             raise TemporalMediaError("OpenCV could not decode requested source video samples")
         pairs: list[TemporalPairEvidence] = []
         for previous, current in zip(frames, frames[1:]):
-            if current.sample_index != previous.sample_index + 1:
-                continue
             key = (identity, config.fps, config.width, config.motion_compensation, current.sample_index)
             if key not in self._pairs:
                 self._pairs[key] = _pair(previous, current, config.motion_compensation)

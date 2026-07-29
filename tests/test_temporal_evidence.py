@@ -32,8 +32,8 @@ def _frame(seed: int, index: int) -> np.ndarray:
     return image
 
 
-def _write_cache_video(path: Path, *, hard_cut: bool) -> Path:
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), FPS, FRAME_SIZE)
+def _write_cache_video(path: Path, *, hard_cut: bool, fps: int = FPS) -> Path:
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, FRAME_SIZE)
     assert writer.isOpened()
     try:
         for index in range(48):
@@ -55,7 +55,8 @@ def test_overlapping_scans_decode_only_missing_samples(tmp_path: Path) -> None:
     assert first.frames
     assert second.frames
     assert cache.decoded_frame_count < decoded_after_first * 2
-    assert len({frame.sample_index for frame in second.frames}) == len(second.frames)
+    assert [frame.sample_index for frame in first.frames] == list(range(33))
+    assert [frame.sample_index for frame in second.frames] == list(range(16, 48))
 
 
 def test_precomputed_evidence_matches_direct_transition_scan(tmp_path: Path) -> None:
@@ -69,6 +70,19 @@ def test_precomputed_evidence_matches_direct_transition_scan(tmp_path: Path) -> 
     assert shared.transition_action == direct.transition_action
     assert shared.hard_cut_count == direct.hard_cut_count
     assert shared.segments == direct.segments
+
+
+def test_low_source_fps_hard_cut_still_produces_transition_pairs(tmp_path: Path) -> None:
+    video = _write_cache_video(tmp_path / "hard-cut-4fps.mp4", hard_cut=True, fps=4)
+    cache = TemporalEvidenceCache()
+    evidence = cache.scan(video, 0.0, 10.0, TemporalScanConfig(fps=8.0, width=320, motion_compensation=True))
+
+    result = guard_candidate_window(video, 0.0, 10.0, 1.0, BASE_CFG, temporal_evidence=evidence)
+
+    assert len(evidence.frames) == 41
+    assert len(evidence.pairs) == 40
+    assert result.transition_action == "split"
+    assert result.hard_cut_count >= 1
 
 
 def test_slice_keeps_only_frames_and_pairs_in_requested_window(tmp_path: Path) -> None:
@@ -112,6 +126,37 @@ def test_scan_retries_one_failed_open(monkeypatch: pytest.MonkeyPatch, tmp_path:
     result = TemporalEvidenceCache().scan(video, 0.0, 1.0, TemporalScanConfig(fps=8.0, width=160))
     assert result.frames
     assert calls >= 2
+
+
+def test_scan_retries_partial_decode_until_all_available_samples_are_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    video = _write_cache_video(tmp_path / "partial-retry.mp4", hard_cut=False)
+    real_capture = cv2.VideoCapture
+    calls = 0
+
+    class PartialCapture:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.inner = real_capture(*args, **kwargs)
+            self.reads = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.inner, name)
+
+        def read(self) -> tuple[bool, np.ndarray | None]:
+            self.reads += 1
+            return (False, None) if self.reads > 3 else self.inner.read()
+
+    def capture(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        return PartialCapture(*args, **kwargs) if calls == 1 else real_capture(*args, **kwargs)
+
+    monkeypatch.setattr(cv2, "VideoCapture", capture)
+    evidence = TemporalEvidenceCache().scan(video, 0.0, 2.0, TemporalScanConfig(fps=8.0, width=160))
+
+    assert calls == 2
+    assert [frame.sample_index for frame in evidence.frames] == list(range(17))
 
 
 def test_scan_raises_typed_error_after_two_unreadable_attempts(tmp_path: Path) -> None:
