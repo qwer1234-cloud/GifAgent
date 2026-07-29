@@ -827,7 +827,7 @@ def finalize_action_analysis(
     safe_start_s: float,
     safe_end_s: float,
     anchor_ts_s: float,
-    selected_candidate_index: int,
+    selected_candidate_index: int | None,
     config: ActionBoundaryConfig | Mapping[str, Any] | None,
 ) -> ActionBoundaryResult:
     """Validate CV output and apply the final 2--20 second action policy."""
@@ -840,10 +840,13 @@ def finalize_action_analysis(
         analysis, evidence, safe_start_s, safe_end_s, anchor_ts_s
     )
     if (
-        isinstance(selected_candidate_index, bool)
-        or not isinstance(selected_candidate_index, int)
+        selected_candidate_index is not None
+        and (
+            isinstance(selected_candidate_index, bool)
+            or not isinstance(selected_candidate_index, int)
+        )
     ):
-        raise ValueError("selected_candidate_index must be an integer")
+        raise ValueError("selected_candidate_index must be an integer or None")
     diagnostics: dict[str, float | int | str | None] = {
         "selected_candidate_index": selected_candidate_index,
         "motion_type": analysis.motion_type,
@@ -851,6 +854,7 @@ def finalize_action_analysis(
     selected = (
         analysis.candidates[selected_candidate_index]
         if analysis.motion_type == "subject_action"
+        and selected_candidate_index is not None
         and 0 <= selected_candidate_index < len(analysis.candidates)
         else None
     )

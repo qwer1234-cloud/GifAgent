@@ -302,6 +302,24 @@ def test_finalizer_rejects_non_finite_selected_index_before_serialization():
         )
 
 
+def test_finalizer_accepts_none_as_serializable_no_selection():
+    candidate = _candidate(2.0, 4.0, 6.0)
+
+    result = finalize_action_analysis(
+        _analysis(candidate),
+        make_flat_evidence(0.0, 8.0),
+        0.0,
+        8.0,
+        4.0,
+        None,
+        ACTION_CFG,
+    )
+
+    assert result.action_boundary_mode == "fallback_fixed"
+    assert result.diagnostics["selected_candidate_index"] is None
+    json.dumps(result.to_dict(), allow_nan=False)
+
+
 def test_each_fan_out_child_chooses_highest_scored_in_range_frame():
     result = _finalize(
         _candidate(0.0, 8.0, 25.0),
