@@ -6,7 +6,7 @@
 target film is 7,068.032 seconds (117.8 minutes). A complete direct run would
 score 999 VLM frames and projected to take roughly 90–100 minutes for its first
 scoring pass alone. It was deliberately stopped after a bounded, successful
-sample of 30 scored frames at the requester's direction. The user's prior
+sample of 30 scored frames within the agreed time budget. The user's prior
 `data/adaptive_test_result.json` was captured and restored after every run.
 
 ## Target and command
