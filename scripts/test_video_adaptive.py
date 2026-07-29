@@ -35,6 +35,7 @@ from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
 from app.services.clip_merge import merge_scored_frames_into_clips
 from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
+from app.services.action_boundary import ActionBoundaryConfig
 from app.services.action_config import freeze_action_config
 from app.services.action_pipeline import materialize_action_candidates
 from app.services.export_cleanup import (
@@ -152,6 +153,42 @@ def _ffmpeg_seconds(value: float) -> str:
     """Format seconds without scientific notation (unsupported by FFmpeg)."""
     rendered = f"{float(value):.9f}".rstrip("0").rstrip(".")
     return rendered if rendered and rendered != "-0" else "0"
+
+
+def _freeze_stage_action_config(
+    cfg: dict,
+) -> tuple[dict[str, object], str]:
+    """Canonicalize legacy flat stage config before writing manifest v2."""
+    repaired = ActionBoundaryConfig.from_mapping(
+        {
+            **cfg,
+            "action_min_duration_s": cfg.get("min_duration", 2.0),
+            "action_max_duration_s": cfg.get("max_duration", 20.0),
+        },
+        strict=False,
+    )
+    normalized = {
+        "min_duration": repaired.min_duration_s,
+        "max_duration": repaired.max_duration_s,
+        "action_guard_enabled": repaired.enabled,
+        "action_vlm_verify_enabled": repaired.vlm_verify_enabled,
+        "action_analysis_version": repaired.analysis_version,
+        "action_analysis_window_s": repaired.analysis_window_s,
+        "action_preferred_min_duration_s": (
+            repaired.preferred_min_duration_s
+        ),
+        "action_preferred_max_duration_s": (
+            repaired.preferred_max_duration_s
+        ),
+        "action_scan_fps": repaired.scan_fps,
+        "action_boundary_confidence_threshold": (
+            repaired.boundary_confidence_threshold
+        ),
+        "action_loop_adjust_s": repaired.loop_adjust_s,
+        "action_vlm_min_worthiness": repaired.vlm_min_worthiness,
+        "action_fallback_mode": repaired.fallback_mode,
+    }
+    return freeze_action_config(normalized)
 
 
 # ---------------------------------------------------------------------------
@@ -2831,8 +2868,7 @@ def _stage_rank_dedup(
     OUTPUT_RATIO = cfg["output_ratio"]
     MAX_OUTPUT = cfg["max_output"]
 
-    MIN_DURATION = float(cfg["min_duration"])
-    MAX_DURATION = float(cfg["max_duration"])
+    normalized_action, canonical_action_hash = _freeze_stage_action_config(cfg)
 
     transition_guard = {
         key: 0
@@ -2848,9 +2884,9 @@ def _stage_rank_dedup(
         )
     }
     action_guard = {
-        "action_config_hash": cfg.get("action_config_hash"),
+        "action_config_hash": canonical_action_hash,
         "action_analysis_version": int(
-            cfg.get("action_analysis_version", 1)
+            normalized_action["action_analysis_version"]
         ),
         "input": 0,
         "output": 0,
@@ -2908,8 +2944,9 @@ def _stage_rank_dedup(
     evidence_cache = TemporalEvidenceCache()
     action_materializer_config = {
         **cfg,
-        "action_min_duration_s": MIN_DURATION,
-        "action_max_duration_s": MAX_DURATION,
+        **normalized_action,
+        "action_min_duration_s": normalized_action["min_duration"],
+        "action_max_duration_s": normalized_action["max_duration"],
     }
     vlm_cfg: dict | None = None
     vlm_options = {

@@ -272,6 +272,9 @@ def test_direct_and_staged_action_splits_match_before_ranking(
     staged = json.loads(
         (staged_work / "rank_dedup_manifest.json").read_text(encoding="utf-8")
     )
+    assert staged["action_guard"]["action_config_hash"] == (
+        test_video_adaptive._freeze_stage_action_config(cfg)[1]
+    )
 
     fields = (
         "start_ts",
@@ -289,3 +292,37 @@ def test_direct_and_staged_action_splits_match_before_ranking(
     assert len({clip["clip_id"] for clip in staged["clips"]}) == 2
     assert len(seen_caches) == 2
     assert seen_caches[0] is not seen_caches[1]
+
+
+def test_empty_staged_rank_derives_canonical_action_hash(
+    tmp_path, monkeypatch
+):
+    """Legacy callers without a supplied hash still emit self-validating v2."""
+    from app.services.action_config import freeze_action_config
+    from app.task_engine.artifacts import validate_manifest_json
+    from tests.test_adaptive_direct_transition import _cfg
+
+    cfg = _cfg()
+    cfg["max_duration"] = 20.0
+    cfg.pop("action_config_hash")
+    monkeypatch.setattr(
+        test_video_adaptive,
+        "_read_upstream_manifest",
+        lambda *_args: {"clips": [], "scored_frames": []},
+    )
+    test_video_adaptive._stage_rank_dedup(
+        str(tmp_path / "source.mp4"),
+        str(tmp_path / "exports"),
+        str(tmp_path),
+        cfg,
+        {"synthesize_manifest": [{"path": "ignored"}]},
+        None,
+    )
+
+    manifest_path = tmp_path / "rank_dedup_manifest.json"
+    manifest = validate_manifest_json(
+        manifest_path.read_bytes(), "rank_dedup_manifest"
+    )
+    assert manifest["action_guard"]["action_config_hash"] == (
+        freeze_action_config(cfg)[1]
+    )

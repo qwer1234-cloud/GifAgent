@@ -324,6 +324,165 @@ class TestManifestValidation:
                 "gif_clip_manifest",
             )
 
+    @pytest.mark.parametrize(
+        ("field", "value", "match"),
+        [
+            ("clips", [7], "must be an object"),
+            ("clip_count", True, "non-negative integer"),
+        ],
+    )
+    def test_rank_manifest_v2_rejects_malformed_container_types(
+        self, field, value, match
+    ):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        clip = {
+            "clip_id": "clip-1",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+        }
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [clip],
+            "action_guard": {
+                "action_config_hash": "a" * 64,
+                "action_analysis_version": 1,
+                "input": 1,
+                "output": 1,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+            },
+        }
+        manifest[field] = value
+        with pytest.raises(ValueError, match=match):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+            )
+
+    @pytest.mark.parametrize("clip_id", [True, 7, "   "])
+    def test_rank_manifest_v2_requires_string_clip_id(self, clip_id):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{
+                "clip_id": clip_id,
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+                "action_boundary_mode": "cv",
+                "action_boundary_confidence": 0.8,
+                "action_vlm_verified": False,
+                "action_analysis_version": 1,
+                "guarded_export_window": True,
+            }],
+            "action_guard": {
+                "action_config_hash": "a" * 64,
+                "action_analysis_version": 1,
+                "input": 1,
+                "output": 1,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+            },
+        }
+        with pytest.raises(ValueError, match="clip_id"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+            )
+
+    @pytest.mark.parametrize(
+        ("field", "value", "match"),
+        [
+            ("gif_path", True, "gif_path"),
+            ("sha256", None, "sha256"),
+            ("duration_s", None, "duration_s"),
+            ("size_bytes", None, "size_bytes"),
+            ("status", None, "status"),
+        ],
+    )
+    def test_gif_manifest_v2_requires_valid_export_metadata(
+        self, field, value, match
+    ):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "sha256": "a" * 64,
+            "duration_s": 6.0,
+            "size_bytes": 123,
+            "status": "succeeded",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+        }
+        if value is None:
+            manifest.pop(field)
+        else:
+            manifest[field] = value
+        with pytest.raises(ValueError, match=match):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "gif_clip_manifest",
+            )
+
+    @pytest.mark.parametrize(
+        ("field", "value", "match"),
+        [
+            ("sha256", "xyz", "sha256"),
+            ("duration_s", 5.0, "duration_s"),
+            ("size_bytes", True, "size_bytes"),
+            ("size_bytes", -1, "size_bytes"),
+            ("status", 7, "status"),
+        ],
+    )
+    def test_gif_manifest_v2_rejects_invalid_export_metadata(
+        self, field, value, match
+    ):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "sha256": "a" * 64,
+            "duration_s": 6.0,
+            "size_bytes": 123,
+            "status": "succeeded",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+        }
+        manifest[field] = value
+        with pytest.raises(ValueError, match=match):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "gif_clip_manifest",
+            )
+
 
 class TestManifestSchemaVersion:
     """P1-2: ``schema_version`` must be a positive integer in the supported

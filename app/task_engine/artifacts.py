@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -948,6 +949,36 @@ def _validate_action_clip_v2(clip: object, *, context: str) -> None:
             _finite_number(
                 clip[field], field, context=context, nullable=True
             )
+    split_index_present = "action_split_index" in clip
+    split_count_present = "action_split_count" in clip
+    if split_index_present != split_count_present:
+        raise ValueError(
+            f"{context} action_split_index and action_split_count "
+            "must be provided together"
+        )
+    if split_index_present:
+        split_index = clip["action_split_index"]
+        split_count = clip["action_split_count"]
+        if (
+            isinstance(split_index, bool)
+            or not isinstance(split_index, int)
+            or isinstance(split_count, bool)
+            or not isinstance(split_count, int)
+            or split_index <= 0
+            or split_count <= 0
+            or split_index > split_count
+        ):
+            raise ValueError(
+                f"{context} action split indexes must be positive integers "
+                "with action_split_index <= action_split_count"
+            )
+    if "transition_risk" in clip:
+        _finite_number(
+            clip["transition_risk"],
+            "transition_risk",
+            context=context,
+            nullable=True,
+        )
 
 
 def _validate_action_guard_v2(value: object) -> None:
@@ -982,6 +1013,57 @@ def _validate_action_guard_v2(value: object) -> None:
         elapsed = _finite_number(value[field], field, context=context)
         if float(elapsed) < 0.0:
             raise ValueError(f"{context} {field} must be non-negative")
+
+
+def _validate_gif_export_v2(value: dict) -> None:
+    context = "gif_clip_manifest"
+    for field in (
+        "sha256",
+        "duration_s",
+        "size_bytes",
+        "status",
+    ):
+        _require_v2_field(value, field, context=context)
+
+    clip_id = value.get("clip_id")
+    if not isinstance(clip_id, str) or not clip_id.strip():
+        raise ValueError(f"{context} clip_id must be a non-empty string")
+    gif_path = value.get("gif_path")
+    if not isinstance(gif_path, str) or not gif_path.strip():
+        raise ValueError(f"{context} gif_path must be a non-empty string")
+    sha256 = value["sha256"]
+    if (
+        not isinstance(sha256, str)
+        or re.fullmatch(r"[0-9a-fA-F]{64}", sha256) is None
+    ):
+        raise ValueError(f"{context} sha256 must be 64 hexadecimal characters")
+    duration_s = _finite_number(
+        value["duration_s"], "duration_s", context=context
+    )
+    start_ts = _finite_number(value["start_ts"], "start_ts", context=context)
+    end_ts = _finite_number(value["end_ts"], "end_ts", context=context)
+    expected_duration = float(end_ts) - float(start_ts)
+    if not math.isclose(
+        float(duration_s), expected_duration, rel_tol=1e-9, abs_tol=1e-6
+    ):
+        raise ValueError(
+            f"{context} duration_s must equal end_ts - start_ts"
+        )
+    size_bytes = value["size_bytes"]
+    if (
+        isinstance(size_bytes, bool)
+        or not isinstance(size_bytes, int)
+        or size_bytes < 0
+    ):
+        raise ValueError(f"{context} size_bytes must be a non-negative integer")
+    status = value["status"]
+    if (
+        not isinstance(status, str)
+        or status not in {"succeeded", "failed"}
+    ):
+        raise ValueError(
+            f"{context} status must be 'succeeded' or 'failed'"
+        )
 
 
 def validate_manifest_json(
@@ -1038,15 +1120,31 @@ def validate_manifest_json(
         if not isinstance(clips, list):
             raise ValueError("rank_dedup_manifest clips must be an array")
         clip_count = data.get("clip_count", len(clips))
+        if (
+            isinstance(clip_count, bool)
+            or not isinstance(clip_count, int)
+            or clip_count < 0
+        ):
+            raise ValueError(
+                "rank_dedup_manifest clip_count must be a non-negative integer"
+            )
         if clip_count != len(clips):
             raise ValueError(
                 f"rank_dedup_manifest clip_count ({clip_count}) != "
                 f"len(clips) ({len(clips)})"
             )
-        # Verify clip_ids are non-empty and unique
-        clip_ids = [c.get("clip_id", "") for c in clips]
-        if any(not cid for cid in clip_ids):
-            raise ValueError("rank_dedup_manifest has a clip with empty clip_id")
+        for index, clip in enumerate(clips):
+            if not isinstance(clip, dict):
+                raise ValueError(
+                    f"rank_dedup_manifest clips[{index}] must be an object"
+                )
+        # Verify clip_ids are non-empty strings and unique.
+        clip_ids = [c.get("clip_id") for c in clips]
+        if any(not isinstance(cid, str) or not cid.strip() for cid in clip_ids):
+            raise ValueError(
+                "rank_dedup_manifest has an empty clip_id or non-string "
+                "clip_id; clip_id must be a non-empty string"
+            )
         if len(set(clip_ids)) != len(clip_ids):
             raise ValueError("rank_dedup_manifest has duplicate clip_ids")
         if data.get("schema_version") == 2:
@@ -1059,11 +1157,21 @@ def validate_manifest_json(
                 data, "action_guard", context="rank_dedup_manifest"
             )
             _validate_action_guard_v2(action_guard)
+            root_version = action_guard["action_analysis_version"]
+            if any(
+                clip["action_analysis_version"] != root_version
+                for clip in clips
+            ):
+                raise ValueError(
+                    "rank_dedup_manifest clip action_analysis_version "
+                    "must match action_guard action_analysis_version"
+                )
 
     if (
         artifact_kind == "gif_clip_manifest"
         and data.get("schema_version") == 2
     ):
         _validate_action_clip_v2(data, context="gif_clip_manifest")
+        _validate_gif_export_v2(data)
 
     return data
