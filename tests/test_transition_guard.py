@@ -85,6 +85,10 @@ def write_flash_video(path: Path) -> Path:
     return _write_video(path, [scene] * 15 + [np.full_like(scene, 255)] + [scene] * 16)
 
 
+def write_bright_intermediate_shot_video(path: Path) -> Path:
+    return _write_video(path, [_scene(8)] * 24 + [np.full_like(_scene(8), 255)] * 16 + [_scene(9)] * 24)
+
+
 def write_moving_subject_video(path: Path) -> Path:
     background = _scene(7)
     frames = []
@@ -173,6 +177,15 @@ def test_single_flash_is_not_a_cut(tmp_path: Path) -> None:
 
     assert result.hard_cut_count == 0
     assert result.transition_action in {"keep", "trim"}
+
+
+def test_bright_intermediate_shot_preserves_both_real_cuts(tmp_path: Path) -> None:
+    video = write_bright_intermediate_shot_video(tmp_path / "bright_intermediate.mp4")
+    result = guard_candidate_window(video, 0.0, 8.0, 1.0, BASE_CFG)
+
+    assert result.transition_action == "split"
+    assert result.hard_cut_count >= 2
+    assert len(result.segments) == 2
 
 
 def test_local_subject_motion_is_not_a_cut(tmp_path: Path) -> None:

@@ -275,13 +275,36 @@ def _evidence(metric: _PairMetric, config: TransitionGuardConfig) -> BoundaryEvi
     return BoundaryEvidence(metric.timestamp_s, kind, confidence, metric.histogram_distance, metric.edge_distance, metric.luma_change, residual, inlier_ratio, dx, dy, scale)
 
 
-def _flash_indexes(evidence: list[BoundaryEvidence]) -> set[int]:
-    """Find a two-sided exposure spike before classifying either side as a cut."""
+def _structure_recovers(before: np.ndarray, after: np.ndarray) -> bool:
+    """Whether frames on either side of an exposure spike are the same shot."""
+    luma_change = float(np.mean(cv2.absdiff(before, after)) / 255.0)
+    edges_before = cv2.Canny(before, 60, 140)
+    edges_after = cv2.Canny(after, 60, 140)
+    edge_distance = float(np.mean(edges_before != edges_after))
+    hist_before = cv2.calcHist([before], [0], None, [32], [0, 256])
+    hist_after = cv2.calcHist([after], [0], None, [32], [0, 256])
+    cv2.normalize(hist_before, hist_before)
+    cv2.normalize(hist_after, hist_after)
+    histogram_distance = float(cv2.compareHist(hist_before, hist_after, cv2.HISTCMP_BHATTACHARYYA))
+    return luma_change < 0.12 and edge_distance < 0.18 and histogram_distance < 0.20
+
+
+def _flash_indexes(evidence: list[BoundaryEvidence], pairs: list[_PairMetric]) -> set[int]:
+    """Find an exposure spike only when the surrounding shot recovers."""
     indexes: set[int] = set()
     for index in range(len(evidence) - 1):
-        if evidence[index].luma_change >= 0.25 and evidence[index + 1].luma_change >= 0.25:
+        if (
+            evidence[index].luma_change >= 0.25
+            and evidence[index + 1].luma_change >= 0.25
+            and _structure_recovers(pairs[index].previous_gray, pairs[index + 1].gray)
+        ):
             indexes.update((index, index + 1))
     return indexes
+
+
+def _has_stable_affine_model(item: BoundaryEvidence) -> bool:
+    """Use a tight residual bound so a blend cannot masquerade as a pan."""
+    return item.compensated_residual < 0.012 and item.inlier_ratio >= 0.45
 
 
 def _segments(start_s: float, end_s: float, boundaries: list[BoundaryEvidence], config: TransitionGuardConfig) -> tuple[GuardSegment, ...]:
@@ -330,7 +353,7 @@ def guard_candidate_window(
 
     evidence = [_evidence(pair, config) for pair in pairs]
     confirmed: list[BoundaryEvidence] = []
-    flash_indexes = _flash_indexes(evidence)
+    flash_indexes = _flash_indexes(evidence, pairs)
     for index, item in enumerate(evidence):
         if index in flash_indexes:
             evidence[index] = BoundaryEvidence(**{**asdict(item), "boundary_type": "flash_or_exposure"})
@@ -342,12 +365,11 @@ def guard_candidate_window(
     # crossings rather than one exceptional frame.
     run: list[BoundaryEvidence] = []
     for item in evidence:
-        # A dissolve can retain an apparently excellent identity affine fit:
-        # the two blended images are aligned even though their content is not.
-        # The sustained histogram/edge condition that produced ``soft_change``
-        # is therefore the deciding evidence here; camera pans do not satisfy
-        # it because their colour histogram remains stable.
-        unstable = item.boundary_type == "soft_change"
+        # Sustained palette/edge changes are a dissolve/fade only if a stable
+        # global affine model cannot explain them.  The tighter residual bound
+        # preserves coherent pans while a blend's persistent image residual
+        # remains eligible for soft-boundary confirmation.
+        unstable = item.boundary_type == "soft_change" and not _has_stable_affine_model(item)
         run = run + [item] if unstable else []
         if len(run) == config.soft_run_frames:
             midpoint = run[len(run) // 2]
