@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 import math
 from typing import Any, Mapping
 
@@ -105,6 +105,58 @@ class ActionMotionAnalysis:
     stable_valleys: tuple[float, ...]
     confidence: float
     analysis_error: str | None = None
+
+
+class _ImmutableDiagnostics(dict[str, float | int | str | None]):
+    def _reject_mutation(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("action diagnostics are immutable")
+
+    __setitem__ = _reject_mutation
+    __delitem__ = _reject_mutation
+    clear = _reject_mutation
+    pop = _reject_mutation
+    popitem = _reject_mutation
+    setdefault = _reject_mutation
+    update = _reject_mutation
+
+    def __deepcopy__(
+        self, memo: dict[int, Any]
+    ) -> "_ImmutableDiagnostics":
+        return _ImmutableDiagnostics(self)
+
+
+@dataclass(frozen=True)
+class ActionSegment:
+    start_s: float
+    end_s: float
+    peak_s: float
+    reason: str
+    needs_rescore: bool
+
+
+@dataclass(frozen=True)
+class ActionBoundaryResult:
+    action_boundary_mode: str
+    safe_start_s: float
+    safe_end_s: float
+    anchor_ts_s: float
+    boundary_candidates: tuple[ActionBoundaryCandidate, ...]
+    segments: tuple[ActionSegment, ...]
+    action_start_ts: float | None
+    action_peak_ts: float | None
+    action_end_ts: float | None
+    action_completeness_score: float | None
+    action_boundary_confidence: float
+    loop_quality_score: float | None
+    action_split_reason: str | None
+    action_vlm_verified: bool
+    action_fallback_reason: str | None
+    action_analysis_version: int = 1
+    diagnostics: dict[str, float | int | str | None] = field(default_factory=dict)
+    analysis_error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 def _parse_bool(value: Any) -> bool:
@@ -465,3 +517,468 @@ def analyze_action_motion(
         )
     except (TypeError, ValueError) as exc:
         return ActionMotionAnalysis("unknown", (), (), (), (), 0.0, str(exc))
+
+
+def _validate_finite_analysis(
+    analysis: ActionMotionAnalysis,
+    evidence: TemporalEvidence,
+    safe_start_s: float,
+    safe_end_s: float,
+    anchor_ts_s: float,
+) -> None:
+    scalar_values = (
+        safe_start_s,
+        safe_end_s,
+        anchor_ts_s,
+        analysis.confidence,
+        evidence.start_s,
+        evidence.end_s,
+        evidence.fps,
+    )
+    candidate_values = (
+        value
+        for candidate in analysis.candidates
+        for value in (
+            candidate.start_s,
+            candidate.peak_s,
+            candidate.end_s,
+            candidate.confidence,
+            candidate.start_settle,
+            candidate.end_settle,
+            candidate.peak_inclusion,
+            candidate.boundary_quiet,
+        )
+    )
+    curve_values = (value for point in analysis.residual_curve for value in point)
+    run_values = (value for run in analysis.active_runs for value in run)
+    if not all(
+        math.isfinite(float(value))
+        for values in (scalar_values, candidate_values, curve_values, run_values, analysis.stable_valleys)
+        for value in values
+    ):
+        raise ValueError("action analysis contains non-finite values")
+    if safe_end_s < safe_start_s or not safe_start_s <= anchor_ts_s <= safe_end_s:
+        raise ValueError("invalid safe action window or anchor")
+    if evidence.start_s > safe_start_s + 1e-6 or evidence.end_s < safe_end_s - 1e-6:
+        raise ValueError("temporal evidence does not cover the safe action window")
+
+
+def _biased_fixed_window(
+    safe_start_s: float,
+    safe_end_s: float,
+    anchor_ts_s: float,
+    duration_s: float,
+) -> tuple[float, float]:
+    duration = min(duration_s, safe_end_s - safe_start_s)
+    start_s = anchor_ts_s - 0.40 * duration
+    end_s = anchor_ts_s + 0.60 * duration
+    if start_s < safe_start_s:
+        end_s += safe_start_s - start_s
+        start_s = safe_start_s
+    if end_s > safe_end_s:
+        start_s -= end_s - safe_end_s
+        end_s = safe_end_s
+    return max(safe_start_s, start_s), min(safe_end_s, end_s)
+
+
+def _padded_window(
+    candidate: ActionBoundaryCandidate,
+    safe_start_s: float,
+    safe_end_s: float,
+    config: ActionBoundaryConfig,
+) -> tuple[float, float]:
+    core_duration = candidate.end_s - candidate.start_s
+    if core_duration < 0.0:
+        raise ValueError("action candidate ends before it starts")
+    if core_duration > config.max_duration_s:
+        before, after = 0.4, 0.6
+    else:
+        available_padding = max(0.0, config.max_duration_s - core_duration)
+        before = min(0.4, available_padding)
+        after = min(0.6, max(0.0, available_padding - before))
+    start_s = max(safe_start_s, candidate.start_s - before)
+    end_s = min(safe_end_s, candidate.end_s + after)
+    if end_s - start_s + 1e-9 < config.min_duration_s:
+        start_s, end_s = _biased_fixed_window(
+            safe_start_s,
+            safe_end_s,
+            candidate.peak_s,
+            config.min_duration_s,
+        )
+    return start_s, end_s
+
+
+def _curve_value_at(analysis: ActionMotionAnalysis, timestamp_s: float) -> float:
+    if not analysis.residual_curve:
+        return 0.0
+    return min(
+        analysis.residual_curve,
+        key=lambda point: (abs(point[0] - timestamp_s), point[0]),
+    )[1]
+
+
+def _segment_peak(
+    analysis: ActionMotionAnalysis,
+    start_s: float,
+    end_s: float,
+    default_s: float,
+) -> float:
+    in_range = [
+        point for point in analysis.residual_curve if start_s - 1e-9 <= point[0] <= end_s + 1e-9
+    ]
+    if not in_range:
+        return min(max(default_s, start_s), end_s)
+    return max(in_range, key=lambda point: (point[1], -abs(point[0] - default_s), -point[0]))[0]
+
+
+def _split_at_stable_valleys(
+    analysis: ActionMotionAnalysis,
+    start_s: float,
+    end_s: float,
+    min_duration_s: float,
+    max_duration_s: float,
+) -> list[tuple[float, float]] | None:
+    valleys = tuple(
+        timestamp
+        for timestamp in analysis.stable_valleys
+        if start_s + min_duration_s <= timestamp <= end_s - min_duration_s
+    )
+
+    def split(left_s: float, right_s: float) -> list[tuple[float, float]] | None:
+        if right_s - left_s <= max_duration_s + 1e-9:
+            return [(left_s, right_s)]
+        midpoint = (left_s + right_s) / 2.0
+        ranked = sorted(
+            (
+                timestamp
+                for timestamp in valleys
+                if left_s + min_duration_s <= timestamp <= right_s - min_duration_s
+            ),
+            key=lambda timestamp: (
+                abs(timestamp - midpoint),
+                _curve_value_at(analysis, timestamp),
+                timestamp,
+            ),
+        )
+        for timestamp in ranked:
+            before = split(left_s, timestamp)
+            if before is None:
+                continue
+            after = split(timestamp, right_s)
+            if after is not None:
+                return before + after
+        return None
+
+    return split(start_s, end_s)
+
+
+def _frame_at(evidence: TemporalEvidence, timestamp_s: float):
+    return min(
+        evidence.frames,
+        key=lambda frame: (abs(frame.timestamp_s - timestamp_s), frame.timestamp_s),
+    )
+
+
+def _structural_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    return _clamp_score(1.0 - float(np.mean(np.abs(left.astype(float) - right.astype(float)))) / 255.0)
+
+
+def _color_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    hue_delta = np.abs(left[..., 0].astype(float) - right[..., 0].astype(float))
+    hue_delta = np.minimum(hue_delta, 180.0 - hue_delta) / 90.0
+    saturation_delta = np.abs(left[..., 1].astype(float) - right[..., 1].astype(float)) / 255.0
+    value_delta = np.abs(left[..., 2].astype(float) - right[..., 2].astype(float)) / 255.0
+    return _clamp_score(1.0 - float(np.mean((hue_delta + saturation_delta + value_delta) / 3.0)))
+
+
+def _subject_position(gray: np.ndarray) -> tuple[float, float] | None:
+    contrast = np.abs(gray.astype(float) - float(np.median(gray)))
+    mask = contrast >= max(8.0, float(np.percentile(contrast, 80)))
+    points = np.argwhere(mask)
+    if len(points) == 0:
+        return None
+    height, width = gray.shape[:2]
+    return float(np.mean(points[:, 1]) / max(1, width - 1)), float(
+        np.mean(points[:, 0]) / max(1, height - 1)
+    )
+
+
+def _subject_position_similarity(left: np.ndarray, right: np.ndarray) -> float:
+    left_position = _subject_position(left)
+    right_position = _subject_position(right)
+    if left_position is None and right_position is None:
+        return 1.0
+    if left_position is None or right_position is None:
+        return 0.0
+    distance = math.hypot(
+        left_position[0] - right_position[0],
+        left_position[1] - right_position[1],
+    )
+    return _clamp_score(1.0 - distance / math.sqrt(2.0))
+
+
+def _motion_vector(evidence: TemporalEvidence, timestamp_s: float) -> tuple[float, float]:
+    if not evidence.pairs:
+        return 0.0, 0.0
+    pair = min(
+        evidence.pairs,
+        key=lambda item: (abs(item.timestamp_s - timestamp_s), item.timestamp_s),
+    )
+    return pair.translate_x, pair.translate_y
+
+
+def _motion_direction_continuity(
+    evidence: TemporalEvidence, start_s: float, end_s: float
+) -> float:
+    left = _motion_vector(evidence, start_s)
+    right = _motion_vector(evidence, end_s)
+    left_size, right_size = math.hypot(*left), math.hypot(*right)
+    if left_size <= 1e-9 and right_size <= 1e-9:
+        return 1.0
+    if left_size <= 1e-9 or right_size <= 1e-9:
+        return 0.5
+    cosine = (left[0] * right[0] + left[1] * right[1]) / (left_size * right_size)
+    return _clamp_score((cosine + 1.0) / 2.0)
+
+
+def _loop_score(
+    evidence: TemporalEvidence, start_s: float, end_s: float
+) -> float:
+    start_frame = _frame_at(evidence, start_s)
+    end_frame = _frame_at(evidence, end_s)
+    return _clamp_score(
+        0.40 * _structural_similarity(start_frame.gray, end_frame.gray)
+        + 0.25 * _color_similarity(start_frame.hsv, end_frame.hsv)
+        + 0.20 * _subject_position_similarity(start_frame.gray, end_frame.gray)
+        + 0.15 * _motion_direction_continuity(evidence, start_s, end_s)
+    )
+
+
+def _adjust_loop_endpoints(
+    evidence: TemporalEvidence,
+    padded_start_s: float,
+    padded_end_s: float,
+    core_start_s: float,
+    core_end_s: float,
+    safe_start_s: float,
+    safe_end_s: float,
+    config: ActionBoundaryConfig,
+) -> tuple[float, float, float]:
+    if not evidence.frames:
+        return padded_start_s, padded_end_s, 0.0
+    start_floor = max(padded_start_s, padded_start_s - config.loop_adjust_s)
+    end_ceiling = min(padded_end_s, padded_end_s + config.loop_adjust_s)
+    starts = {
+        padded_start_s,
+        *(
+            frame.timestamp_s
+            for frame in evidence.frames
+            if start_floor - 1e-9 <= frame.timestamp_s <= core_start_s + 1e-9
+        ),
+    }
+    ends = {
+        padded_end_s,
+        *(
+            frame.timestamp_s
+            for frame in evidence.frames
+            if core_end_s - 1e-9 <= frame.timestamp_s <= end_ceiling + 1e-9
+        ),
+    }
+    ranked: list[tuple[float, float, float, float]] = []
+    for start_s in starts:
+        for end_s in ends:
+            if (
+                start_s < safe_start_s - 1e-9
+                or start_s > core_start_s + 1e-9
+                or end_s < core_end_s - 1e-9
+                or end_s > safe_end_s + 1e-9
+                or end_s - start_s < config.min_duration_s - 1e-9
+                or end_s - start_s > config.max_duration_s + 1e-9
+            ):
+                continue
+            score = _loop_score(evidence, start_s, end_s)
+            displacement = abs(start_s - padded_start_s) + abs(end_s - padded_end_s)
+            ranked.append((-score, displacement, start_s, end_s))
+    if not ranked:
+        return padded_start_s, padded_end_s, _loop_score(
+            evidence, padded_start_s, padded_end_s
+        )
+    negative_score, _, start_s, end_s = min(ranked)
+    return start_s, end_s, -negative_score
+
+
+def finalize_action_analysis(
+    analysis: ActionMotionAnalysis,
+    evidence: TemporalEvidence,
+    safe_start_s: float,
+    safe_end_s: float,
+    anchor_ts_s: float,
+    selected_candidate_index: int,
+    config: ActionBoundaryConfig | Mapping[str, Any] | None,
+) -> ActionBoundaryResult:
+    """Validate CV output and apply the final 2--20 second action policy."""
+    parsed_config = (
+        config
+        if isinstance(config, ActionBoundaryConfig)
+        else ActionBoundaryConfig.from_mapping(config, strict=False)
+    )
+    _validate_finite_analysis(
+        analysis, evidence, safe_start_s, safe_end_s, anchor_ts_s
+    )
+    if (
+        isinstance(selected_candidate_index, bool)
+        or not isinstance(selected_candidate_index, int)
+    ):
+        raise ValueError("selected_candidate_index must be an integer")
+    diagnostics: dict[str, float | int | str | None] = {
+        "selected_candidate_index": selected_candidate_index,
+        "motion_type": analysis.motion_type,
+    }
+    selected = (
+        analysis.candidates[selected_candidate_index]
+        if analysis.motion_type == "subject_action"
+        and 0 <= selected_candidate_index < len(analysis.candidates)
+        else None
+    )
+    if selected is None:
+        start_s, end_s = _biased_fixed_window(
+            safe_start_s,
+            safe_end_s,
+            anchor_ts_s,
+            parsed_config.preferred_max_duration_s,
+        )
+        segment = ActionSegment(start_s, end_s, anchor_ts_s, "fallback_fixed", False)
+        return ActionBoundaryResult(
+            "fallback_fixed",
+            safe_start_s,
+            safe_end_s,
+            anchor_ts_s,
+            analysis.candidates,
+            (segment,),
+            None,
+            None,
+            None,
+            None,
+            analysis.confidence,
+            None,
+            None,
+            False,
+            analysis.motion_type,
+            parsed_config.analysis_version,
+            _ImmutableDiagnostics(diagnostics),
+            analysis.analysis_error,
+        )
+
+    padded_start_s, padded_end_s = _padded_window(
+        selected, safe_start_s, safe_end_s, parsed_config
+    )
+    completeness = _clamp_score(
+        0.25 * selected.start_settle
+        + 0.30 * selected.end_settle
+        + 0.20 * selected.peak_inclusion
+        + 0.15 * selected.boundary_quiet
+        + 0.10 * 0.5
+    )
+    if selected.end_s - selected.start_s > parsed_config.max_duration_s + 1e-9:
+        split_windows = _split_at_stable_valleys(
+            analysis,
+            padded_start_s,
+            padded_end_s,
+            parsed_config.min_duration_s,
+            parsed_config.max_duration_s,
+        )
+        if split_windows is None:
+            start_s, end_s = _biased_fixed_window(
+                safe_start_s,
+                safe_end_s,
+                anchor_ts_s,
+                parsed_config.max_duration_s,
+            )
+            return ActionBoundaryResult(
+                "fallback_fixed",
+                safe_start_s,
+                safe_end_s,
+                anchor_ts_s,
+                analysis.candidates,
+                (ActionSegment(start_s, end_s, anchor_ts_s, "fallback_fixed", False),),
+                selected.start_s,
+                selected.peak_s,
+                selected.end_s,
+                None,
+                selected.confidence,
+                None,
+                None,
+                False,
+                "long_action_split_fallback",
+                parsed_config.analysis_version,
+                _ImmutableDiagnostics(diagnostics),
+                analysis.analysis_error,
+            )
+        segments = tuple(
+            ActionSegment(
+                start_s,
+                end_s,
+                _segment_peak(analysis, start_s, end_s, selected.peak_s),
+                "stable_motion_valley",
+                False,
+            )
+            for start_s, end_s in split_windows
+        )
+        return ActionBoundaryResult(
+            "split_action",
+            safe_start_s,
+            safe_end_s,
+            anchor_ts_s,
+            analysis.candidates,
+            segments,
+            selected.start_s,
+            selected.peak_s,
+            selected.end_s,
+            completeness,
+            selected.confidence,
+            None,
+            "stable_motion_valley",
+            False,
+            None,
+            parsed_config.analysis_version,
+            _ImmutableDiagnostics(diagnostics),
+            analysis.analysis_error,
+        )
+
+    adjusted_start_s, adjusted_end_s, loop_quality = _adjust_loop_endpoints(
+        evidence.slice(safe_start_s, safe_end_s).resample(parsed_config.scan_fps),
+        padded_start_s,
+        padded_end_s,
+        selected.start_s,
+        selected.end_s,
+        safe_start_s,
+        safe_end_s,
+        parsed_config,
+    )
+    segment = ActionSegment(
+        adjusted_start_s,
+        adjusted_end_s,
+        selected.peak_s,
+        "complete_action",
+        False,
+    )
+    return ActionBoundaryResult(
+        "complete_action",
+        safe_start_s,
+        safe_end_s,
+        anchor_ts_s,
+        analysis.candidates,
+        (segment,),
+        selected.start_s,
+        selected.peak_s,
+        selected.end_s,
+        completeness,
+        selected.confidence,
+        loop_quality,
+        None,
+        False,
+        None,
+        parsed_config.analysis_version,
+        _ImmutableDiagnostics(diagnostics),
+        analysis.analysis_error,
+    )

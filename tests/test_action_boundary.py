@@ -10,7 +10,9 @@ import pytest
 from app.services.action_boundary import (
     ActionBoundaryCandidate,
     ActionBoundaryConfig,
+    ActionBoundaryResult,
     ActionMotionAnalysis,
+    ActionSegment,
     analyze_action_motion,
 )
 from tests.action_media_fixtures import (
@@ -244,3 +246,28 @@ def test_result_types_are_immutable_and_candidates_are_ranked_to_three(tmp_path)
         result.confidence = 0.0
     with pytest.raises(FrozenInstanceError):
         result.candidates[0].start_s = 0.0
+
+
+def test_final_action_result_types_are_immutable():
+    with pytest.raises(FrozenInstanceError):
+        ActionSegment(0.0, 2.0, 1.0, "complete_action", False).start_s = 1.0
+
+    result = ActionBoundaryResult(
+        action_boundary_mode="complete_action",
+        safe_start_s=0.0,
+        safe_end_s=2.0,
+        anchor_ts_s=1.0,
+        boundary_candidates=(),
+        segments=(ActionSegment(0.0, 2.0, 1.0, "complete_action", False),),
+        action_start_ts=0.0,
+        action_peak_ts=1.0,
+        action_end_ts=2.0,
+        action_completeness_score=0.8,
+        action_boundary_confidence=0.8,
+        loop_quality_score=1.0,
+        action_split_reason=None,
+        action_vlm_verified=False,
+        action_fallback_reason=None,
+    )
+    with pytest.raises(FrozenInstanceError):
+        result.action_boundary_mode = "fallback_fixed"
