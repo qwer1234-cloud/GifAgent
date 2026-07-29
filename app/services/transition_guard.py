@@ -15,6 +15,13 @@ from typing import Mapping
 import cv2
 import numpy as np
 
+from app.services.temporal_evidence import (
+    TemporalEvidence,
+    TemporalEvidenceCache,
+    TemporalPairEvidence,
+    TemporalScanConfig,
+)
+
 
 @dataclass(frozen=True)
 class TransitionGuardConfig:
@@ -135,22 +142,6 @@ class TransitionGuardResult:
         }
 
 
-@dataclass(frozen=True)
-class _PairMetric:
-    timestamp_s: float
-    previous_gray: np.ndarray
-    gray: np.ndarray
-    histogram_distance: float
-    edge_distance: float
-    luma_change: float
-
-    @property
-    def score(self) -> float:
-        # Histogram detects palette changes, edges preserve structural evidence,
-        # and luma catches fades/exposure changes.
-        return min(1.0, 0.45 * self.histogram_distance + 0.30 * self.edge_distance + 0.25 * self.luma_change)
-
-
 def _finite_or_none(value: object) -> float | None:
     """Prevent malformed caller timestamps from leaking NaN/Infinity to JSON."""
     try:
@@ -170,82 +161,11 @@ def _result_error(message: str, start_s: object = 0.0, end_s: object = 0.0, anch
     )
 
 
-def _resize_frame(frame: np.ndarray, width: int) -> tuple[np.ndarray, np.ndarray]:
-    height = max(1, round(frame.shape[0] * width / frame.shape[1]))
-    small = cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-    return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
-
-
-def _scan_pairs(path: Path, start_s: float, end_s: float, config: TransitionGuardConfig) -> list[_PairMetric]:
-    capture = cv2.VideoCapture(str(path))
-    if not capture.isOpened():
-        capture.release()
-        raise ValueError("OpenCV could not open the source video")
-    try:
-        source_fps = capture.get(cv2.CAP_PROP_FPS)
-        if not math.isfinite(source_fps) or source_fps <= 0:
-            source_fps = config.scan_fps
-        capture.set(cv2.CAP_PROP_POS_MSEC, start_s * 1000.0)
-        sample_interval = 1.0 / config.scan_fps
-        next_sample = start_s - 1e-6
-        previous_gray: np.ndarray | None = None
-        previous_hsv: np.ndarray | None = None
-        pairs: list[_PairMetric] = []
-        fallback_index = 0
-        while True:
-            ok, frame = capture.read()
-            if not ok:
-                break
-            frame_index = capture.get(cv2.CAP_PROP_POS_FRAMES) - 1
-            timestamp_s = frame_index / source_fps if frame_index >= 0 else start_s + fallback_index / source_fps
-            fallback_index += 1
-            if timestamp_s > end_s + 1e-6:
-                break
-            if timestamp_s + 1e-6 < next_sample:
-                continue
-            next_sample += sample_interval
-            gray, hsv = _resize_frame(frame, config.scan_width)
-            if previous_gray is not None and previous_hsv is not None:
-                hist_a = cv2.calcHist([previous_hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
-                hist_b = cv2.calcHist([hsv], [0, 1], None, [16, 16], [0, 180, 0, 256])
-                cv2.normalize(hist_a, hist_a)
-                cv2.normalize(hist_b, hist_b)
-                histogram_distance = float(cv2.compareHist(hist_a, hist_b, cv2.HISTCMP_BHATTACHARYYA))
-                edges_a = cv2.Canny(previous_gray, 60, 140)
-                edges_b = cv2.Canny(gray, 60, 140)
-                edge_distance = float(np.mean(edges_a != edges_b))
-                luma_change = float(np.mean(cv2.absdiff(previous_gray, gray)) / 255.0)
-                pairs.append(_PairMetric(timestamp_s, previous_gray, gray, histogram_distance, edge_distance, luma_change))
-            previous_gray, previous_hsv = gray, hsv
-        return pairs
-    finally:
-        capture.release()
-
-
-def _motion_evidence(metric: _PairMetric) -> tuple[float, float, float, float, float]:
-    """Return residual, inlier ratio, dx, dy, and scale for a frame pair."""
-    points = cv2.goodFeaturesToTrack(metric.previous_gray, maxCorners=160, qualityLevel=0.01, minDistance=5, blockSize=5)
-    if points is None or len(points) < 8:
-        return 1.0, 0.0, 0.0, 0.0, 1.0
-    next_points, status, _ = cv2.calcOpticalFlowPyrLK(metric.previous_gray, metric.gray, points, None)
-    if next_points is None or status is None:
-        return 1.0, 0.0, 0.0, 0.0, 1.0
-    good = status.ravel().astype(bool)
-    if int(good.sum()) < 6:
-        return 1.0, 0.0, 0.0, 0.0, 1.0
-    transform, inliers = cv2.estimateAffinePartial2D(points[good], next_points[good], method=cv2.RANSAC)
-    if transform is None or inliers is None:
-        return 1.0, 0.0, 0.0, 0.0, 1.0
-    warped = cv2.warpAffine(metric.previous_gray, transform, (metric.gray.shape[1], metric.gray.shape[0]), borderMode=cv2.BORDER_REFLECT)
-    residual = float(np.mean(cv2.absdiff(warped, metric.gray)) / 255.0)
-    inlier_ratio = float(np.mean(inliers.ravel().astype(bool)))
-    dx, dy = float(transform[0, 2]), float(transform[1, 2])
-    scale = float(math.hypot(transform[0, 0], transform[1, 0]))
-    return residual, inlier_ratio, dx, dy, scale
-
-
-def _evidence(metric: _PairMetric, config: TransitionGuardConfig) -> BoundaryEvidence:
-    residual, inlier_ratio, dx, dy, scale = _motion_evidence(metric) if config.motion_compensation else (1.0, 0.0, 0.0, 0.0, 1.0)
+def _evidence(metric: TemporalPairEvidence, config: TransitionGuardConfig) -> BoundaryEvidence:
+    residual, inlier_ratio, dx, dy, scale = (
+        (metric.compensated_residual, metric.inlier_ratio, metric.translate_x, metric.translate_y, metric.scale)
+        if config.motion_compensation else (1.0, 0.0, 0.0, 0.0, 1.0)
+    )
     # Raw pixel metrics are small at scan resolution.  Calibrate each feature
     # against a visible, one-frame edit rather than allowing the size of the
     # resized image to change the public thresholds' meaning.
@@ -289,7 +209,7 @@ def _structure_recovers(before: np.ndarray, after: np.ndarray) -> bool:
     return luma_change < 0.12 and edge_distance < 0.18 and histogram_distance < 0.20
 
 
-def _flash_indexes(evidence: list[BoundaryEvidence], pairs: list[_PairMetric]) -> set[int]:
+def _flash_indexes(evidence: list[BoundaryEvidence], pairs: list[TemporalPairEvidence]) -> set[int]:
     """Find an exposure spike only when the surrounding shot recovers."""
     indexes: set[int] = set()
     for index in range(len(evidence) - 1):
@@ -324,6 +244,8 @@ def guard_candidate_window(
     end_s: float,
     anchor_ts_s: float,
     config_values: Mapping[str, object] | None = None,
+    *,
+    temporal_evidence: TemporalEvidence | None = None,
 ) -> TransitionGuardResult:
     """Inspect one candidate window and return export-safe segments.
 
@@ -345,7 +267,17 @@ def guard_candidate_window(
             original_end_s=end_s, anchor_ts_s=anchor_ts_s, anchor_segment=segment,
         )
     try:
-        pairs = _scan_pairs(Path(video_path), start_s, end_s, config)
+        if temporal_evidence is None:
+            temporal_evidence = TemporalEvidenceCache().scan(
+                video_path, start_s, end_s,
+                TemporalScanConfig(config.scan_fps, config.scan_width, config.motion_compensation),
+            )
+        elif (
+            temporal_evidence.start_s > start_s + 1e-6
+            or temporal_evidence.end_s < end_s - 1e-6
+        ):
+            raise ValueError("supplied temporal evidence does not cover requested window")
+        pairs = list(temporal_evidence.slice(start_s, end_s).pairs)
     except (cv2.error, OSError, ValueError) as exc:
         return _result_error(str(exc), start_s, end_s, anchor_ts_s)
     if len(pairs) < 2:

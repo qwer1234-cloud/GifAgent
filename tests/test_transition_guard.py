@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from app.services.transition_guard import guard_candidate_window
+from app.services.temporal_evidence import TemporalEvidenceCache, TemporalScanConfig
 
 
 FPS = 8
@@ -193,3 +194,23 @@ def test_local_subject_motion_is_not_a_cut(tmp_path: Path) -> None:
     result = guard_candidate_window(video, 0.0, 4.0, 2.0, BASE_CFG)
 
     assert result.hard_cut_count == 0
+
+
+def test_precomputed_evidence_must_cover_the_requested_window(tmp_path: Path) -> None:
+    video = write_static_video(tmp_path / "partial_evidence.mp4")
+    evidence = TemporalEvidenceCache().scan(video, 0.0, 2.0, TemporalScanConfig(fps=8.0, width=320))
+
+    result = guard_candidate_window(video, 0.0, 4.0, 1.0, BASE_CFG, temporal_evidence=evidence)
+
+    assert result.transition_action == "unverified"
+    assert "does not cover" in (result.guard_error or "")
+
+
+def test_precomputed_evidence_requires_at_least_two_pairs(tmp_path: Path) -> None:
+    video = write_static_video(tmp_path / "short_evidence.mp4")
+    evidence = TemporalEvidenceCache().scan(video, 0.0, 0.125, TemporalScanConfig(fps=8.0, width=320))
+
+    result = guard_candidate_window(video, 0.0, 0.125, 0.0, BASE_CFG, temporal_evidence=evidence)
+
+    assert result.transition_action == "unverified"
+    assert "too few" in (result.guard_error or "")
