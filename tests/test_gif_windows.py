@@ -22,6 +22,23 @@ def test_single_frame_window_is_centered_and_capped():
     assert window.end_s == pytest.approx(13.0)
 
 
+def test_direct_clip_shape_uses_nested_best_frame_timestamp():
+    """Legacy direct clips anchor the 40/60 window on their nested best frame."""
+    window = build_export_window(
+        clip={
+            "frame_count": 1,
+            "gif_worthiness": 1.0,
+            "best_frame": {"timestamp": 10.0},
+        },
+        total_duration_s=30.0,
+        min_duration_s=1.5,
+        max_duration_s=5.0,
+    )
+
+    assert window.start_s == pytest.approx(8.0)
+    assert window.end_s == pytest.approx(13.0)
+
+
 def test_multi_frame_window_never_exceeds_max_duration():
     """A long merged run cannot bypass the configured export duration cap."""
     window = build_export_window(

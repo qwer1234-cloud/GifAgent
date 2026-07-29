@@ -1384,17 +1384,15 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
             {
                 "rank": i + 1,
                 "timestamp": clip["best_frame"]["timestamp"],
-                "start_ts": clip["start_ts"],
-                "end_ts": clip["end_ts"],
+                "start_ts": gif_export_results[i]["start_ts"],
+                "end_ts": gif_export_results[i]["end_ts"],
                 "gif_worthiness": clip["gif_worthiness"],
                 "final_score": clip.get("final_score", clip["gif_worthiness"]),
                 "profile_score": clip.get("profile_score"),
                 "score_profile_version": clip.get("score_profile_version"),
                 "duration": (
-                    min(clip["end_ts"] - clip["start_ts"] + 3.0, MAX_DURATION + 2.0)
-                    if clip["frame_count"] > 1
-                    else MIN_DURATION
-                    + (MAX_DURATION - MIN_DURATION) * clip["gif_worthiness"]
+                    gif_export_results[i]["end_ts"]
+                    - gif_export_results[i]["start_ts"]
                 ),
                 "frame_count": clip["frame_count"],
                 "merged": clip["frame_count"] > 1,

@@ -53,9 +53,15 @@ def build_export_window(
         requested_duration = min_duration + (max_duration - min_duration) * worthiness
 
     duration = min(requested_duration, total_duration)
+    best_frame = clip.get("best_frame")
+    nested_timestamp = (
+        best_frame.get("timestamp")
+        if isinstance(best_frame, Mapping)
+        else None
+    )
     anchor = min(
         total_duration,
-        max(0.0, _finite_number(clip.get("best_frame_ts"))),
+        max(0.0, _finite_number(clip.get("best_frame_ts", nested_timestamp))),
     )
     # Preserve the existing 40% before / 60% after timing bias.
     start = max(0.0, anchor - duration * 0.4)
