@@ -44,6 +44,9 @@ def _action_clip(
         "motion_type": "subject_action",
         "guard_reason": "clean segment",
         "action_boundary_mode": mode,
+        "action_start_ts": start_ts + 0.5,
+        "action_peak_ts": midpoint,
+        "action_end_ts": end_ts - 0.5,
         "action_completeness_score": 0.88,
         "action_boundary_confidence": 0.84,
         "loop_quality_score": 0.64,
@@ -263,3 +266,9 @@ def test_direct_action_metrics_are_finite_and_include_frozen_hash(
     assert result["gif_exports"][0]["action_boundary_confidence"] == pytest.approx(
         0.84
     )
+    assert result["gif_exports"][0]["action_start_ts"] == pytest.approx(2.5)
+    assert result["gif_exports"][0]["action_peak_ts"] == pytest.approx(4.5)
+    assert result["gif_exports"][0]["action_end_ts"] == pytest.approx(6.5)
+    assert result["top_clips"][0]["action_start_ts"] == pytest.approx(2.5)
+    assert result["top_clips"][0]["action_peak_ts"] == pytest.approx(4.5)
+    assert result["top_clips"][0]["action_end_ts"] == pytest.approx(6.5)

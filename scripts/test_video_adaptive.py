@@ -1500,6 +1500,9 @@ def run_pipeline(
                     clip.get("guarded_export_window", False)
                 ),
                 "action_boundary_mode": clip.get("action_boundary_mode"),
+                "action_start_ts": clip.get("action_start_ts"),
+                "action_peak_ts": clip.get("action_peak_ts"),
+                "action_end_ts": clip.get("action_end_ts"),
                 "action_completeness_score": clip.get(
                     "action_completeness_score"
                 ),
@@ -1642,6 +1645,9 @@ def run_pipeline(
                     clip.get("guarded_export_window", False)
                 ),
                 "action_boundary_mode": clip.get("action_boundary_mode"),
+                "action_start_ts": clip.get("action_start_ts"),
+                "action_peak_ts": clip.get("action_peak_ts"),
+                "action_end_ts": clip.get("action_end_ts"),
                 "action_completeness_score": clip.get(
                     "action_completeness_score"
                 ),
