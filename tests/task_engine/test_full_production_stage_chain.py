@@ -268,7 +268,9 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
     cfg = {
         "embed_sim_threshold": 0.94, "embed_dedup_enabled": False,
         "temporal_dedup_enabled": False, "temporal_dedup_min_gap_s": 1,
-        "output_ratio": 1.0, "max_output": 0, "min_duration": 0.5,
+        # The guard may accept half-second scan segments, but rank/dedup must
+        # discard them because gif_clip requires this 1.5-second minimum.
+        "output_ratio": 1.0, "max_output": 0, "min_duration": 1.5,
         "max_duration": max_duration, "worthiness_threshold": 0.5,
         "vlm_temperature": 0.0, "vlm_top_p": 1.0, "vlm_top_k": 1,
         "gif_fps": 8, "gif_max_width": 128,
@@ -286,6 +288,7 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
     assert rank["transition_guard"]["split"] >= 1
     assert any(c["caption"] == "slow pan" for c in rank["clips"])
     for clip in rank["clips"]:
+        assert clip["end_ts"] - clip["start_ts"] >= cfg["min_duration"] - 1e-6
         assert clip["end_ts"] - clip["start_ts"] <= max_duration + 1e-6
         # A clean segment cannot straddle the three-second hard cut.
         assert not (clip["start_ts"] < 3.0 < clip["end_ts"])

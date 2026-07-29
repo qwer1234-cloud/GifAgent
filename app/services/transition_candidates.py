@@ -28,16 +28,21 @@ def build_guarded_clips(
     does not contain an already-scored frame is retained as a rescore request,
     leaving the caller to decide whether and how to run a VLM.
     """
-    # Guard segments are already duration-filtered by the transition guard.
-    # Keep every supplied segment here so this pure mapper cannot silently
-    # discard a guard-approved candidate (including boundary-margin segments).
-    _ = min_duration_s
+    # The transition guard has its own scan-time minimum.  Export callers may
+    # require a larger GIF minimum, so enforce that final invariant here,
+    # before candidates can be embedded, ranked, or assigned an ID.
+    try:
+        export_min_duration = max(0.0, float(min_duration_s))
+    except (TypeError, ValueError):
+        export_min_duration = 0.0
     if guard_result.transition_action == "drop":
         return []
     candidates: list[dict[str, Any]] = []
 
     for segment in guard_result.segments:
         start_s, end_s = float(segment.start_s), float(segment.end_s)
+        if end_s - start_s < export_min_duration:
+            continue
         segment_frames = _frames_in_segment(scored_frames, start_s, end_s)
         candidate = {
             **clip,

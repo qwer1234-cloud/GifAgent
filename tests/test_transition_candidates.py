@@ -27,7 +27,7 @@ def fake_guard_result_with_segments(*segments: tuple[float, float], anchor: floa
 
 
 def test_guarded_split_chooses_best_frame_per_segment():
-    result = fake_guard_result_with_segments((0.25, 2.0), (2.5, 5.0), anchor=1.0)
+    result = fake_guard_result_with_segments((0.25, 2.5), (2.75, 5.0), anchor=1.0)
     clean = build_guarded_clips(
         clip={"start_ts": 0.0, "end_ts": 5.0, "best_frame_ts": 1.0,
               "frame_count": 3, "gif_worthiness": 0.7},
@@ -61,6 +61,19 @@ def test_segment_without_scored_frame_needs_rescore():
     assert clean[1]["needs_rescore"] is True
     assert clean[1]["start_ts"] == 3.0
     assert clean[1]["end_ts"] == 5.0
+
+
+def test_export_minimum_filters_short_guard_segments():
+    result = fake_guard_result_with_segments((0.0, 0.75), (1.0, 2.75), anchor=1.5)
+
+    clean = build_guarded_clips(
+        clip={"start_ts": 0.0, "end_ts": 2.75, "best_frame_ts": 1.5},
+        guard_result=result,
+        scored_frames=[_f(1.5, 0.8)],
+        min_duration_s=1.5,
+    )
+
+    assert [(clip["start_ts"], clip["end_ts"]) for clip in clean] == [(1.0, 2.75)]
 
 
 def test_drop_result_returns_no_candidates():
