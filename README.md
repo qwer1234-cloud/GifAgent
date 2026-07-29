@@ -284,6 +284,16 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 
 关闭保护只影响之后创建的新运行；已生成 GIF、历史任务和结果数据不会被删除。
 
+### 待办：动作完整性深度模型增强
+
+第一版动作完整性保护按
+[`docs/superpowers/specs/2026-07-29-action-completeness-design.md`](docs/superpowers/specs/2026-07-29-action-completeness-design.md)
+采用运动补偿、动作曲线和受限 VLM 时序复核。以下能力作为后续增强，不进入第一版范围：
+
+- [ ] 引入姿态识别，辅助判断人物动作的准备、高潮和收势阶段。
+- [ ] 引入目标跟踪，在镜头运动、遮挡和多人场景中持续锁定动作主体。
+- [ ] 评估并引入深度动作识别模型，用于复杂、低运动或长时序动作的语义分段。
+
 ### PotPlayer bookmark export (2026-07-08)
 
 - Adaptive GIF export now writes `{video_name}.pbf` beside the generated GIFs
