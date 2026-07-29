@@ -42,6 +42,7 @@ from app.services.export_cleanup import (
 )
 from app.services.export_ranking import rank_clips_for_export
 from app.services.gif_naming import build_gif_filename
+from app.services.gif_windows import build_export_window
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
@@ -1232,18 +1233,16 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     for i, clip in enumerate(ranked_clips):
         worth = clip["gif_worthiness"]
         r = clip["best_frame"]
-
-        if clip["frame_count"] > 1:
-            duration = min(clip["end_ts"] - clip["start_ts"] + 3.0, MAX_DURATION + 2.0)
-        else:
-            duration = MIN_DURATION + (MAX_DURATION - MIN_DURATION) * worth
-
+        window = build_export_window(
+            clip,
+            total_duration_s=total_duration,
+            min_duration_s=MIN_DURATION,
+            max_duration_s=MAX_DURATION,
+        )
+        start = window.start_s
+        duration = window.duration_s
+        end = window.end_s
         ts = r["timestamp"]
-        start = max(0, ts - duration * 0.4)
-        start = min(start, total_duration - duration)
-
-        start_ts = int(start)
-        end_ts = int(start + duration)
 
         out_gif = os.path.join(
             export_dir,
@@ -1292,6 +1291,8 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 "status": "OK" if attempt.success else "FAILED",
                 "size_bytes": attempt.size_bytes,
                 "error": attempt.error,
+                "start_ts": start,
+                "end_ts": end,
             }
         )
 
@@ -1299,7 +1300,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
             exported_bookmarks.append(
                 PotPlayerBookmark(
                     start_s=start,
-                    end_s=start + duration,
+                    end_s=end,
                     rank=i + 1,
                     score=worth,
                     merged=clip["frame_count"] > 1,
@@ -2657,6 +2658,7 @@ def _stage_gif_clip(
     GIF_FPS = cfg["gif_fps"]
     GIF_MAX_WIDTH = cfg["gif_max_width"]
     MIN_DURATION = cfg["min_duration"]
+    MAX_DURATION = cfg["max_duration"]
 
     target_clip = None
     for c in clips:
@@ -2667,11 +2669,30 @@ def _stage_gif_clip(
     if target_clip is None:
         raise ValueError(f"clip_id {clip_id} not found in rank_dedup manifest")
 
-    start_ts = target_clip["start_ts"]
-    end_ts = target_clip["end_ts"]
-    duration = end_ts - start_ts
-    if duration < MIN_DURATION:
-        end_ts = start_ts + max(MIN_DURATION, 0.5)
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            video_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    total_duration = float(probe.stdout.strip())
+    clip_for_window = dict(target_clip)
+    clip_for_window.setdefault(
+        "best_frame_ts",
+        (float(target_clip["start_ts"]) + float(target_clip["end_ts"])) / 2.0,
+    )
+    window = build_export_window(
+        clip_for_window,
+        total_duration_s=total_duration,
+        min_duration_s=MIN_DURATION,
+        max_duration_s=MAX_DURATION,
+    )
+    start_ts = window.start_s
+    end_ts = window.end_s
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     gif_name = build_gif_filename(video_name, target_clip.get("rank", 1), start_ts, end_ts)
