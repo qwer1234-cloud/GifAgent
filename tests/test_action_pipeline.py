@@ -52,7 +52,11 @@ class FixedEvidenceCache:
 
 
 class FailingEvidenceCache:
+    def __init__(self):
+        self.calls = 0
+
     def scan(self, video_path, start_s, end_s, config):
+        self.calls += 1
         raise TemporalMediaError("unreadable source")
 
 
@@ -667,10 +671,13 @@ def test_action_disabled_uses_legacy_export_minimum_for_transition_children(
 
 
 def test_action_disabled_media_fallback_remains_transition_only(monkeypatch):
+    cache = FailingEvidenceCache()
     monkeypatch.setattr(
         action_pipeline,
         "guard_candidate_window",
-        lambda *args, **kwargs: _guard((10.0, 16.0)),
+        lambda *args, **kwargs: pytest.fail(
+            "failed shared scan must not invoke a second guard scan"
+        ),
     )
 
     result = materialize_action_candidates(
@@ -678,33 +685,31 @@ def test_action_disabled_media_fallback_remains_transition_only(monkeypatch):
         clip=_clip(),
         scored_frames=[_frame(13.0)],
         total_duration_s=60.0,
-        config={**ACTION_PIPELINE_CFG, "action_guard_enabled": False},
-        evidence_cache=FailingEvidenceCache(),
+        config={
+            **ACTION_PIPELINE_CFG,
+            "action_guard_enabled": False,
+            "transition_guard_enabled": False,
+        },
+        evidence_cache=cache,
         frame_scorer=lambda timestamp_s, label: None,
         sequence_generator=lambda image_bytes, prompt: "",
     )
 
     assert len(result.clips) == 1
+    assert cache.calls == 1
     assert "action_boundary_mode" not in result.clips[0]
     assert result.action_metrics["fallback"] == 0
 
 
-def test_unreadable_media_raises_when_transition_guard_has_no_safe_segment(
+def test_unreadable_media_raises_without_retrying_guard_or_cache(
     monkeypatch,
 ):
+    cache = FailingEvidenceCache()
     monkeypatch.setattr(
         action_pipeline,
         "guard_candidate_window",
-        lambda *args, **kwargs: TransitionGuardResult(
-            transition_action="unverified",
-            segments=(),
-            boundaries=(),
-            hard_cut_count=0,
-            soft_transition_count=0,
-            motion_type="unknown",
-            transition_risk=1.0,
-            guard_reason="media scan could not be verified",
-            guard_error="unreadable source",
+        lambda *args, **kwargs: pytest.fail(
+            "failed shared scan must not invoke a second guard scan"
         ),
     )
 
@@ -715,10 +720,51 @@ def test_unreadable_media_raises_when_transition_guard_has_no_safe_segment(
             scored_frames=[_frame(13.0)],
             total_duration_s=60.0,
             config=ACTION_PIPELINE_CFG,
-            evidence_cache=FailingEvidenceCache(),
+            evidence_cache=cache,
             frame_scorer=lambda timestamp_s, label: None,
             sequence_generator=lambda image_bytes, prompt: "",
         )
+    assert cache.calls == 1
+
+
+def test_media_fallback_is_fixed_40_60_and_never_exceeds_twenty_seconds(
+    monkeypatch,
+):
+    cache = FailingEvidenceCache()
+    monkeypatch.setattr(
+        action_pipeline,
+        "guard_candidate_window",
+        lambda *args, **kwargs: pytest.fail(
+            "disabled transition guard needs no media retry"
+        ),
+    )
+
+    result = materialize_action_candidates(
+        video_path="unreadable.mp4",
+        clip=_clip(anchor_s=15.0),
+        scored_frames=[_frame(15.0)],
+        total_duration_s=60.0,
+        config={
+            **ACTION_PIPELINE_CFG,
+            "transition_guard_enabled": False,
+            "action_preferred_max_duration_s": 20.0,
+            "action_max_duration_s": 20.0,
+        },
+        evidence_cache=cache,
+        frame_scorer=lambda timestamp_s, label: None,
+        sequence_generator=lambda image_bytes, prompt: "",
+    )
+
+    assert cache.calls == 1
+    assert len(result.clips) == 1
+    assert result.clips[0]["start_ts"] == pytest.approx(7.0)
+    assert result.clips[0]["end_ts"] == pytest.approx(27.0)
+    assert result.clips[0]["end_ts"] - result.clips[0]["start_ts"] == 20.0
+    assert result.clips[0]["action_boundary_mode"] == "fallback_fixed"
+    assert result.clips[0]["guarded_export_window"] is True
+    assert result.clips[0]["transition_action"] == "keep"
+    assert result.clips[0]["motion_type"] == "disabled"
+    assert result.action_metrics["fallback"] == 1
 
 
 def test_transition_drop_never_materializes_defensive_segments(monkeypatch):

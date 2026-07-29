@@ -28,6 +28,7 @@ from app.services.temporal_evidence import (
 )
 from app.services.transition_candidates import build_guarded_clips
 from app.services.transition_guard import (
+    GuardSegment,
     TransitionGuardConfig,
     TransitionGuardResult,
     guard_candidate_window,
@@ -457,50 +458,78 @@ def materialize_action_candidates(
             video_path, scan_start_s, scan_end_s, scan_config
         )
     except (OSError, TemporalMediaError) as media_error:
-        guard_result = guard_candidate_window(
-            video_path,
-            scan_start_s,
-            scan_end_s,
-            original_anchor_s,
-            config_values,
+        if transition_config.enabled:
+            raise
+        safe_segment = GuardSegment(scan_start_s, scan_end_s, "clean")
+        guard_result = TransitionGuardResult(
+            transition_action="keep",
+            segments=(safe_segment,),
+            boundaries=(),
+            hard_cut_count=0,
+            soft_transition_count=0,
+            motion_type="disabled",
+            transition_risk=0.0,
+            guard_reason="transition guard disabled",
+            original_start_s=scan_start_s,
+            original_end_s=scan_end_s,
+            anchor_ts_s=original_anchor_s,
+            anchor_segment=safe_segment,
         )
         transition_metrics = _transition_metrics(guard_result)
-        if not guard_result.segments:
-            raise media_error
-        candidates = _transition_only_candidates(
-            clip,
-            guard_result,
-            scored_frames,
-            (
-                action_config.min_duration_s
-                if action_config.enabled
-                else legacy_min_duration_s
-            ),
-            frame_scorer,
-            rescore_enabled,
-        )
-        reason = f"temporal_media_error:{type(media_error).__name__}"
-        if action_config.enabled:
-            for candidate in candidates:
-                candidate.update(
-                    action_boundary_mode="fallback_fixed",
-                    action_start_ts=None,
-                    action_peak_ts=None,
-                    action_end_ts=None,
-                    action_completeness_score=None,
-                    action_boundary_confidence=0.0,
-                    loop_quality_score=None,
-                    action_split_reason=None,
-                    action_vlm_verified=False,
-                    action_fallback_reason=reason,
-                    action_analysis_version=action_config.analysis_version,
-                    diagnostics={},
+        if not action_config.enabled:
+            candidates = _transition_only_candidates(
+                clip,
+                guard_result,
+                scored_frames,
+                legacy_min_duration_s,
+                frame_scorer,
+                rescore_enabled,
+            )
+        else:
+            reason = f"temporal_media_error:{type(media_error).__name__}"
+            candidates = []
+            fallback_reasons: Counter[str] = Counter()
+            for segment in guard_result.segments:
+                safe_start_s = float(segment.start_s)
+                safe_end_s = float(segment.end_s)
+                if safe_end_s - safe_start_s < action_config.min_duration_s:
+                    continue
+                anchor_ts_s = _segment_anchor(
+                    safe_start_s,
+                    safe_end_s,
+                    original_anchor_s,
+                    scored_frames,
                 )
-            action_metrics["fallback"] = len(candidates)
-            action_metrics["fallback_reasons"] = (
-                {reason: len(candidates)} if candidates else {}
+                analysis = ActionMotionAnalysis(
+                    "unknown", (), (), (), (), 0.0, str(media_error)
+                )
+                result = _fallback_result(
+                    analysis=analysis,
+                    safe_start_s=safe_start_s,
+                    safe_end_s=safe_end_s,
+                    anchor_ts_s=anchor_ts_s,
+                    config=action_config,
+                    reason=reason,
+                )
+                _update_shape_metrics(
+                    action_metrics, result, original_start_s, original_end_s
+                )
+                built = build_action_clips(
+                    _transition_clip(clip, guard_result),
+                    result,
+                    scored_frames,
+                    action_config.min_duration_s,
+                )
+                candidates.extend(built)
+                action_metrics["fallback"] = (
+                    int(action_metrics["fallback"]) + 1
+                )
+                fallback_reasons[reason] += 1
+            candidates = _rescore_children(
+                candidates, frame_scorer, rescore_enabled
             )
             candidates = _index_action_children(candidates)
+            action_metrics["fallback_reasons"] = dict(fallback_reasons)
         action_metrics["output"] = len(candidates)
         action_metrics["total_ms"] = max(
             0.0, (perf_counter() - total_started) * 1000.0
