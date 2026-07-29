@@ -513,6 +513,33 @@ def extract_config(config_data: dict) -> dict:
         "vlm_top_k": int(adaptive.get("vlm_top_k", 60)),
         # 0 disables the dark-frame prefilter. Default 25 preserves legacy behavior.
         "min_brightness": float(adaptive.get("min_brightness", 25)),
+        # Transition behavior comes only from this frozen config snapshot.
+        "transition_guard_enabled": bool(
+            adaptive.get("transition_guard_enabled", True)
+        ),
+        "transition_min_duration_s": float(
+            adaptive.get("transition_min_duration_s", 2.0)
+        ),
+        "transition_boundary_margin_s": float(
+            adaptive.get("transition_boundary_margin_s", 0.25)
+        ),
+        "transition_scan_fps": float(adaptive.get("transition_scan_fps", 8)),
+        "transition_scan_width": int(adaptive.get("transition_scan_width", 320)),
+        "transition_motion_compensation": bool(
+            adaptive.get("transition_motion_compensation", True)
+        ),
+        "transition_hard_threshold": float(
+            adaptive.get("transition_hard_threshold", 0.65)
+        ),
+        "transition_soft_threshold": float(
+            adaptive.get("transition_soft_threshold", 0.40)
+        ),
+        "transition_soft_run_frames": int(
+            adaptive.get("transition_soft_run_frames", 3)
+        ),
+        "transition_rescore_split_segments": bool(
+            adaptive.get("transition_rescore_split_segments", True)
+        ),
     }
 
 

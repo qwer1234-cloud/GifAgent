@@ -24,3 +24,13 @@ adaptive:
   embedding_dedup_threshold: 0.88
   temporal_dedup_enabled: true
   temporal_dedup_min_gap_s: 15
+  transition_guard_enabled: true
+  transition_min_duration_s: 2.0
+  transition_boundary_margin_s: 0.25
+  transition_scan_fps: 8
+  transition_scan_width: 320
+  transition_motion_compensation: true
+  transition_hard_threshold: 0.65
+  transition_soft_threshold: 0.40
+  transition_soft_run_frames: 3
+  transition_rescore_split_segments: true
