@@ -15,13 +15,15 @@ from app.ui.candidate_review import (
 
 def test_every_config_field_has_non_empty_chinese_tooltip_label():
     assert set(CONFIG_FIELD_HELP) == set(CONFIG_FIELD_KEYS)
-    assert len(CONFIG_FIELD_KEYS) == 25
+    assert len(CONFIG_FIELD_KEYS) == 27
     assert "preference_memory.base_score_weight" in CONFIG_FIELD_KEYS
     assert "preference_memory.preference_score_weight" in CONFIG_FIELD_KEYS
     for key in (
         "adaptive.transition_guard_enabled",
         "adaptive.transition_min_duration_s",
         "adaptive.transition_boundary_margin_s",
+        "adaptive.action_guard_enabled",
+        "adaptive.action_vlm_verify_enabled",
     ):
         assert key in CONFIG_FIELD_KEYS
         assert any("\u4e00" <= char <= "\u9fff" for char in CONFIG_FIELD_HELP[key])
@@ -53,5 +55,7 @@ def test_launch_injects_tooltip_css():
     assert ".config-tooltip-icon" in kwargs["css"]
     assert kwargs["js"] == CONFIG_TOOLTIP_JS + REVIEW_SHORTCUTS_JS
     assert "preference-memory-enabled" in kwargs["js"]
+    assert "config-adaptive-action-guard-enabled" in kwargs["js"]
+    assert "config-adaptive-action-vlm-verify-enabled" in kwargs["js"]
     assert kwargs["js"].lstrip().startswith("(() => {")
     assert "setTimeout(attach" in kwargs["js"]

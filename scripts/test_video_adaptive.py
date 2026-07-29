@@ -35,6 +35,7 @@ from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
 from app.services.clip_merge import merge_scored_frames_into_clips
 from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
+from app.services.action_boundary import ActionBoundaryConfig
 from app.services.export_cleanup import (
     ExportDirectoryBusyError,
     ExportDirectoryLock,
@@ -464,13 +465,94 @@ def extract_config(config_data: dict) -> dict:
     """Extract flat pipeline config from the full config dict."""
     adaptive = config_data.get("adaptive", {}) or {}
     pref_mem = config_data.get("preference_memory", {}) or {}
-    return {
+    action_values = {
+        "action_guard_enabled": adaptive.get("action_guard_enabled", True),
+        "action_vlm_verify_enabled": adaptive.get(
+            "action_vlm_verify_enabled", True
+        ),
+        "action_analysis_version": adaptive.get("action_analysis_version", 1),
+        "action_analysis_window_s": adaptive.get(
+            "action_analysis_window_s", 30.0
+        ),
+        "action_preferred_min_duration_s": adaptive.get(
+            "action_preferred_min_duration_s", 4.0
+        ),
+        "action_preferred_max_duration_s": adaptive.get(
+            "action_preferred_max_duration_s", 12.0
+        ),
+        "action_min_duration_s": adaptive.get("min_duration", 2.0),
+        "action_max_duration_s": adaptive.get("max_duration", 20.0),
+        "action_scan_fps": adaptive.get("action_scan_fps", 4.0),
+        "action_boundary_confidence_threshold": adaptive.get(
+            "action_boundary_confidence_threshold", 0.65
+        ),
+        "action_loop_adjust_s": adaptive.get("action_loop_adjust_s", 0.75),
+        "action_vlm_min_worthiness": adaptive.get(
+            "action_vlm_min_worthiness", 0.60
+        ),
+        "action_fallback_mode": adaptive.get(
+            "action_fallback_mode", "fixed_window"
+        ),
+    }
+    try:
+        action_config = ActionBoundaryConfig.from_mapping(
+            action_values, strict=True
+        )
+    except ValueError as exc:
+        key_aliases = {
+            "preferred_min_duration_s": "action_preferred_min_duration_s",
+            "preferred_max_duration_s": "action_preferred_max_duration_s",
+            "analysis_window_s": "action_analysis_window_s",
+            "min_duration_s": "min_duration",
+            "max_duration_s": "max_duration",
+            "analysis_version": "action_analysis_version",
+            "scan_fps": "action_scan_fps",
+            "boundary_confidence_threshold": (
+                "action_boundary_confidence_threshold"
+            ),
+            "loop_adjust_s": "action_loop_adjust_s",
+            "vlm_min_worthiness": "action_vlm_min_worthiness",
+            "fallback_mode": "action_fallback_mode",
+        }
+        for internal_name, external_name in key_aliases.items():
+            if internal_name in str(exc):
+                raise ValueError(f"{external_name}: {exc}") from None
+        raise
+
+    normalized_action = {
+        "min_duration": action_config.min_duration_s,
+        "max_duration": action_config.max_duration_s,
+        "action_guard_enabled": action_config.enabled,
+        "action_vlm_verify_enabled": action_config.vlm_verify_enabled,
+        "action_analysis_version": action_config.analysis_version,
+        "action_analysis_window_s": action_config.analysis_window_s,
+        "action_preferred_min_duration_s": (
+            action_config.preferred_min_duration_s
+        ),
+        "action_preferred_max_duration_s": (
+            action_config.preferred_max_duration_s
+        ),
+        "action_scan_fps": action_config.scan_fps,
+        "action_boundary_confidence_threshold": (
+            action_config.boundary_confidence_threshold
+        ),
+        "action_loop_adjust_s": action_config.loop_adjust_s,
+        "action_vlm_min_worthiness": action_config.vlm_min_worthiness,
+        "action_fallback_mode": action_config.fallback_mode,
+    }
+    action_config_hash = hashlib.sha256(
+        json.dumps(
+            normalized_action,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    config = {
         "sample_interval": int(adaptive.get("sample_interval", 10)),
         "refine_interval": int(adaptive.get("refine_interval", 10)),
         "refine_radius": int(adaptive.get("refine_radius", 20)),
         "refine_threshold": float(adaptive.get("refine_threshold", 0.5)),
-        "max_duration": float(adaptive.get("max_duration", 10)),
-        "min_duration": float(adaptive.get("min_duration", 1.5)),
+        **normalized_action,
         "worthiness_threshold": float(adaptive.get("worthiness_threshold", 0.2)),
         "merge_gap": int(adaptive.get("merge_gap", 12)),
         "merge_score_threshold": float(
@@ -544,6 +626,8 @@ def extract_config(config_data: dict) -> dict:
             adaptive.get("transition_rescore_split_segments", True)
         ),
     }
+    config["action_config_hash"] = action_config_hash
+    return config
 
 
 def _resolve_vlm_config(config_data: dict | None) -> tuple[str, str]:

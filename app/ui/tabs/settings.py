@@ -14,6 +14,8 @@ import gradio as gr
 import httpx
 import yaml
 
+from app.services.action_boundary import ActionBoundaryConfig
+
 API_BASE = "http://127.0.0.1:8000"
 CONFIG_FILE = "configs/models.yaml"
 
@@ -40,6 +42,8 @@ CONFIG_FIELD_KEYS = (
     "adaptive.transition_guard_enabled",
     "adaptive.transition_min_duration_s",
     "adaptive.transition_boundary_margin_s",
+    "adaptive.action_guard_enabled",
+    "adaptive.action_vlm_verify_enabled",
     "adaptive.vlm_temperature",
     "adaptive.output_ratio",
     "adaptive.max_output",
@@ -68,6 +72,8 @@ CONFIG_FIELD_HELP = {
     "adaptive.transition_guard_enabled": "是否启用转场保护；关闭后仅新任务跳过转场检测，历史结果不会删除。",
     "adaptive.transition_min_duration_s": "转场切分后允许导出的最短片段时长，单位为秒。",
     "adaptive.transition_boundary_margin_s": "检测到转场时在边界两侧保留的安全间隔，单位为秒。",
+    "adaptive.action_guard_enabled": "是否启用动作完整性保护；启用后会优先保留动作起止完整的片段。",
+    "adaptive.action_vlm_verify_enabled": "是否使用视觉语言模型复核动作边界；关闭后仅使用确定性的运动分析结果。",
     "adaptive.vlm_temperature": "视觉模型评分时的随机性；较低值通常更稳定。",
     "adaptive.output_ratio": "从去重后的候选片段中导出的比例，范围通常为 0 到 1。",
     "adaptive.max_output": "每个视频最多导出的 GIF 数量；填写 0 表示不设上限。",
@@ -168,6 +174,8 @@ CONFIG_TOOLTIP_JS = f"""
     const tooltipFields = [
         {{ selector: '#preference-memory-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['preference_memory.enabled'], ensure_ascii=False)} }},
         {{ selector: '#config-adaptive-transition-guard-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.transition_guard_enabled'], ensure_ascii=False)} }},
+        {{ selector: '#config-adaptive-action-guard-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.action_guard_enabled'], ensure_ascii=False)} }},
+        {{ selector: '#config-adaptive-action-vlm-verify-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.action_vlm_verify_enabled'], ensure_ascii=False)} }},
     ];
     const attach = () => {{
         tooltipFields.forEach((field) => {{
@@ -202,7 +210,7 @@ def load_config():
         return (
             [str(e)] * 7,
             [str(e)] * 2,
-            [str(e)] * 13,
+            [str(e)] * 15,
             [False, "0.50", "0.50"],
             "",
         )
@@ -235,6 +243,8 @@ def load_config():
         bool(adaptive.get("transition_guard_enabled", True)),
         str(adaptive.get("transition_min_duration_s", 2.0)),
         str(adaptive.get("transition_boundary_margin_s", 0.25)),
+        bool(adaptive.get("action_guard_enabled", True)),
+        bool(adaptive.get("action_vlm_verify_enabled", True)),
         str(adaptive.get("vlm_temperature", 0.65)),
         str(adaptive.get("output_ratio", 1.0)),
         str(adaptive.get("max_output", 0)),
@@ -258,6 +268,7 @@ def save_config(
     ad_max_duration,
     ad_transition_guard_enabled, ad_transition_min_duration_s,
     ad_transition_boundary_margin_s,
+    ad_action_guard_enabled, ad_action_vlm_verify_enabled,
     ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
     pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_text,
 ):
@@ -267,6 +278,12 @@ def save_config(
             cfg = yaml.safe_load(f) or {}
     except Exception:
         cfg = {}
+    original_raw = yaml.dump(
+        cfg,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+    )
 
     cfg.setdefault("llm", {})
     cfg["llm"]["provider"] = llm_provider
@@ -291,10 +308,47 @@ def save_config(
     cfg["adaptive"]["transition_guard_enabled"] = bool(ad_transition_guard_enabled)
     cfg["adaptive"]["transition_min_duration_s"] = float(ad_transition_min_duration_s)
     cfg["adaptive"]["transition_boundary_margin_s"] = float(ad_transition_boundary_margin_s)
+    cfg["adaptive"]["action_guard_enabled"] = bool(ad_action_guard_enabled)
+    cfg["adaptive"]["action_vlm_verify_enabled"] = bool(ad_action_vlm_verify_enabled)
     cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
     cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
     cfg["adaptive"]["max_output"] = int(ad_max_output)
     cfg["adaptive"]["gif_fps"] = int(ad_gif_fps)
+
+    adaptive = cfg["adaptive"]
+    action_values = {
+        "action_guard_enabled": adaptive.get("action_guard_enabled", True),
+        "action_vlm_verify_enabled": adaptive.get(
+            "action_vlm_verify_enabled", True
+        ),
+        "action_analysis_version": adaptive.get("action_analysis_version", 1),
+        "action_analysis_window_s": adaptive.get(
+            "action_analysis_window_s", 30.0
+        ),
+        "action_preferred_min_duration_s": adaptive.get(
+            "action_preferred_min_duration_s", 4.0
+        ),
+        "action_preferred_max_duration_s": adaptive.get(
+            "action_preferred_max_duration_s", 12.0
+        ),
+        "action_min_duration_s": adaptive.get("min_duration", 2.0),
+        "action_max_duration_s": adaptive.get("max_duration", 20.0),
+        "action_scan_fps": adaptive.get("action_scan_fps", 4.0),
+        "action_boundary_confidence_threshold": adaptive.get(
+            "action_boundary_confidence_threshold", 0.65
+        ),
+        "action_loop_adjust_s": adaptive.get("action_loop_adjust_s", 0.75),
+        "action_vlm_min_worthiness": adaptive.get(
+            "action_vlm_min_worthiness", 0.60
+        ),
+        "action_fallback_mode": adaptive.get(
+            "action_fallback_mode", "fixed_window"
+        ),
+    }
+    try:
+        ActionBoundaryConfig.from_mapping(action_values, strict=True)
+    except ValueError as exc:
+        return f"配置错误：{exc}", original_raw
 
     cfg.setdefault("preference_memory", {})
     cfg["preference_memory"]["enabled"] = bool(pm_enabled)
@@ -386,6 +440,12 @@ def build_settings_tab(context) -> None:
                 ad_transition_boundary_margin_s = config_textbox(
                     "adaptive.transition_boundary_margin_s", value=""
                 )
+                ad_action_guard_enabled = config_checkbox(
+                    "adaptive.action_guard_enabled", value=True
+                )
+                ad_action_vlm_verify_enabled = config_checkbox(
+                    "adaptive.action_vlm_verify_enabled", value=True
+                )
                 ad_vlm_temperature = config_textbox("adaptive.vlm_temperature", value="")
                 with gr.Row():
                     with gr.Column(min_width=160):
@@ -424,7 +484,8 @@ def build_settings_tab(context) -> None:
         ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
         ad_worthiness_threshold, ad_refine_threshold,
         ad_max_duration, ad_transition_guard_enabled, ad_transition_min_duration_s,
-        ad_transition_boundary_margin_s, ad_vlm_temperature, ad_output_ratio,
+        ad_transition_boundary_margin_s, ad_action_guard_enabled,
+        ad_action_vlm_verify_enabled, ad_vlm_temperature, ad_output_ratio,
         ad_max_output, ad_gif_fps,
         pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_yaml,
     ]

@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app.task_engine.schema import apply_task_schema
 from app.task_engine.repository import TaskRepository
+from scripts.test_video_adaptive import extract_config
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +148,68 @@ def test_create_job_recomputes_config_hash_not_trusting_request(
         "video_paths": [],
     }
     assert persisted["config_hash"] == canonical_hash(expected_business)
+
+
+def test_create_job_freezes_action_config_and_hashes_threshold_changes(
+    client, tmp_path, monkeypatch,
+):
+    cl, repo, conn = client
+    first_dir = tmp_path / "action_hash_first"
+    second_dir = tmp_path / "action_hash_second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    action_adaptive = {
+        "min_duration": 2,
+        "max_duration": 20,
+        "action_guard_enabled": True,
+        "action_vlm_verify_enabled": True,
+        "action_analysis_version": 1,
+        "action_analysis_window_s": 30,
+        "action_preferred_min_duration_s": 4,
+        "action_preferred_max_duration_s": 12,
+        "action_scan_fps": 4,
+        "action_boundary_confidence_threshold": 0.65,
+        "action_loop_adjust_s": 0.75,
+        "action_vlm_min_worthiness": 0.60,
+        "action_fallback_mode": "fixed_window",
+    }
+    monkeypatch.setattr(
+        "app.routers.tasks.load_config",
+        lambda: {"adaptive": action_adaptive, "models": {}},
+    )
+
+    first = cl.post("/api/tasks/jobs", json={"directory": str(first_dir)})
+    second = cl.post(
+        "/api/tasks/jobs",
+        json={
+            "directory": str(second_dir),
+            "config_json": {
+                "adaptive": {"action_boundary_confidence_threshold": 0.75}
+            },
+        },
+    )
+    assert first.status_code == 201
+    assert second.status_code == 201
+
+    snapshots = []
+    for response in (first, second):
+        row = conn.execute(
+            "SELECT config_json FROM task_jobs WHERE job_id=?",
+            (response.json()["job_id"],),
+        ).fetchone()
+        snapshots.append(json.loads(row["config_json"]))
+
+    first_snapshot, second_snapshot = snapshots
+    for key, value in action_adaptive.items():
+        assert first_snapshot["adaptive"][key] == value
+    assert first_snapshot["config_hash"] != second_snapshot["config_hash"]
+
+    first_frozen = extract_config(first_snapshot)
+    second_frozen = extract_config(second_snapshot)
+    assert first_frozen["action_config_hash"] == extract_config(
+        {"adaptive": action_adaptive}
+    )["action_config_hash"]
+    assert first_frozen["action_config_hash"] != second_frozen["action_config_hash"]
 
 
 def test_duplicate_active_directory_returns_409(client, tmp_path):
