@@ -30,6 +30,7 @@
 - Create `tests/test_transition_guard.py`: synthetic video fixtures and media-level guard tests.
 - Create `tests/test_gif_windows.py`: duration, centering, clamping, and minimum-length tests.
 - Create `tests/test_transition_candidates.py`: trim/split/drop and local-best-frame tests.
+- Create `tests/test_adaptive_direct_transition.py`: direct-pipeline guard integration tests.
 - Modify `app/services/clip_merge.py`: optional boundary-aware merge break.
 - Modify `tests/test_clip_merge.py`: shot-boundary and boundary metadata cases.
 - Modify `scripts/test_video_adaptive.py`: config extraction, shared window use, direct integration, staged integration, and result metrics.
@@ -72,7 +73,7 @@ BASE_CFG = {
 
 def test_hard_cut_splits_window(tmp_path):
     video = write_hard_cut_video(tmp_path / "hard_cut.mp4")
-    result = guard_candidate_window(video, 0.0, 4.0, 1.0, BASE_CFG)
+    result = guard_candidate_window(video, 0.0, 6.0, 1.0, BASE_CFG)
     assert result.transition_action == "split"
     assert result.hard_cut_count >= 1
     assert len(result.segments) == 2
@@ -87,7 +88,7 @@ def test_slow_upward_motion_is_kept(tmp_path):
 
 def test_crossfade_splits_without_using_single_frame_score(tmp_path):
     video = write_crossfade_video(tmp_path / "crossfade.mp4")
-    result = guard_candidate_window(video, 0.0, 4.0, 1.0, BASE_CFG)
+    result = guard_candidate_window(video, 0.0, 6.0, 1.0, BASE_CFG)
     assert result.soft_transition_count >= 1
     assert result.transition_action == "split"
 
@@ -150,7 +151,7 @@ class TransitionGuardConfig:
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object] | None) -> "TransitionGuardConfig":
-        ...
+        """Coerce and clamp the transition_* values listed above."""
 ```
 
 `from_mapping()` must coerce numeric values, clamp `scan_fps` and `scan_width` to positive values, reject NaN/inf, and enforce `min_duration_s >= 0.1` and `boundary_margin_s >= 0.0`.
