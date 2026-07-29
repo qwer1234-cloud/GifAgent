@@ -470,7 +470,7 @@ def extract_config(config_data: dict) -> dict:
         "refine_radius": int(adaptive.get("refine_radius", 20)),
         "refine_threshold": float(adaptive.get("refine_threshold", 0.5)),
         "max_duration": float(adaptive.get("max_duration", 10)),
-        "min_duration": 1.5,
+        "min_duration": float(adaptive.get("min_duration", 1.5)),
         "worthiness_threshold": float(adaptive.get("worthiness_threshold", 0.2)),
         "merge_gap": int(adaptive.get("merge_gap", 12)),
         "merge_score_threshold": float(
@@ -1994,7 +1994,9 @@ def _run_stage(
     elif stage == "synthesize":
         return _stage_synthesize(work_dir, cfg, inputs)
     elif stage == "rank_dedup":
-        return _stage_rank_dedup(export_dir, work_dir, cfg, inputs)
+        return _stage_rank_dedup(
+            video_path, export_dir, work_dir, cfg, inputs, config_data
+        )
     elif stage == "gif_clip":
         return _stage_gif_clip(video_path, frames_dir, export_dir, work_dir, cfg, clip_id, inputs)
     elif stage == "materialize":
@@ -2541,6 +2543,11 @@ def _stage_synthesize(work_dir: str, cfg: dict, inputs: dict) -> dict:
             "stage": "synthesize",
             "clip_count": 0,
             "clips": [],
+            # Rank/dedup needs the refined evidence to select a segment-local
+            # best frame after a transition split.  Keep clips unchanged for
+            # consumers of v1 manifests.
+            "scored_frames_version": 1,
+            "scored_frames": [],
             "output_key": "synthesize",
         }
         manifest_path = _save_manifest(work_dir, "synthesize", manifest)
@@ -2592,6 +2599,8 @@ def _stage_synthesize(work_dir: str, cfg: dict, inputs: dict) -> dict:
         "stage": "synthesize",
         "clip_count": len(clips),
         "clips": clips,
+        "scored_frames_version": 1,
+        "scored_frames": scored_frames,
         "output_key": "synthesize",
     }
     manifest_path = _save_manifest(work_dir, "synthesize", manifest)
@@ -2634,10 +2643,22 @@ def _synthesize_clips_with_llm(clips: list[dict], cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -> dict:
-    """Read synthesize manifest, apply dedup, assign stable clip_ids."""
+def _stage_rank_dedup(
+    video_path: str,
+    export_dir: str,
+    work_dir: str,
+    cfg: dict,
+    inputs: dict,
+    config_data: dict | None = None,
+) -> dict:
+    """Guard synthesized windows, then dedup and assign stable clip IDs.
+
+    The transition decision belongs here, before any embedding/temporal
+    deduplication or fan-out.  ``gif_clip`` only exports these clean windows.
+    """
     synth_manifest = _read_upstream_manifest(inputs, "synthesize_manifest", "rank_dedup")
     clips = synth_manifest.get("clips", [])
+    scored_frames = synth_manifest.get("scored_frames", [])
 
     EMBED_SIM_THRESHOLD = cfg["embed_sim_threshold"]
     EMBED_DEDUP_ENABLED = cfg["embed_dedup_enabled"]
@@ -2661,14 +2682,116 @@ def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -
             "_artifacts": [_make_artifact(manifest_path, "rank_dedup_manifest")],
         }
 
+    MIN_DURATION = float(cfg["min_duration"])
+    MAX_DURATION = float(cfg["max_duration"])
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path,
+        ],
+        capture_output=True, text=True,
+    )
+    if probe.returncode != 0:
+        raise RuntimeError(f"ffprobe failed for rank/dedup: {probe.stderr.strip()}")
+    try:
+        total_duration = float(probe.stdout.strip())
+    except ValueError as exc:
+        raise RuntimeError("ffprobe returned no usable video duration for rank/dedup") from exc
+
+    # The staged equivalent of direct-mode phase 2.65.  Build a bounded
+    # window first; guard and fan-out then retain only safe segments.  This
+    # must happen before candidates receive embeddings, temporal dedup, or IDs.
+    transition_guard = {key: 0 for key in (
+        "input", "split", "trim", "drop", "unverified", "hard_cut",
+        "soft_transition", "motion",
+    )}
+    clean_clips: list[dict] = []
+    guard_rescore_enabled = bool(cfg.get("transition_rescore_split_segments", True))
+    vlm_cfg: dict | None = None
+    vlm_options = {
+        "temperature": cfg["vlm_temperature"], "top_p": cfg["vlm_top_p"],
+        "top_k": cfg["vlm_top_k"], "num_think": 0,
+    }
+
+    for clip_index, clip in enumerate(clips):
+        window = build_export_window(
+            clip, total_duration_s=total_duration, min_duration_s=MIN_DURATION,
+            max_duration_s=MAX_DURATION,
+        )
+        anchor_ts = float(clip.get("best_frame_ts", (window.start_s + window.end_s) / 2))
+        guard_result = guard_candidate_window(
+            video_path, window.start_s, window.end_s, anchor_ts, cfg
+        )
+        transition_guard["input"] += 1
+        action = guard_result.transition_action
+        if action in transition_guard:
+            transition_guard[action] += 1
+        transition_guard["hard_cut"] += guard_result.hard_cut_count
+        transition_guard["soft_transition"] += guard_result.soft_transition_count
+        if guard_result.motion_type == "coherent_camera_motion":
+            transition_guard["motion"] += 1
+
+        for segment_index, candidate in enumerate(
+            build_guarded_clips(clip, guard_result, scored_frames, MIN_DURATION)
+        ):
+            # This marker records that start/end are final guarded windows,
+            # not pre-guard evidence that gif_clip may expand or reinterpret.
+            candidate["guarded_export_window"] = True
+            if candidate.get("needs_rescore"):
+                if not guard_rescore_enabled:
+                    continue
+                if vlm_cfg is None:
+                    vlm_cfg = _validate_vlm_provider(config_data)
+                midpoint = (float(candidate["start_ts"]) + float(candidate["end_ts"])) / 2
+                frame_path = os.path.join(
+                    work_dir, f"guard_{clip_index:04d}_{segment_index:02d}_{midpoint:.3f}.jpg"
+                )
+                try:
+                    extracted = subprocess.run(
+                        ["ffmpeg", "-y", "-ss", str(midpoint), "-i", video_path,
+                         "-vf", "scale=640:-1", "-vframes", "1", frame_path],
+                        capture_output=True, timeout=15,
+                    )
+                    if extracted.returncode != 0 or not os.path.exists(frame_path):
+                        continue
+                    with open(frame_path, "rb") as frame_file:
+                        payload, error = _score_vlm_frame(
+                            base_url=vlm_cfg.get("base_url", OLLAMA_BASE),
+                            model=vlm_cfg.get("model", "llava:13b"),
+                            image_bytes=frame_file.read(), prompt=get_score_prompt(),
+                            options=vlm_options,
+                            threshold=cfg["worthiness_threshold"], timestamp=midpoint,
+                            frame_path=frame_path,
+                            retry_delay_s=float(vlm_cfg.get("retry_delay_s", 2.0)),
+                        )
+                    if payload is None:
+                        print(f"  Guard rescore dropped segment at {midpoint:.2f}s: {error}")
+                        continue
+                    candidate.update(
+                        best_frame=payload, best_frame_ts=midpoint,
+                        best_frame_path=frame_path, frame_count=1,
+                        gif_worthiness=payload["gif_worthiness"], needs_rescore=False,
+                    )
+                except Exception as exc:
+                    print(f"  Guard rescore dropped segment at {midpoint:.2f}s: {exc}")
+                    continue
+            clean_clips.append(candidate)
+
+    print(
+        f"  Guard: {transition_guard['input']} input -> {len(clean_clips)} clean candidates "
+        f"(split={transition_guard['split']}, trim={transition_guard['trim']}, "
+        f"drop={transition_guard['drop']}, unverified={transition_guard['unverified']})"
+    )
+
     import numpy as np
     import hashlib
 
     # Embedding dedup
-    deduped_clips = list(clips)
-    if EMBED_DEDUP_ENABLED and len(clips) > 1:
+    deduped_clips = list(clean_clips)
+    if EMBED_DEDUP_ENABLED and len(clean_clips) > 1:
         clip_embeddings = []
-        for clip in clips:
+        for clip in clean_clips:
             text = " ".join(filter(None, [
                 clip.get("caption", ""),
                 clip.get("emotional_core", ""),
@@ -2683,8 +2806,8 @@ def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -
                 clip_embeddings.append(None)
 
         order = sorted(
-            range(len(clips)),
-            key=lambda i: clips[i]["gif_worthiness"],
+            range(len(clean_clips)),
+            key=lambda i: clean_clips[i]["gif_worthiness"],
             reverse=True,
         )
         kept_indices = []
@@ -2709,8 +2832,8 @@ def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -
                 kept_indices.append(idx)
                 kept_embs.append(emb)
 
-        deduped_clips = [clips[i] for i in kept_indices]
-        print(f"  Embedding dedup: {len(clips)} -> {len(deduped_clips)} clips")
+        deduped_clips = [clean_clips[i] for i in kept_indices]
+        print(f"  Embedding dedup: {len(clean_clips)} -> {len(deduped_clips)} clips")
 
     # Temporal dedup
     if TEMPORAL_DEDUP_ENABLED and len(deduped_clips) > 1:
@@ -2725,7 +2848,7 @@ def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -
     deduped_clips = deduped_clips[:output_count]
 
     # Assign stable clip_ids based on video name + start_ts + end_ts
-    video_name = synth_manifest.get("video_name", "unknown")
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
     for i, clip in enumerate(deduped_clips):
         raw = f"{video_name}:{clip['start_ts']}:{clip['end_ts']}:{i}"
         clip["clip_id"] = hashlib.sha256(raw.encode()).hexdigest()[:16]
@@ -2738,6 +2861,7 @@ def _stage_rank_dedup(export_dir: str, work_dir: str, cfg: dict, inputs: dict) -
         "stage": "rank_dedup",
         "clip_count": len(deduped_clips),
         "clips": deduped_clips,
+        "transition_guard": transition_guard,
         "output_key": "rank_dedup",
     }
     manifest_path = _save_manifest(work_dir, "rank_dedup", manifest)
@@ -2796,19 +2920,18 @@ def _stage_gif_clip(
         text=True,
     )
     total_duration = float(probe.stdout.strip())
-    clip_for_window = dict(target_clip)
-    clip_for_window.setdefault(
-        "best_frame_ts",
-        (float(target_clip["start_ts"]) + float(target_clip["end_ts"])) / 2.0,
-    )
-    window = build_export_window(
-        clip_for_window,
-        total_duration_s=total_duration,
-        min_duration_s=MIN_DURATION,
-        max_duration_s=MAX_DURATION,
-    )
-    start_ts = window.start_s
-    end_ts = window.end_s
+    # Rank/dedup has already calculated, guarded, and bounded this window.
+    # Export it verbatim: a transition decision must never originate here.
+    start_ts = float(target_clip["start_ts"])
+    end_ts = float(target_clip["end_ts"])
+    duration = end_ts - start_ts
+    if start_ts < 0 or end_ts > total_duration + 1e-6:
+        raise ValueError(f"rank_dedup clip {clip_id} has an out-of-video window")
+    if duration < MIN_DURATION - 1e-6 or duration > MAX_DURATION + 1e-6:
+        raise ValueError(
+            f"rank_dedup clip {clip_id} duration {duration:.6f}s is outside "
+            f"[{MIN_DURATION:.6f}, {MAX_DURATION:.6f}]"
+        )
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     gif_name = build_gif_filename(video_name, target_clip.get("rank", 1), start_ts, end_ts)
