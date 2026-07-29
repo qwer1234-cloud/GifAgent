@@ -55,6 +55,10 @@ def write_hard_cut_video(path: Path) -> Path:
     return _write_video(path, [_scene(1)] * 24 + [_scene(2)] * 24)
 
 
+def write_static_video(path: Path) -> Path:
+    return _write_video(path, [_scene(0)] * 32)
+
+
 def write_affine_pan_video(path: Path, dy: float) -> Path:
     source = _scene(3)
     frames = [
@@ -100,6 +104,16 @@ def test_hard_cut_splits_window(tmp_path: Path) -> None:
     assert result.hard_cut_count >= 1
     assert len(result.segments) == 2
     assert all(segment.end_s - segment.start_s >= 2.0 for segment in result.segments)
+
+
+def test_static_media_is_kept_without_transition_evidence(tmp_path: Path) -> None:
+    video = write_static_video(tmp_path / "static.mp4")
+    result = guard_candidate_window(video, 0.0, 4.0, 2.0, BASE_CFG)
+
+    assert result.transition_action == "keep"
+    assert result.hard_cut_count == 0
+    assert result.soft_transition_count == 0
+    assert result.to_dict()["guard_error"] is None
 
 
 def test_slow_upward_motion_is_kept(tmp_path: Path) -> None:

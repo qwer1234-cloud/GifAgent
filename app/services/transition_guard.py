@@ -235,7 +235,14 @@ def _evidence(metric: _PairMetric, config: TransitionGuardConfig) -> BoundaryEvi
     structure_recovered = residual < 0.18 and inlier_ratio >= 0.45
     if score >= config.hard_threshold and residual >= 0.08:
         kind = "hard_cut"
-    elif metric.histogram_distance >= 0.03 and metric.edge_distance >= 0.05:
+    # The public soft threshold controls the normalized per-pair change
+    # strength.  Histogram/edge floors keep coherent pans (large pixel/edge
+    # displacement but a stable palette) out of the dissolve run.
+    elif (
+        score >= config.soft_threshold
+        and metric.histogram_distance >= 0.03
+        and metric.edge_distance >= 0.05
+    ):
         kind = "soft_change"
     elif structure_recovered:
         kind = "coherent_camera_motion"
@@ -303,9 +310,8 @@ def guard_candidate_window(
         if item.boundary_type == "hard_cut":
             confirmed.append(item)
 
-    # A dissolve/fade is a sustained sequence of modest changes.  The 0.28
-    # scaling makes the public soft threshold useful on low-resolution scans
-    # where each individual crossfade step is intentionally small.
+    # A dissolve/fade is a sustained sequence of normalized soft-threshold
+    # crossings rather than one exceptional frame.
     run: list[BoundaryEvidence] = []
     for item in evidence:
         # A dissolve can retain an apparently excellent identity affine fit:
