@@ -167,3 +167,33 @@ def test_staged_export_preserves_guarded_split_window(tmp_path, monkeypatch):
     manifest = json.loads((work_dir / "gif_clip_guarded-split_manifest.json").read_text())
     assert manifest["start_ts"] == 11.0
     assert manifest["end_ts"] == 13.0
+
+
+def test_direct_action_export_uses_exact_guarded_window_capped_at_twenty_seconds(
+    tmp_path, monkeypatch
+):
+    """Direct FFmpeg must receive the exact safe action window and hard ceiling."""
+    from tests.test_adaptive_direct_action import _action_clip, _materialization
+    from tests.test_adaptive_direct_transition import _run_direct_pipeline_fixture
+
+    action_clip = _action_clip(2.0, 22.0)
+    monkeypatch.setattr(
+        test_video_adaptive,
+        "materialize_action_candidates",
+        lambda **_kwargs: _materialization((action_clip,)),
+        raising=False,
+    )
+    result = _run_direct_pipeline_fixture(
+        tmp_path,
+        monkeypatch,
+        max_output=1,
+        cfg_overrides={"action_guard_enabled": True, "max_duration": 20.0},
+        total_duration_s=40.0,
+    )
+
+    captured_attempts = result["_fixture_export_attempts"]
+    assert float(captured_attempts[0]["palette_command"][3]) == 2.0
+    assert float(captured_attempts[0]["palette_command"][5]) == 20.0
+    assert result["top_clips"][0]["start_ts"] == 2.0
+    assert result["top_clips"][0]["end_ts"] == 22.0
+    assert result["top_clips"][0]["duration"] <= 20.0

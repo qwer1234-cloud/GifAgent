@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from PIL import Image
 import pytest
 
+from app.services import action_pipeline
 from app.services.transition_guard import GuardSegment, TransitionGuardResult
 from scripts import test_video_adaptive
 
@@ -27,16 +28,31 @@ def _cfg() -> dict:
         "transition_scan_width": 320, "transition_motion_compensation": True,
         "transition_hard_threshold": 0.65, "transition_soft_threshold": 0.4,
         "transition_soft_run_frames": 3, "transition_rescore_split_segments": True,
+        "action_guard_enabled": False,
+        "action_vlm_verify_enabled": False,
+        "action_analysis_version": 1,
+        "action_analysis_window_s": 30.0,
+        "action_preferred_min_duration_s": 4.0,
+        "action_preferred_max_duration_s": 12.0,
+        "action_scan_fps": 4.0,
+        "action_boundary_confidence_threshold": 0.65,
+        "action_loop_adjust_s": 0.75,
+        "action_vlm_min_worthiness": 0.60,
+        "action_fallback_mode": "fixed_window",
+        "action_config_hash": "fixture-action-hash",
     }
 
 
-def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkeypatch):
-    """A split window produces two guarded candidates while honoring max_output.
-
-    Removing direct guard materialization would leave the original one clip,
-    so this regression catches both a missing guard call and a guard placed
-    after ranking/deduplication.
-    """
+def _run_direct_pipeline_fixture(
+    tmp_path,
+    monkeypatch,
+    *,
+    max_output: int = 2,
+    cfg_overrides: dict | None = None,
+    vlm_runtime: test_video_adaptive.VlmRuntimeConfig | None = None,
+    total_duration_s: float = 16.0,
+) -> dict:
+    """Run direct mode with deterministic media, VLM, embedding, and export fakes."""
     frames_dir = tmp_path / "frames"
     export_dir = tmp_path / "exports"
     frames_dir.mkdir()
@@ -45,7 +61,9 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
 
     def fake_run(command, **_kwargs):
         if command[0] == "ffprobe":
-            return SimpleNamespace(stdout="16.0\n", returncode=0)
+            return SimpleNamespace(
+                stdout=f"{total_duration_s}\n", returncode=0
+            )
         Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
         source_frame.save(command[-1], "JPEG", quality=95)
         return SimpleNamespace(stdout="", returncode=0)
@@ -64,10 +82,23 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
         def json(self):
             return {"response": '{"caption":"moment","emotional_core":"awe","gif_worthiness":0.9,"aesthetic_notes":["light"],"reason":"peak"}'}
 
-    monkeypatch.setattr(test_video_adaptive.httpx, "post", lambda *_args, **_kwargs: FakeResponse())
+    http_calls = []
+
+    def fake_post(url, **kwargs):
+        http_calls.append((url, kwargs))
+        return FakeResponse()
+
+    monkeypatch.setattr(test_video_adaptive.httpx, "post", fake_post)
     guard_calls = []
 
-    def fake_guard(video_path, start_s, end_s, anchor_ts_s, config):
+    def fake_guard(
+        video_path,
+        start_s,
+        end_s,
+        anchor_ts_s,
+        config,
+        temporal_evidence=None,
+    ):
         guard_calls.append((video_path, start_s, end_s, anchor_ts_s, config))
         return TransitionGuardResult(
             transition_action="split",
@@ -78,6 +109,18 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
         )
 
     monkeypatch.setattr(test_video_adaptive, "guard_candidate_window", fake_guard)
+    monkeypatch.setattr(action_pipeline, "guard_candidate_window", fake_guard)
+
+    class FakeEvidenceCache:
+        def scan(self, *_args, **_kwargs):
+            return object()
+
+    monkeypatch.setattr(
+        test_video_adaptive,
+        "TemporalEvidenceCache",
+        FakeEvidenceCache,
+        raising=False,
+    )
     rescore_calls = []
 
     def fake_rescore(**kwargs):
@@ -90,7 +133,10 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
 
     monkeypatch.setattr(test_video_adaptive, "_score_vlm_frame", fake_rescore)
 
+    export_attempts = []
+
     def fake_export_attempt(**kwargs):
+        export_attempts.append(kwargs)
         Path(kwargs["output_path"]).write_bytes(b"GIF89a")
         return SimpleNamespace(success=True, size_bytes=6, error=None)
 
@@ -98,7 +144,11 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
     monkeypatch.setattr(
         test_video_adaptive,
         "compute_text_embedding",
-        lambda text: [1.0, 0.0] if text.startswith("moment") else [0.0, 1.0],
+        lambda text: (
+            [1.0, 0.0]
+            if text.startswith(("moment", "first"))
+            else [0.0, 1.0]
+        ),
     )
     ranker_inputs = []
 
@@ -108,10 +158,37 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
 
     monkeypatch.setattr(test_video_adaptive, "rank_clips_for_export", fake_ranker)
 
+    cfg = _cfg()
+    cfg["max_output"] = max_output
+    if cfg_overrides:
+        cfg.update(cfg_overrides)
     result = test_video_adaptive.run_pipeline(
-        str(tmp_path / "source.mp4"), str(frames_dir), str(export_dir), _cfg()
+        str(tmp_path / "source.mp4"),
+        str(frames_dir),
+        str(export_dir),
+        cfg,
+        vlm_runtime=vlm_runtime,
     )
+    result["_fixture_guard_calls"] = guard_calls
+    result["_fixture_rescore_calls"] = rescore_calls
+    result["_fixture_ranker_inputs"] = ranker_inputs
+    result["_fixture_http_calls"] = http_calls
+    result["_fixture_export_attempts"] = export_attempts
+    return result
 
+
+def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkeypatch):
+    """A split window produces two guarded candidates while honoring max_output.
+
+    Removing direct guard materialization would leave the original one clip,
+    so this regression catches both a missing guard call and a guard placed
+    after ranking/deduplication.
+    """
+    result = _run_direct_pipeline_fixture(tmp_path, monkeypatch, max_output=2)
+
+    guard_calls = result["_fixture_guard_calls"]
+    rescore_calls = result["_fixture_rescore_calls"]
+    ranker_inputs = result["_fixture_ranker_inputs"]
     assert len(guard_calls) == 1
     assert guard_calls[0][1:4] == pytest.approx((8.12, 12.82, 10.0))
     assert len(rescore_calls) == 1
