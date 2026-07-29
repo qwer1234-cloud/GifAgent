@@ -43,6 +43,8 @@ from app.services.export_cleanup import (
 from app.services.export_ranking import rank_clips_for_export
 from app.services.gif_naming import build_gif_filename
 from app.services.gif_windows import build_export_window
+from app.services.transition_candidates import build_guarded_clips
+from app.services.transition_guard import guard_candidate_window
 from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
@@ -912,6 +914,106 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     single_frame = sum(1 for c in clips if c["frame_count"] == 1)
     print(f"  Single-frame clips: {single_frame}")
 
+    # ---- Phase 2.65: transition-safe candidate materialization ----------
+    # A guard must run before either kind of deduplication.  In particular,
+    # a split creates independent candidates whose captions/embeddings can no
+    # longer be represented by the original merged clip.
+    print("\n[2.65/4] Guarding candidate windows against transitions...")
+    transition_guard = {
+        "input": 0,
+        "split": 0,
+        "trim": 0,
+        "drop": 0,
+        "unverified": 0,
+        "hard_cut": 0,
+        "soft_transition": 0,
+        "motion": 0,
+    }
+    guarded_clips = []
+    vlm_model, vlm_base_url = _resolve_vlm_config(None)
+    guard_rescore_enabled = bool(cfg.get("transition_rescore_split_segments", True))
+
+    for clip_index, clip in enumerate(clips):
+        window = build_export_window(
+            clip,
+            total_duration_s=total_duration,
+            min_duration_s=MIN_DURATION,
+            max_duration_s=MAX_DURATION,
+        )
+        best_frame = clip.get("best_frame") or {}
+        anchor_ts = float(best_frame.get("timestamp", clip.get("best_frame_ts", 0.0)))
+        guard_result = guard_candidate_window(
+            video_path, window.start_s, window.end_s, anchor_ts, cfg
+        )
+        transition_guard["input"] += 1
+        action = guard_result.transition_action
+        if action in {"split", "trim", "drop", "unverified"}:
+            transition_guard[action] += 1
+        transition_guard["hard_cut"] += guard_result.hard_cut_count
+        transition_guard["soft_transition"] += guard_result.soft_transition_count
+        if guard_result.motion_type == "coherent_camera_motion":
+            transition_guard["motion"] += 1
+
+        candidates = build_guarded_clips(
+            clip, guard_result, scored, min_duration_s=MIN_DURATION
+        )
+        for segment_index, candidate in enumerate(candidates):
+            # The guard segments themselves are the only safe export windows;
+            # do not let the legacy duration calculation expand them again.
+            candidate["guarded_export_window"] = True
+            if candidate.get("needs_rescore"):
+                if not guard_rescore_enabled:
+                    continue
+                midpoint = (float(candidate["start_ts"]) + float(candidate["end_ts"])) / 2.0
+                frame_path = os.path.join(
+                    frames_dir, f"guard_{clip_index:04d}_{segment_index:02d}_{midpoint:.3f}.jpg"
+                )
+                try:
+                    extracted = subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-ss", str(midpoint), "-i", video_path,
+                            "-vf", "scale=640:-1", "-vframes", "1", frame_path,
+                        ],
+                        capture_output=True,
+                        timeout=15,
+                    )
+                    if extracted.returncode != 0 or not os.path.exists(frame_path):
+                        continue
+                    with open(frame_path, "rb") as frame_file:
+                        payload, error = _score_vlm_frame(
+                            base_url=vlm_base_url,
+                            model=vlm_model,
+                            image_bytes=frame_file.read(),
+                            prompt=get_score_prompt(),
+                            options=VLM_OPTIONS,
+                            threshold=WORTHINESS_THRESHOLD,
+                            timestamp=midpoint,
+                            frame_path=frame_path,
+                        )
+                    if payload is None:
+                        print(f"  Guard rescore dropped segment at {midpoint:.2f}s: {error}")
+                        continue
+                    candidate.update(
+                        best_frame=payload,
+                        best_frame_ts=midpoint,
+                        best_frame_path=frame_path,
+                        frame_count=1,
+                        gif_worthiness=payload["gif_worthiness"],
+                        needs_rescore=False,
+                    )
+                except Exception as exc:
+                    print(f"  Guard rescore dropped segment at {midpoint:.2f}s: {exc}")
+                    continue
+            guarded_clips.append(candidate)
+
+    clips = guarded_clips
+    print(
+        "  Guard: "
+        f"{transition_guard['input']} input -> {len(clips)} clean candidates "
+        f"(split={transition_guard['split']}, trim={transition_guard['trim']}, "
+        f"drop={transition_guard['drop']}, unverified={transition_guard['unverified']})"
+    )
+
     # ---- Phase 2.7: Embedding dedup -------------------------------------
 
     if EMBED_DEDUP_ENABLED and len(clips) > 1:
@@ -1165,10 +1267,12 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         print(f"  Individual samples: {sample_dir}/{video_name}_sample_*.jpg")
 
     # ---- Phase 4: Export adaptive-duration GIFs -------------------------
-    output_count = int(len(deduped_clips) * OUTPUT_RATIO)
-    if MAX_OUTPUT > 0:
-        output_count = min(output_count, MAX_OUTPUT)
-    output_count = max(1, output_count)
+    if deduped_clips:
+        output_count = max(1, int(len(deduped_clips) * OUTPUT_RATIO))
+        if MAX_OUTPUT > 0:
+            output_count = min(output_count, MAX_OUTPUT)
+    else:
+        output_count = 0
 
     print(
         f"\n[4/4] Exporting {output_count}/{len(deduped_clips)} GIFs (4K) "
@@ -1233,15 +1337,20 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
     for i, clip in enumerate(ranked_clips):
         worth = clip["gif_worthiness"]
         r = clip["best_frame"]
-        window = build_export_window(
-            clip,
-            total_duration_s=total_duration,
-            min_duration_s=MIN_DURATION,
-            max_duration_s=MAX_DURATION,
-        )
-        start = window.start_s
-        duration = window.duration_s
-        end = window.end_s
+        if clip.get("guarded_export_window"):
+            start = float(clip["start_ts"])
+            end = float(clip["end_ts"])
+            duration = end - start
+        else:
+            window = build_export_window(
+                clip,
+                total_duration_s=total_duration,
+                min_duration_s=MIN_DURATION,
+                max_duration_s=MAX_DURATION,
+            )
+            start = window.start_s
+            duration = window.duration_s
+            end = window.end_s
         ts = r["timestamp"]
 
         out_gif = os.path.join(
@@ -1293,6 +1402,10 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 "error": attempt.error,
                 "start_ts": start,
                 "end_ts": end,
+                "transition_action": clip.get("transition_action"),
+                "transition_risk": clip.get("transition_risk"),
+                "motion_type": clip.get("motion_type"),
+                "guard_reason": clip.get("guard_reason"),
             }
         )
 
@@ -1366,6 +1479,7 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
         "potplayer_pbf_enabled": POTPLAYER_PBF_ENABLED,
         "potplayer_pbf_path": potplayer_pbf_path,
         "dedup_input_clips": dedup_input_clips,
+        "transition_guard": transition_guard,
         "embedding_deduped_clips": embedding_deduped_clips,
         "deduped_clips": len(deduped_clips),
         "clusters_after_dedup": len(deduped_clips),
@@ -1403,6 +1517,10 @@ def run_pipeline(video_path: str, frames_dir: str, export_dir: str, cfg: dict) -
                 "export_status": gif_export_results[i]["status"],
                 "export_path": gif_export_results[i]["path"],
                 "export_error": gif_export_results[i]["error"],
+                "transition_action": clip.get("transition_action"),
+                "transition_risk": clip.get("transition_risk"),
+                "motion_type": clip.get("motion_type"),
+                "guard_reason": clip.get("guard_reason"),
             }
             for i, clip in enumerate(ranked_clips)
         ],
