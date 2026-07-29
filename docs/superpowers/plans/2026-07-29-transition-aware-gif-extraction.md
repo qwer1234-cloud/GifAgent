@@ -162,7 +162,7 @@ Use `cv2.VideoCapture`, seek the requested window, sample at `scan_fps`, resize 
 
 - [ ] **Step 3: Implement global motion compensation**
 
-For each suspicious pair, track `goodFeaturesToTrack()` points with `calcOpticalFlowPyrLK()`, estimate an affine transform using `estimateAffinePartial2D(..., method=RANSAC)`, warp the previous grayscale frame, and compute normalized residual. Record inlier ratio and transform deltas. If too few points are available, use residual=1.0 and inlier ratio=0.0 for classification; do not crash.
+For each suspicious pair, track `goodFeaturesToTrack()` points with `calcOpticalFlowPyrLK()`, estimate an affine transform using `estimateAffinePartial2D(points_prev, points_curr, method=RANSAC)`, warp the previous grayscale frame, and compute normalized residual. Record inlier ratio and transform deltas. If too few points are available, use residual=1.0 and inlier ratio=0.0 for classification; do not crash.
 
 - [ ] **Step 4: Implement boundary classification and segment construction**
 
@@ -269,7 +269,7 @@ git commit -m "feat: centralize adaptive export windows and guard config"
 - Create: `tests/test_transition_candidates.py`
 
 **Interfaces:**
-- `merge_scored_frames_into_clips(..., shot_boundaries: Sequence[float] | None = None)` must refuse to merge across any supplied boundary.
+- `merge_scored_frames_into_clips(frames, *, merge_gap, merge_score_threshold, max_merge_span_s=24.0, peak_threshold=None, shot_boundaries=None)` must refuse to merge across any supplied boundary.
 - `build_guarded_clips(clip, guard_result, scored_frames, min_duration_s)` returns clean candidate dictionaries without performing VLM calls.
 
 - [ ] **Step 1: Add failing merge/split tests**
@@ -369,7 +369,7 @@ git commit -m "feat: guard direct adaptive GIF candidates"
 **Interfaces:**
 - `_run_stage()` passes `video_path` and frozen `config_data` to rank/dedup.
 - `_stage_synthesize()` carries the refined scored-frame entries needed for segment-local best-frame selection.
-- `_stage_rank_dedup(video_path, ..., config_data)` cleans clips before embedding/temporal dedup and stable clip IDs.
+- `_stage_rank_dedup(video_path, export_dir, work_dir, cfg, inputs, config_data)` cleans clips before embedding/temporal dedup and stable clip IDs.
 
 - [ ] **Step 1: Add failing staged tests**
 
