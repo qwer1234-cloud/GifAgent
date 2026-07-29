@@ -11,7 +11,9 @@ import pytest
 from app.services.action_boundary import (
     ActionBoundaryCandidate,
     ActionBoundaryConfig,
+    ActionBoundaryResult,
     ActionMotionAnalysis,
+    ActionSegment,
     finalize_action_analysis,
 )
 from app.services.action_candidates import build_action_clips
@@ -100,6 +102,29 @@ def _finalize(
         candidate.peak_s,
         0,
         ACTION_CFG,
+    )
+
+
+def _result_with_segments(*segments: tuple[float, float]) -> ActionBoundaryResult:
+    return ActionBoundaryResult(
+        action_boundary_mode="complete_action",
+        safe_start_s=0.0,
+        safe_end_s=30.0,
+        anchor_ts_s=1.0,
+        boundary_candidates=(),
+        segments=tuple(
+            ActionSegment(start_s, end_s, (start_s + end_s) / 2.0, "complete_action", False)
+            for start_s, end_s in segments
+        ),
+        action_start_ts=segments[0][0],
+        action_peak_ts=1.0,
+        action_end_ts=segments[-1][1],
+        action_completeness_score=0.8,
+        action_boundary_confidence=0.8,
+        loop_quality_score=0.8,
+        action_split_reason=None,
+        action_vlm_verified=False,
+        action_fallback_reason=None,
     )
 
 
@@ -221,6 +246,32 @@ def test_loop_adjustment_cannot_shrink_a_short_core_below_two_seconds():
     assert result.segments[0].end_s >= candidate.end_s
 
 
+def test_loop_adjustment_stays_within_custom_endpoint_search_distance():
+    candidate = _candidate(2.0, 4.0, 6.0)
+    evidence = make_flat_evidence(0.0, 8.0)
+    for frame in evidence.frames:
+        frame.gray.fill(128)
+        frame.hsv.fill(128)
+        if frame.timestamp_s in (1.75, 6.5):
+            frame.gray.fill(0)
+            frame.hsv.fill(0)
+    config = ActionBoundaryConfig(loop_adjust_s=0.1)
+
+    result = finalize_action_analysis(
+        _analysis(candidate),
+        evidence,
+        0.0,
+        8.0,
+        candidate.peak_s,
+        0,
+        config,
+    )
+
+    segment = result.segments[0]
+    assert abs(segment.start_s - 1.6) <= 0.1 + 1e-9
+    assert abs(segment.end_s - 6.6) <= 0.1 + 1e-9
+
+
 def test_completeness_formula_and_all_result_fields_are_finite_json():
     candidate = ActionBoundaryCandidate(2.0, 4.0, 6.0, 0.75, 0.8, 0.9, 1.0, 0.7)
     result = _finalize(candidate, 0.0, 8.0)
@@ -305,3 +356,32 @@ def test_fan_out_marks_only_child_without_scored_frame_for_rescore():
     assert [clip["needs_rescore"] for clip in clips] == [False, True]
     assert clips[1]["best_frame"] is None
     assert clips[1]["best_frame_ts"] is None
+
+
+def test_fan_out_enforces_two_second_hard_minimum_when_caller_passes_zero():
+    clips = build_action_clips(
+        {"start_ts": 0.0, "end_ts": 1.0},
+        _result_with_segments((0.0, 1.0)),
+        [{"timestamp": 0.5, "path": "short.jpg", "gif_worthiness": 0.9}],
+        0.0,
+    )
+
+    assert clips == []
+
+
+@pytest.mark.parametrize("invalid_score", [float("nan"), "not-a-number"])
+def test_fan_out_ignores_invalid_scores_and_keeps_finite_best_metadata(invalid_score):
+    clips = build_action_clips(
+        {"start_ts": 0.0, "end_ts": 2.0},
+        _result_with_segments((0.0, 2.0)),
+        [
+            {"timestamp": 0.5, "path": "invalid.jpg", "gif_worthiness": invalid_score},
+            {"timestamp": 1.5, "path": "valid.jpg", "gif_worthiness": 0.9},
+        ],
+        2.0,
+    )
+
+    assert len(clips) == 1
+    assert clips[0]["best_frame_path"] == "valid.jpg"
+    assert clips[0]["gif_worthiness"] == 0.9
+    json.dumps(clips, allow_nan=False)

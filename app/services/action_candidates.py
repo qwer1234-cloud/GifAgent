@@ -22,6 +22,14 @@ def _frames_in_segment(
     return frames
 
 
+def _finite_worthiness(frame: dict[str, Any]) -> float | None:
+    try:
+        score = float(frame.get("gif_worthiness"))
+    except (TypeError, ValueError):
+        return None
+    return score if math.isfinite(score) else None
+
+
 def build_action_clips(
     clip: dict[str, Any],
     action_result: ActionBoundaryResult,
@@ -30,9 +38,9 @@ def build_action_clips(
 ) -> list[dict[str, Any]]:
     """Copy action metadata onto one immutable export window per segment."""
     try:
-        export_min_duration = max(0.0, float(min_duration_s))
+        export_min_duration = max(2.0, float(min_duration_s))
     except (TypeError, ValueError):
-        export_min_duration = 0.0
+        export_min_duration = 2.0
     candidates: list[dict[str, Any]] = []
     for segment in action_result.segments:
         start_s, end_s = float(segment.start_s), float(segment.end_s)
@@ -63,16 +71,23 @@ def build_action_clips(
             "action_analysis_version": action_result.action_analysis_version,
             "diagnostics": dict(action_result.diagnostics),
         }
-        if segment_frames:
-            best = max(
-                segment_frames,
-                key=lambda frame: float(frame.get("gif_worthiness", 0.0)),
-            )
+        scored = [
+            (frame, score)
+            for frame in segment_frames
+            if (score := _finite_worthiness(frame)) is not None
+        ]
+        if scored:
+            best, best_score = max(scored, key=lambda item: item[1])
+            normalized_best = {
+                **best,
+                "timestamp": float(best["timestamp"]),
+                "gif_worthiness": best_score,
+            }
             candidate.update(
-                best_frame=best,
+                best_frame=normalized_best,
                 best_frame_ts=float(best["timestamp"]),
                 best_frame_path=best.get("path", ""),
-                gif_worthiness=best.get("gif_worthiness", 0.0),
+                gif_worthiness=best_score,
                 needs_rescore=False,
             )
         else:

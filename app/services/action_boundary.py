@@ -152,8 +152,13 @@ class ActionBoundaryResult:
     action_vlm_verified: bool
     action_fallback_reason: str | None
     action_analysis_version: int = 1
-    diagnostics: dict[str, float | int | str | None] = field(default_factory=dict)
+    diagnostics: dict[str, float | int | str | None] = field(
+        default_factory=_ImmutableDiagnostics
+    )
     analysis_error: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "diagnostics", _ImmutableDiagnostics(self.diagnostics))
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -766,14 +771,15 @@ def _adjust_loop_endpoints(
 ) -> tuple[float, float, float]:
     if not evidence.frames:
         return padded_start_s, padded_end_s, 0.0
-    start_floor = max(padded_start_s, padded_start_s - config.loop_adjust_s)
-    end_ceiling = min(padded_end_s, padded_end_s + config.loop_adjust_s)
+    loop_adjust_s = max(0.0, config.loop_adjust_s)
+    start_ceiling = min(core_start_s, padded_start_s + loop_adjust_s)
+    end_floor = max(core_end_s, padded_end_s - loop_adjust_s)
     starts = {
         padded_start_s,
         *(
             frame.timestamp_s
             for frame in evidence.frames
-            if start_floor - 1e-9 <= frame.timestamp_s <= core_start_s + 1e-9
+            if padded_start_s - 1e-9 <= frame.timestamp_s <= start_ceiling + 1e-9
         ),
     }
     ends = {
@@ -781,7 +787,7 @@ def _adjust_loop_endpoints(
         *(
             frame.timestamp_s
             for frame in evidence.frames
-            if core_end_s - 1e-9 <= frame.timestamp_s <= end_ceiling + 1e-9
+            if end_floor - 1e-9 <= frame.timestamp_s <= padded_end_s + 1e-9
         ),
     }
     ranked: list[tuple[float, float, float, float]] = []

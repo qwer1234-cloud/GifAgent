@@ -271,3 +271,5 @@ def test_final_action_result_types_are_immutable():
     )
     with pytest.raises(FrozenInstanceError):
         result.action_boundary_mode = "fallback_fixed"
+    with pytest.raises(TypeError):
+        result.diagnostics["mutated"] = 1
