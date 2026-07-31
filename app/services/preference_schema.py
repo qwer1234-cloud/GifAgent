@@ -169,6 +169,15 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
     # Phase 3 migration: add event_kind and supersedes_event_id to
     # preference_events, while replacing the old CHECK constraint with one
     # that includes "favorite".
+    _ensure_columns(
+        conn,
+        "preference_events",
+        (
+            ("previous_status", "TEXT"),
+            ("undone_at", "TEXT"),
+            ("undone_reason", "TEXT"),
+        ),
+    )
     _migrate_preference_events(conn)
 
     conn.commit()

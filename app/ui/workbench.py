@@ -49,10 +49,10 @@ class WorkbenchContext:
 # Gradio allowed paths
 # ---------------------------------------------------------------------------
 
-_GRADIO_ALLOWED_PATHS: tuple[str, ...] | None = None
+_GRADIO_ALLOWED_PATHS: list[str] | None = None
 
 
-def _build_gradio_allowed_paths() -> tuple[str, ...]:
+def _build_gradio_allowed_paths() -> list[str]:
     """Collect directories Gradio is allowed to serve."""
     paths = [
         os.getcwd(),
@@ -68,10 +68,10 @@ def _build_gradio_allowed_paths() -> tuple[str, ...]:
             if key not in seen:
                 allowed.append(candidate)
                 seen.add(key)
-    return tuple(allowed)
+    return allowed
 
 
-def get_allowed_paths() -> tuple[str, ...]:
+def get_allowed_paths() -> list[str]:
     """Return cached allowed paths, building on first call."""
     global _GRADIO_ALLOWED_PATHS
     if _GRADIO_ALLOWED_PATHS is None:

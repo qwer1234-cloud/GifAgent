@@ -101,6 +101,9 @@ for _m in [
 # Include config file, scripts, and app package data
 datas += [("configs/models.yaml", "configs")]
 datas += [("scripts", "scripts")]
+# ``app`` is a namespace package, so collect_data_files("app") can skip it.
+# Keep UI assets explicit so the frozen workbench can load them at runtime.
+datas += [("app/ui/static/layout.css", "app/ui/static")]
 datas += collect_data_files("app")
 
 a = Analysis(

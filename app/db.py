@@ -140,6 +140,13 @@ def init_db(apply_preference: bool = False):
         from app.services.preference_schema import apply_preference_schema
 
         apply_preference_schema(conn)
+    from app.services.workbench_schema import (
+        apply_collections_schema,
+        apply_search_schema,
+    )
+
+    apply_search_schema(conn)
+    apply_collections_schema(conn)
     conn.close()
 
 def _migrate(conn):
