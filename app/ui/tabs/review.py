@@ -165,6 +165,24 @@ RATING_ICON = {
 }
 
 
+def _build_candidate_gallery(candidates: list[dict]) -> tuple[list, list[dict]]:
+    """Build gallery tuples and page items with the shared path/label logic."""
+    gallery = []
+    page_items = []
+    for candidate in candidates:
+        path = _candidate_display_path(candidate)
+        cid = candidate.get("candidate_id", "")
+        status = candidate.get("status", "candidate")
+        icon = RATING_ICON.get(status, "?")
+        start_s = _safe_float(candidate.get("start_sec"), 0.0)
+        end_s = _safe_float(candidate.get("end_sec"), 0.0)
+        label = f"{icon} [{status}] {start_s:.0f}s-{end_s:.0f}s | {cid[:16]}"
+        if path:
+            gallery.append((path, label))
+        page_items.append(candidate)
+    return gallery, page_items
+
+
 def load_candidate_page(
     page: int,
     page_size: int = PAGE_SIZE,
@@ -194,19 +212,7 @@ def load_candidate_page(
         or "no candidates"
     )
 
-    gallery = []
-    page_items = []
-    for candidate in candidates:
-        path = _candidate_display_path(candidate)
-        cid = candidate.get("candidate_id", "")
-        status = candidate.get("status", "candidate")
-        icon = RATING_ICON.get(status, "?")
-        start_s = _safe_float(candidate.get("start_sec"), 0.0)
-        end_s = _safe_float(candidate.get("end_sec"), 0.0)
-        label = f"{icon} [{status}] {start_s:.0f}s-{end_s:.0f}s | {cid[:16]}"
-        if path:
-            gallery.append((path, label))
-        page_items.append(candidate)
+    gallery, page_items = _build_candidate_gallery(candidates)
 
     folder_name = os.path.basename(folder.rstrip("\\/")) or folder
     info = (
@@ -339,6 +345,32 @@ def submit_review_action(candidate_id: str, action: str, note: str = "", expecte
     return rate_candidate(candidate_id, action, note, expected_artifact_path)
 
 
+def _try_local_advance(
+    candidate_id: str,
+    page_items_state: list[dict] | None,
+    filter_status: str,
+) -> tuple[list, list[dict], str, str, str, str] | None:
+    """Rebuild the current page locally after a rating when possible.
+
+    Returns ``None`` when the caller should fall back to a server refresh;
+    otherwise returns ``(gallery, remaining_items, cid, label, preview, path)``
+    rebuilt with the same path/label logic as ``load_candidate_page``.
+    """
+    if filter_status != "candidate":
+        return None
+    if not isinstance(page_items_state, list) or not page_items_state:
+        return None
+    remaining = [
+        item for item in page_items_state
+        if item.get("candidate_id") != candidate_id
+    ]
+    if len(remaining) == len(page_items_state) or not remaining:
+        return None
+    gallery, _ = _build_candidate_gallery(remaining)
+    cid, label, preview, artifact_path = select_first_candidate(remaining)
+    return gallery, remaining, cid, label, preview, artifact_path
+
+
 def rate_and_advance(
     candidate_id: str,
     rating: str,
@@ -350,11 +382,18 @@ def rate_and_advance(
     root_dir: str,
     previous_folders: list[dict],
     *,
+    page_items_state: list[dict] | None = None,
     _submit_action=None,
     _load_page=None,
     _load_folders=None,
 ):
-    """Rate a GIF, select the next item, and advance folders when necessary."""
+    """Rate a GIF, select the next item, and advance folders when necessary.
+
+    When ``page_items_state`` is a valid list containing the rated candidate
+    (and the active filter is ``candidate``), the page is rebuilt locally from
+    the remaining items without a server reload.  Otherwise the existing
+    server refresh/advance path is used.
+    """
     submit_action = _submit_action or submit_review_action
     load_page = _load_page or load_candidate_page
     load_folders = _load_folders or load_folder_choices
@@ -365,6 +404,15 @@ def rate_and_advance(
             result, gr.update(), gr.update(), gr.update(), gr.update(),
             candidate_id, "Rating failed; selection kept", expected_artifact_path or None,
             expected_artifact_path, gr.update(), previous_folders,
+        )
+
+    local_advance = _try_local_advance(candidate_id, page_items_state, filter_status)
+    if local_advance is not None:
+        gallery, remaining_items, cid, label, preview, artifact_path = local_advance
+        return (
+            result, gallery, gr.update(), gr.update(), remaining_items,
+            cid, label, preview, artifact_path,
+            gr.update(value=folder), previous_folders,
         )
 
     gallery, info, page_update, page_items = load_page(
@@ -674,13 +722,14 @@ def _wire_rating_button(
 ):
     """Wire a rating button's click event with ``rate_and_advance``."""
     btn.click(
-        fn=lambda c, n, ep, p, f, folder, root, folders: rate_and_advance(
+        fn=lambda c, n, ep, p, f, folder, root, folders, items: rate_and_advance(
             c, rating, n, ep, p, f, folder, root, folders,
+            page_items_state=items,
         ),
         inputs=[
             candidate_id_input, note_input, artifact_state,
             page_slider, filter_dropdown, folder_dropdown,
-            root_input, folder_choices_state,
+            root_input, folder_choices_state, page_items_state,
         ],
         outputs=[
             feedback_output, gallery, info_text, page_slider_out,
