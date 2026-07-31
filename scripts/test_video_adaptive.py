@@ -3040,7 +3040,7 @@ def _stage_rank_dedup(
         )
         for candidate in materialized.clips:
             normalized_candidate = dict(candidate)
-            if not bool(cfg.get("action_guard_enabled", True)):
+            if not bool(normalized_action["action_guard_enabled"]):
                 normalized_candidate.setdefault(
                     "action_boundary_mode", "disabled"
                 )
@@ -3052,7 +3052,7 @@ def _stage_rank_dedup(
                 )
                 normalized_candidate.setdefault(
                     "action_analysis_version",
-                    int(cfg.get("action_analysis_version", 1)),
+                    int(normalized_action["action_analysis_version"]),
                 )
             clean_clips.append(normalized_candidate)
         for name in transition_guard:

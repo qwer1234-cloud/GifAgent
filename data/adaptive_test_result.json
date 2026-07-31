@@ -1,722 +1,630 @@
 {
-  "video": "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4",
-  "sample_interval": 20,
-  "total_samples": 555,
-  "scored_kept": 1069,
+  "video": "C:\\Users\\sunhao\\Desktop\\ToWatch\\Lil Karina\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College.mp4",
+  "sample_interval": 7,
+  "total_samples": 192,
+  "scored_kept": 530,
   "worthiness_distribution": {
     "0.0-0.3": 0,
-    "0.3-0.5": 60,
-    "0.5-0.7": 453,
-    "0.7-0.9": 16,
+    "0.3-0.5": 0,
+    "0.5-0.7": 153,
+    "0.7-0.9": 13,
     "0.9-1.0": 0
   },
   "synthesis": {
-    "summary": "The visual style emphasizes intimate close-ups and stark contrasts to amplify emotional intensity.",
-    "emotional_core": "tension",
+    "summary": "A sequence of intimate bedroom close-ups with soft lighting and recurring yellow and denim motifs.",
+    "emotional_core": "intimacy",
     "aesthetic_notes": [
-      "high contrast lighting",
-      "intimate framing",
-      "dynamic camera angles",
-      "slow motion"
+      "soft lighting",
+      "close-up framing",
+      "warm color palette",
+      "bedroom setting"
     ],
     "tags": [
-      "tension",
       "intimacy",
       "melancholy",
       "desire",
-      "joy"
+      "yellow sweater",
+      "mirror"
     ],
-    "scene_type": "other"
+    "scene_type": "montage"
   },
-  "merge_gap": 10,
-  "refine_radius": 20,
-  "refine_interval": 10,
-  "output_ratio": 1.0,
-  "max_output": 500,
-  "embed_dedup_threshold": 0.95,
-  "total_clips": 41,
-  "deduped_clips": 41,
-  "clusters_after_dedup": 41,
-  "output_count": 41,
-  "multi_frame_clips": 38,
+  "merge_gap": 15,
+  "merge_score_threshold": 0.5,
+  "max_merge_span_s": 24.0,
+  "merge_peak_threshold": 0.55,
+  "refine_radius": 15,
+  "refine_interval": 5,
+  "output_ratio": 0.45,
+  "max_output": 35,
+  "min_brightness": 10.0,
+  "dark_dropped": 0,
+  "score_prompt_mode": "adult",
+  "embed_dedup_threshold": 0.88,
+  "embed_dedup_enabled": true,
+  "temporal_dedup_enabled": true,
+  "temporal_dedup_min_gap_s": 15.0,
+  "potplayer_pbf_enabled": true,
+  "potplayer_pbf_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College.pbf",
+  "dedup_input_clips": 51,
+  "embedding_deduped_clips": 47,
+  "deduped_clips": 40,
+  "clusters_after_dedup": 40,
+  "duplicate_groups": [
+    {
+      "keeper": 7,
+      "duplicates": [
+        27,
+        24
+      ],
+      "max_sim": 0.9271004796028137
+    },
+    {
+      "keeper": 18,
+      "duplicates": [
+        11
+      ],
+      "max_sim": 0.9685198068618774
+    },
+    {
+      "keeper": 37,
+      "duplicates": [
+        40
+      ],
+      "max_sim": 0.9644240736961365
+    }
+  ],
+  "planned_output_count": 18,
+  "output_count": 18,
+  "gif_attempted": 18,
+  "gif_succeeded": 18,
+  "gif_failed": 0,
+  "gif_exports": [
+    {
+      "index": 1,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@001_113200ms-125200ms.gif",
+      "status": "OK",
+      "size_bytes": 51609138,
+      "error": ""
+    },
+    {
+      "index": 2,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@002_205200ms-217200ms.gif",
+      "status": "OK",
+      "size_bytes": 49646934,
+      "error": ""
+    },
+    {
+      "index": 3,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@003_228200ms-240200ms.gif",
+      "status": "OK",
+      "size_bytes": 52322641,
+      "error": ""
+    },
+    {
+      "index": 4,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@004_258200ms-270200ms.gif",
+      "status": "OK",
+      "size_bytes": 50972606,
+      "error": ""
+    },
+    {
+      "index": 5,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@005_317200ms-329200ms.gif",
+      "status": "OK",
+      "size_bytes": 52975428,
+      "error": ""
+    },
+    {
+      "index": 6,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@006_353200ms-365200ms.gif",
+      "status": "OK",
+      "size_bytes": 44237939,
+      "error": ""
+    },
+    {
+      "index": 7,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@007_381200ms-393200ms.gif",
+      "status": "OK",
+      "size_bytes": 51353066,
+      "error": ""
+    },
+    {
+      "index": 8,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@008_406200ms-418200ms.gif",
+      "status": "OK",
+      "size_bytes": 56190063,
+      "error": ""
+    },
+    {
+      "index": 9,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@009_464200ms-476200ms.gif",
+      "status": "OK",
+      "size_bytes": 52392323,
+      "error": ""
+    },
+    {
+      "index": 10,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@010_494200ms-506200ms.gif",
+      "status": "OK",
+      "size_bytes": 54627508,
+      "error": ""
+    },
+    {
+      "index": 11,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@011_523200ms-535200ms.gif",
+      "status": "OK",
+      "size_bytes": 52486786,
+      "error": ""
+    },
+    {
+      "index": 12,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@012_548200ms-560200ms.gif",
+      "status": "OK",
+      "size_bytes": 56163385,
+      "error": ""
+    },
+    {
+      "index": 13,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@013_665200ms-677200ms.gif",
+      "status": "OK",
+      "size_bytes": 48850786,
+      "error": ""
+    },
+    {
+      "index": 14,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@014_770200ms-782200ms.gif",
+      "status": "OK",
+      "size_bytes": 47362515,
+      "error": ""
+    },
+    {
+      "index": 15,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@015_807200ms-819200ms.gif",
+      "status": "OK",
+      "size_bytes": 61113901,
+      "error": ""
+    },
+    {
+      "index": 16,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@016_835200ms-847200ms.gif",
+      "status": "OK",
+      "size_bytes": 57231359,
+      "error": ""
+    },
+    {
+      "index": 17,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@017_859200ms-871200ms.gif",
+      "status": "OK",
+      "size_bytes": 58871068,
+      "error": ""
+    },
+    {
+      "index": 18,
+      "path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@018_971200ms-983200ms.gif",
+      "status": "OK",
+      "size_bytes": 47072752,
+      "error": ""
+    }
+  ],
+  "preference_memory_enabled": false,
+  "base_score_weight": 0.5,
+  "preference_score_weight": 0.5,
+  "multi_frame_clips": 49,
   "top_clips": [
     {
       "rank": 1,
-      "timestamp": 440,
-      "start_ts": 180,
-      "end_ts": 680,
+      "timestamp": 118,
+      "start_ts": 112,
+      "end_ts": 135,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 51,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 12,
       "merged": true,
-      "caption": "tension",
-      "emotional_core": "tension",
+      "caption": "woman sitting on a bed with yellow sweater and denim jacket",
+      "emotional_core": "melancholy",
       "aesthetic_notes": [
-        "Two characters in a tense moment."
+        "subject is the main focus",
+        "lighting creates intimate atmosphere"
       ],
-      "reason": "This frame captures a tense interaction between two characters which makes it ideal for a GIF that conveys emotional intensity. The characters are leaning towards each other, which creates a sense of connection and closeness, while the clasped hands add to the tension. The background is relatively simple, allowing the focus to remain on the characters and their interaction."
+      "reason": "the moment works as a GIF because it captures an introspective or contemplative mood that can be easily conveyed through still images.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@001_113200ms-125200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 2,
-      "timestamp": 760,
-      "start_ts": 700,
-      "end_ts": 770,
+      "timestamp": 210,
+      "start_ts": 192,
+      "end_ts": 215,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 8,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 12,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
+      "caption": "two people, one touching another's butt",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "the moment is intimate and relatable",
+        "lighting is moody with a focus on the backside",
+        "composition suggests an unexpected or candid interaction"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "this specific moment works as a GIF because it captures an intimate, relatable human interaction that can evoke emotions such as tension, melancholy, or vulnerability. The moody low-lighting and focus on the backside add to the candid nature of the scene, making it both visually appealing and emotionally engaging.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@002_205200ms-217200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 3,
-      "timestamp": 1370,
-      "start_ts": 940,
-      "end_ts": 1420,
+      "timestamp": 233,
+      "start_ts": 217,
+      "end_ts": 240,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 49,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 15,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
+      "caption": "a man and woman on a bed with a mirror in the background",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "strong tension between two characters",
-        "acting is compelling and realistic",
-        "lighting highlights the emotional core"
+        "the composition shows both subjects and their reflection in the mirror",
+        "the lighting is soft and natural"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "this moment works as a GIF because it captures an intimate interaction between two people, which can be relatable or humorous. The mirror adds depth to the scene and allows for a more immersive view of their surroundings.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@003_228200ms-240200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 4,
-      "timestamp": 2270,
-      "start_ts": 2200,
-      "end_ts": 3360,
+      "timestamp": 263,
+      "start_ts": 242,
+      "end_ts": 266,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 117,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 13,
       "merged": true,
-      "caption": "what you see",
+      "caption": "Asian woman with long dark hair looking to the right, wearing a yellow top and sitting on a bed with a white blanket.",
       "emotional_core": "melancholy",
       "aesthetic_notes": [
-        "the scene is a bit blurry",
-        "the colors are muted"
+        "low lighting creating an intimate atmosphere",
+        "subject looking away from the camera giving a sense of introspection"
       ],
-      "reason": "This image could work as a GIF due to the emotional content. The woman's facial expression and body language suggest melancholy or sadness. As for the aesthetic, while the scene might not be perfect in terms of clarity or color saturation, it captures an intimate moment that could resonate with viewers."
+      "reason": "The moment is suitable for a GIF due to the subject's expressive gaze and the intimate setting. The low lighting adds to the emotional depth and could convey various moods depending on how it is used.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@004_258200ms-270200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 5,
-      "timestamp": 3440,
-      "start_ts": 3380,
-      "end_ts": 3620,
+      "timestamp": 322,
+      "start_ts": 321,
+      "end_ts": 343,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 25,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 15,
       "merged": true,
-      "caption": "what you see",
+      "caption": "The girl is licking her lips and looking up with a seductive expression.",
       "emotional_core": "desire",
       "aesthetic_notes": [
-        "moment of intimacy"
+        "the lighting is low, creating an intimate atmosphere",
+        "her gaze is directed towards the camera, engaging the viewer"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This specific moment works as a GIF because of the girl's seductive expression and direct eye contact with the viewer. The close-up shot emphasizes her lips licking and adds to the intimacy of the scene.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@005_317200ms-329200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 6,
-      "timestamp": 4110,
-      "start_ts": 4000,
-      "end_ts": 5380,
+      "timestamp": 358,
+      "start_ts": 346,
+      "end_ts": 370,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 139,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 15,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
+      "caption": "a woman with long hair is in a close up shot, looking down and licking the side of her finger",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "intense expression on woman's face",
-        "man licking her neck",
-        "dark ambiance"
+        "the lighting is low but focused on the subject's face",
+        "the close-up shot emphasizes her facial expression and action"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "this moment works as a GIF because it captures an intimate, candid action that can evoke strong emotional responses from viewers.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@006_353200ms-365200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 7,
-      "timestamp": 5430,
-      "start_ts": 5400,
-      "end_ts": 5700,
+      "timestamp": 386,
+      "start_ts": 371,
+      "end_ts": 395,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 31,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 20,
       "merged": true,
-      "caption": "sexual tension",
-      "emotional_core": "tension",
+      "caption": "woman with long dark hair, hand on her face, eyes closed, mouth open and tongue sticking out, possibly in a state of pleasure",
+      "emotional_core": "joy",
       "aesthetic_notes": [
-        "intense look from both characters",
-        "restricted space suggesting vulnerability",
-        "focus on the interaction between characters"
+        "clear subject, strong expression, readable action"
       ],
-      "reason": "This image could work as a GIF due to the strong tension between the two characters. The close-up of their faces, with one looking away and the other making an intense face, creates a sense of conflict or anticipation that can be effective in conveying emotion or storyline in a single frame."
+      "reason": "This moment works as a GIF because the woman's exaggerated facial expression, tongue sticking out, and her eyes being closed suggest an intense emotional response. The close-up shot with her face in focus captures her expression clearly, which is effective for conveying emotion through body language.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@007_381200ms-393200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 8,
-      "timestamp": 5720,
-      "start_ts": 5720,
-      "end_ts": 6060,
+      "timestamp": 411,
+      "start_ts": 396,
+      "end_ts": 420,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 35,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 14,
       "merged": true,
-      "caption": "what you see",
+      "caption": "A woman is performing fellatio on a man.",
       "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "The lighting is dim and intimate, creating an atmosphere of privacy and sensuality.",
+        "The man's face shows a moment of pleasure or surprise, adding to the intensity of the scene.",
+        "The woman's facial expression conveys anticipation or eagerness, which adds to the overall emotional impact."
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This specific moment works as a GIF because it captures an intimate and sensual act between two people. The dim lighting and close framing contribute to the intimacy of the scene, while the man's facial expression adds a layer of emotion that can resonate with viewers. The woman's anticipation or eagerness also adds to the overall emotional impact of the image.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@008_406200ms-418200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 9,
-      "timestamp": 6170,
-      "start_ts": 6140,
-      "end_ts": 6380,
+      "timestamp": 469,
+      "start_ts": 448,
+      "end_ts": 471,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 25,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 11,
       "merged": true,
-      "caption": "oral sex",
-      "emotional_core": "longing",
+      "caption": "woman lying on bed, man's hand in her mouth",
+      "emotional_core": "melancholy",
       "aesthetic_notes": [
-        "sensuality",
-        "human intimacy"
+        "subject is clear and visible",
+        "action of man's hand in woman's mouth suggests intimacy",
+        "lighting is low-key, contributing to the mood"
       ],
-      "reason": "this scene is a realistic and relatable portrayal of human desire and attraction, which could resonate with viewers on an emotional level."
+      "reason": "this moment works as a GIF because it captures an intimate and candid moment between two people. The low lighting adds to the sense of privacy and vulnerability in the scene.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@009_464200ms-476200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 10,
-      "timestamp": 6440,
-      "start_ts": 6420,
-      "end_ts": 6520,
+      "timestamp": 499,
+      "start_ts": 499,
+      "end_ts": 523,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 11,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 12,
       "merged": true,
-      "caption": "what you see",
+      "caption": "woman with long hair receiving oral sex",
       "emotional_core": "joy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "subject is in a vulnerable and receptive position",
+        "action of the man's mouth on her genitals",
+        "lighting is soft, creating an intimate atmosphere"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "why this specific moment works as a GIF (or why not)",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@010_494200ms-506200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 11,
-      "timestamp": 6620,
-      "start_ts": 6540,
-      "end_ts": 6800,
+      "timestamp": 528,
+      "start_ts": 528,
+      "end_ts": 548,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 27,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 7,
       "merged": true,
-      "caption": "a woman sitting on a man",
-      "emotional_core": "joy",
+      "caption": "a woman giving a blow job to a man",
+      "emotional_core": "melancholy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "low lighting creates an intimate atmosphere",
+        "the focus is on the action between the two people"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "this specific moment works as a GIF because it captures a raw and intimate act of human connection, which can evoke strong emotions in viewers. The low lighting adds to the moodiness and intensity of the scene.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@011_523200ms-535200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 12,
-      "timestamp": 7440,
-      "start_ts": 7040,
-      "end_ts": 8400,
+      "timestamp": 553,
+      "start_ts": 553,
+      "end_ts": 574,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 137,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 7,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "melancholy",
+      "caption": "a woman wearing a yellow sweater",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "blurred image",
-        "different angles and perspectives"
+        "the image is blurry"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "the subject's pose and the focus on her torso suggest a candid, intimate moment that could be well-suited for a GIF.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@012_548200ms-560200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 13,
-      "timestamp": 8910,
-      "start_ts": 8820,
-      "end_ts": 8920,
+      "timestamp": 670,
+      "start_ts": 670,
+      "end_ts": 693,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 11,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 12,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "joy",
+      "caption": "two people holding each other's hands over a bed",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "clear and vibrant colors",
-        "good framing of subject",
-        "lively expression"
+        "close-up of hands touching each other",
+        "soft lighting on the scene"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "why this specific moment works as a GIF (or why not)",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@013_665200ms-677200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 14,
-      "timestamp": 9370,
-      "start_ts": 9300,
-      "end_ts": 9420,
+      "timestamp": 775,
+      "start_ts": 771,
+      "end_ts": 794,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
       "frame_count": 13,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "joy",
+      "caption": "an adult engaging in intimate activity with a clear subject, action and composition",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "interesting perspective",
-        "colorful",
-        "energetic"
+        "The image captures an intimate moment between two individuals.",
+        "There is a clear focus on the rear end of one person, suggesting a playful or seductive atmosphere."
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This specific moment works as a GIF because it captures a candid, light-hearted interaction that can evoke a sense of intimacy and connection between the two individuals. The action of placing an object into the other person's rear end is visually striking and creates a strong focal point for the image. The composition, with both individuals in focus, adds to the overall impact of the moment.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@014_770200ms-782200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 15,
-      "timestamp": 9570,
-      "start_ts": 9460,
-      "end_ts": 10100,
+      "timestamp": 812,
+      "start_ts": 796,
+      "end_ts": 820,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 65,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 15,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
+      "caption": "woman lying on bed with hands behind her head",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "close framing captures tension between characters"
+        "soft lighting",
+        "comfortable pose",
+        "simple composition"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This moment works well as a GIF because it captures an intimate and candid moment between two people, with the woman's relaxed posture and direct gaze towards the camera creating a sense of connection. The soft lighting adds to the warmth and informality of the scene, while the simplicity of the composition keeps the focus on the subjects.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@015_807200ms-819200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 16,
-      "timestamp": 10310,
-      "start_ts": 10240,
-      "end_ts": 10400,
+      "timestamp": 840,
+      "start_ts": 825,
+      "end_ts": 849,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 17,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 13,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "awe",
+      "caption": "Two people on a bed with intimate interaction",
+      "emotional_core": "intimacy",
       "aesthetic_notes": [
-        "2-3 observations"
+        "clear subjects, action of touching and kissing, soft lighting"
       ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This specific moment works as a GIF because it captures an intimate interaction between two people in a private setting. The close-up view emphasizes the physical contact and emotional connection, which can be relatable and engaging for viewers.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@016_835200ms-847200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 17,
-      "timestamp": 10460,
-      "start_ts": 10420,
-      "end_ts": 10460,
+      "timestamp": 864,
+      "start_ts": 850,
+      "end_ts": 874,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 5,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 12,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "excitement",
+      "caption": "A woman lying on a bed with her legs raised, appearing to have an orgasm.",
+      "emotional_core": "joy",
       "aesthetic_notes": [
-        "The woman's pose is dynamic and suggests movement which makes it suitable for a GIF.",
-        "Her expression and body language convey excitement and energy, adding to the visual appeal of the image."
+        "The subject is clearly visible and the action is intense.",
+        "The lighting is soft and warm, creating a sensual atmosphere."
       ],
-      "reason": "This frame captures a moment that would be engaging as an animated GIF due to the woman's dynamic pose and expressive face."
+      "reason": "This specific moment works as a GIF because it captures a strong emotional reaction that is universally relatable. The scene is visually engaging with a clear subject and a strong action taking place. Additionally, the lighting creates an intimate ambiance that enhances the overall appeal of the image as a GIF.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@017_859200ms-871200ms.gif",
+      "export_error": ""
     },
     {
       "rank": 18,
-      "timestamp": 10800,
-      "start_ts": 10780,
-      "end_ts": 11000,
+      "timestamp": 976,
+      "start_ts": 956,
+      "end_ts": 980,
       "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 23,
+      "final_score": 0.7,
+      "profile_score": null,
+      "score_profile_version": null,
+      "duration": 12.0,
+      "frame_count": 13,
       "merged": true,
-      "caption": "what you see",
-      "emotional_core": "serenity",
-      "aesthetic_notes": [
-        "1 observation"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 19,
-      "timestamp": 11100,
-      "start_ts": 11020,
-      "end_ts": 11210,
-      "gif_worthiness": 0.7,
-      "duration": 7.0,
-      "frame_count": 20,
-      "merged": true,
-      "caption": "what you see",
+      "caption": "Man and woman engaging in intimate activity with clear visual subjects, action, lighting, and composition.",
       "emotional_core": "joy",
       "aesthetic_notes": [
-        "2-3 observations",
-        "reason why this works as a GIF (or why not)"
+        "clear visibility of the subjects' bodies, dynamic motion captured"
       ],
-      "reason": "why this is an excellent GIF frame: clear action, well composed, captures peak emotion"
-    },
-    {
-      "rank": 20,
-      "timestamp": 80,
-      "start_ts": 80,
-      "end_ts": 100,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 3,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "sadness",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 21,
-      "timestamp": 140,
-      "start_ts": 130,
-      "end_ts": 160,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 4,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "the framing and lighting add to the tension",
-        "she appears scared"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 22,
-      "timestamp": 1470,
-      "start_ts": 1440,
-      "end_ts": 1620,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 19,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "the woman's intense facial expression",
-        "the close-up framing that puts the focus on her emotions"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 23,
-      "timestamp": 1670,
-      "start_ts": 1640,
-      "end_ts": 2080,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 45,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "awe",
-      "aesthetic_notes": [
-        "1-2 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 24,
-      "timestamp": 3710,
-      "start_ts": 3640,
-      "end_ts": 3980,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 35,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 25,
-      "timestamp": 6860,
-      "start_ts": 6820,
-      "end_ts": 6860,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 5,
-      "merged": true,
-      "caption": "woman being masturbated by man",
-      "emotional_core": "excitement",
-      "aesthetic_notes": [
-        "clear emotion visible",
-        "interesting framing"
-      ],
-      "reason": "This could work as a GIF because it captures an intense moment of excitement and intimacy between two people."
-    },
-    {
-      "rank": 26,
-      "timestamp": 6890,
-      "start_ts": 6880,
-      "end_ts": 6900,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 3,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "melancholy",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 27,
-      "timestamp": 7000,
-      "start_ts": 6980,
-      "end_ts": 7020,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 5,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "serenity",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 28,
-      "timestamp": 8450,
-      "start_ts": 8420,
-      "end_ts": 8700,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 29,
-      "merged": true,
-      "caption": "sexual encounter",
-      "emotional_core": "serenity",
-      "aesthetic_notes": [
-        "Sexual content of the scene"
-      ],
-      "reason": "This works as a GIF because it captures a moment of intimacy between two people, evoking a sense of serenity and closeness. The setting is private and uncluttered, focusing attention on the interaction between the man and woman. The emotional core here is 'serenity', as the scene exudes calmness and contentment."
-    },
-    {
-      "rank": 29,
-      "timestamp": 9020,
-      "start_ts": 8980,
-      "end_ts": 9280,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 31,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "intimacy",
-      "aesthetic_notes": [
-        "the two characters are sharing a close moment, the scene is warm and inviting"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 30,
-      "timestamp": 10210,
-      "start_ts": 10120,
-      "end_ts": 10220,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 11,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "melancholy",
-      "aesthetic_notes": [
-        "muted colors",
-        "intimate atmosphere",
-        "sensuality"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 31,
-      "timestamp": 10500,
-      "start_ts": 10480,
-      "end_ts": 10760,
-      "gif_worthiness": 0.6,
-      "duration": 7.0,
-      "frame_count": 29,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "other",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 32,
-      "timestamp": 20,
-      "start_ts": 20,
-      "end_ts": 20,
-      "gif_worthiness": 0.5,
-      "duration": 3.25,
-      "frame_count": 1,
-      "merged": false,
-      "caption": "what you see",
-      "emotional_core": "other",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 33,
-      "timestamp": 40,
-      "start_ts": 40,
-      "end_ts": 60,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 3,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "the scene is set in a room with a couch and clothes scattered around",
-        "one person appears to be upset or crying while the other person seems to be calming them down"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 34,
-      "timestamp": 790,
-      "start_ts": 790,
-      "end_ts": 840,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 6,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "tension",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 35,
-      "timestamp": 910,
-      "start_ts": 900,
-      "end_ts": 920,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 3,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "melancholy",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 36,
-      "timestamp": 2100,
-      "start_ts": 2100,
-      "end_ts": 2160,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 7,
-      "merged": true,
-      "caption": "sexual assault",
-      "emotional_core": "melancholy",
-      "aesthetic_notes": [
-        "vulgar content",
-        "uncomfortable scene"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 37,
-      "timestamp": 6090,
-      "start_ts": 6080,
-      "end_ts": 6120,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 5,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "awe",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 38,
-      "timestamp": 6920,
-      "start_ts": 6920,
-      "end_ts": 6960,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 5,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "melancholy",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 39,
-      "timestamp": 8730,
-      "start_ts": 8720,
-      "end_ts": 8800,
-      "gif_worthiness": 0.5,
-      "duration": 7.0,
-      "frame_count": 9,
-      "merged": true,
-      "caption": "what you see",
-      "emotional_core": "awe",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 40,
-      "timestamp": 880,
-      "start_ts": 880,
-      "end_ts": 880,
-      "gif_worthiness": 0.4,
-      "duration": 2.9000000000000004,
-      "frame_count": 1,
-      "merged": false,
-      "caption": "what you see",
-      "emotional_core": "awe",
-      "aesthetic_notes": [
-        "clear focus on the owl, natural lighting creates a sense of wonder"
-      ],
-      "reason": "why this works as a GIF (or why not)"
-    },
-    {
-      "rank": 41,
-      "timestamp": 9440,
-      "start_ts": 9440,
-      "end_ts": 9440,
-      "gif_worthiness": 0.4,
-      "duration": 2.9000000000000004,
-      "frame_count": 1,
-      "merged": false,
-      "caption": "what you see",
-      "emotional_core": "joy",
-      "aesthetic_notes": [
-        "2-3 observations"
-      ],
-      "reason": "why this works as a GIF (or why not)"
+      "reason": "This specific moment works as a GIF because it captures an intimate and joyful interaction between two people.",
+      "export_status": "OK",
+      "export_path": "C:\\Users\\sunhao\\Desktop\\code\\GifAgent\\data\\exports\\ab_lil_karina\\optimized_v3\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College\\FapHouse.25.11.04.lil.karina.Asian.Girl.Is.Shy.Before.Having.Sex.After.College@@@018_971200ms-983200ms.gif",
+      "export_error": ""
     }
   ]
 }

@@ -326,3 +326,105 @@ def test_empty_staged_rank_derives_canonical_action_hash(
     assert manifest["action_guard"]["action_config_hash"] == (
         freeze_action_config(cfg)[1]
     )
+
+
+@pytest.mark.parametrize(
+    "legacy_overrides",
+    [
+        {"action_guard_enabled": "false"},
+        {"action_guard_enabled": False, "action_analysis_version": 2},
+    ],
+)
+def test_nonempty_legacy_staged_rank_uses_normalized_disabled_action_config(
+    tmp_path, monkeypatch, legacy_overrides
+):
+    """Post-processing must use repaired values, never truthy raw strings."""
+    from app.services.action_pipeline import ActionMaterialization
+    from app.task_engine.artifacts import validate_manifest_json
+    from tests.test_adaptive_direct_transition import _cfg
+
+    cfg = _cfg()
+    cfg.update(legacy_overrides)
+    cfg["embed_dedup_enabled"] = False
+    cfg["temporal_dedup_enabled"] = False
+    cfg.pop("action_config_hash")
+    legacy_clip = {
+        "start_ts": 2.0,
+        "end_ts": 7.0,
+        "best_frame_ts": 4.0,
+        "best_frame": {
+            "timestamp": 4.0,
+            "caption": "legacy clip",
+            "emotional_core": "awe",
+            "gif_worthiness": 0.8,
+        },
+        "frame_count": 1,
+        "gif_worthiness": 0.8,
+        "guarded_export_window": True,
+    }
+    monkeypatch.setattr(
+        test_video_adaptive,
+        "_read_upstream_manifest",
+        lambda *_args: {
+            "clips": [legacy_clip],
+            "scored_frames": [],
+        },
+    )
+    monkeypatch.setattr(
+        test_video_adaptive.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="20.0\n", stderr=""
+        ),
+    )
+    monkeypatch.setattr(
+        test_video_adaptive,
+        "materialize_action_candidates",
+        lambda **_kwargs: ActionMaterialization(
+            clips=(legacy_clip,),
+            transition_metrics={
+                "input": 1,
+                "split": 0,
+                "trim": 0,
+                "drop": 0,
+                "unverified": 0,
+                "hard_cut": 0,
+                "soft_transition": 0,
+                "motion": 0,
+            },
+            action_metrics={
+                "input": 1,
+                "output": 1,
+                "cv": 0,
+                "extended": 0,
+                "trimmed": 0,
+                "split": 0,
+                "ambient_motion": 0,
+                "vlm_checked": 0,
+                "vlm_succeeded": 0,
+                "vlm_failed": 0,
+                "fallback": 0,
+                "low_loop_quality": 0,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+                "fallback_reasons": {},
+            },
+        ),
+    )
+
+    test_video_adaptive._stage_rank_dedup(
+        str(tmp_path / "source.mp4"),
+        str(tmp_path / "exports"),
+        str(tmp_path),
+        cfg,
+        {"synthesize_manifest": [{"path": "ignored"}]},
+        None,
+    )
+    manifest = validate_manifest_json(
+        (tmp_path / "rank_dedup_manifest.json").read_bytes(),
+        "rank_dedup_manifest",
+    )
+    assert manifest["clips"][0]["action_boundary_mode"] == "disabled"
+    assert manifest["clips"][0]["action_analysis_version"] == 1
+    assert manifest["action_guard"]["action_analysis_version"] == 1
