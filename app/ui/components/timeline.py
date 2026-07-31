@@ -113,7 +113,8 @@ def build_timeline_html(
     </div>
     """
 
-    svg = f"""<svg width="{timeline_width}" height="{timeline_height + 4}"
+    svg = f"""<svg viewBox="0 0 {timeline_width} {timeline_height + 4}"
+         width="100%" preserveAspectRatio="xMidYMid meet"
          xmlns="http://www.w3.org/2000/svg"
          style="border:1px solid #444; border-radius:4px; background:#1e1e1e; display:block;">
       {_span_svg(scenes, "scenes", "#4a90d9")}

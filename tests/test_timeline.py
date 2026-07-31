@@ -513,3 +513,22 @@ class TestPotplayerTarget:
         """The seek value should preserve precision."""
         target = potplayer_target("/v.mp4", 123.456789)
         assert "seek=123.456789" in target
+
+
+def test_timeline_svg_uses_responsive_viewbox():
+    """The rendered SVG keeps its logical 800px box but scales to 100% width."""
+    from app.ui.components.timeline import build_timeline_html
+
+    html = build_timeline_html(
+        video_id="v1",
+        start_sec=0.0,
+        end_sec=60.0,
+        scenes=[],
+        candidates=[],
+        generated_gifs=[],
+    )
+    assert 'viewBox="0 0 800' in html
+    assert 'width="100%"' in html
+    assert 'preserveAspectRatio="xMidYMid meet"' in html
+    assert "selectTimelineSpan" in html
+    assert "openPotPlayer" in html

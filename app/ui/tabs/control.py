@@ -118,8 +118,8 @@ def build_control_tab(client: GifAgentApiClient) -> dict:
     gr.Markdown("## Task Queue Control")
 
     # ---- Job queue + summary ------------------------------------------------
-    with gr.Row():
-        with gr.Column(scale=2):
+    with gr.Row(elem_classes=["ga-control-layout"]):
+        with gr.Column(scale=3, elem_classes=["ga-control-main"]):
             job_table = gr.Dataframe(
                 headers=[
                     "Job ID",
@@ -132,8 +132,10 @@ def build_control_tab(client: GifAgentApiClient) -> dict:
                 ],
                 label="Job Queue",
                 interactive=False,
+                wrap=True,
+                elem_classes=["ga-control-table"],
             )
-        with gr.Column(scale=1):
+        with gr.Column(scale=1, elem_classes=["ga-control-side"]):
             summary_text = gr.Textbox(
                 label="Status Summary", interactive=False, lines=4
             )

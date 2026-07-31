@@ -11,6 +11,7 @@ from app.ui.candidate_review import (
     config_tooltip_icon,
     launch_kwargs,
 )
+from app.ui.workbench import load_layout_css
 
 
 def test_every_config_field_has_non_empty_chinese_tooltip_label():
@@ -51,8 +52,10 @@ def test_every_config_field_has_non_empty_chinese_tooltip_label():
 
 def test_launch_injects_tooltip_css():
     kwargs = launch_kwargs()
-    assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS
+    assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS + load_layout_css()
     assert ".config-tooltip-icon" in kwargs["css"]
+    assert ".ga-review-layout" in kwargs["css"]
+    assert "--ga-gallery-min-height" in kwargs["css"]
     assert kwargs["js"] == CONFIG_TOOLTIP_JS + REVIEW_SHORTCUTS_JS
     assert "preference-memory-enabled" in kwargs["js"]
     assert "config-adaptive-action-guard-enabled" in kwargs["js"]

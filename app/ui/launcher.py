@@ -288,7 +288,13 @@ def main():
     # until the user closes the window. On Windows the GUI message loop must run
     # on the main thread, so this has to be the last thing main() does.
     import webview
-    webview.create_window("GifAgent", "http://127.0.0.1:7861", width=1400, height=900)
+    webview.create_window(
+        "GifAgent",
+        "http://127.0.0.1:7861",
+        width=1400,
+        height=900,
+        min_size=(1024, 680),
+    )
     try:
         webview.start()
     except Exception as e:

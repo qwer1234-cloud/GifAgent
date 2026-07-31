@@ -188,9 +188,9 @@ def build_search_tab(context) -> None:
 
     gallery = gr.Gallery(
         label="Results",
-        columns=4,
+        columns=None,
         object_fit="contain",
-        height=600,
+        elem_classes=["ga-search-gallery"],
     )
 
     # Timeline section (hidden until a result is selected)

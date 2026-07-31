@@ -492,8 +492,8 @@ def build_review_tab() -> dict:
         All Gradio components keyed by name so the caller can attach
         additional event handlers if needed.
     """
-    with gr.Row():
-        with gr.Column(scale=1):
+    with gr.Row(elem_classes=["ga-review-layout"]):
+        with gr.Column(scale=2, elem_classes=["ga-review-preview"]):
             with gr.Row():
                 review_root_input = gr.Textbox(
                     label="Data Folder",
@@ -509,15 +509,16 @@ def build_review_tab() -> dict:
             )
             gallery = gr.Gallery(
                 label="Candidate GIFs - liked | disliked | unrated - click to select",
-                columns=2, height=600, object_fit="contain", allow_preview=True,
-                elem_id="candidate-gallery")
+                columns=None, object_fit="contain", allow_preview=True,
+                elem_id="candidate-gallery",
+                elem_classes=["ga-review-gallery"])
             with gr.Row():
                 filter_dropdown = gr.Dropdown(
                     choices=["candidate", "favorited", "all", "liked", "disliked", "neutral", "rejected"],
                     value="candidate", label="Filter by status")
                 page_slider = gr.Slider(minimum=0, maximum=1, value=0, step=1, label="Page")
 
-        with gr.Column(scale=3):
+        with gr.Column(scale=3, elem_classes=["ga-review-controls"]):
             gr.Markdown("## Rate")
             selected_label = gr.Textbox(label="Selected", interactive=False)
             candidate_id_input = gr.Textbox(label="Candidate ID", placeholder="Click GIF to select...")
@@ -525,8 +526,8 @@ def build_review_tab() -> dict:
                 label="Selected GIF",
                 interactive=False,
                 type="filepath",
-                height=300,
                 elem_id="selected-gif-preview",
+                elem_classes=["ga-selected-preview"],
             )
             with gr.Row():
                 like_btn = gr.Button("Like", variant="primary", elem_id="like-btn")

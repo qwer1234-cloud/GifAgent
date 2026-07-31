@@ -274,6 +274,38 @@ class TestBuildControlTab:
         assert isinstance(components["refresh_btn"], gr.Button)
         assert isinstance(components["timer"], gr.Timer)
 
+    def test_job_dataframe_uses_wrap_and_scoped_classes(self):
+        client = GifAgentApiClient("http://test")
+        with gr.Blocks():
+            with gr.Tab("Control"):
+                components = build_control_tab(client)
+
+        assert components["job_table"].wrap is True
+        assert "ga-control-table" in components["job_table"].elem_classes
+
+    def test_control_layout_uses_scoped_classes_and_3_1_scale(self):
+        from app.ui.tabs import control
+
+        source = Path(control.__file__).read_text(encoding="utf-8")
+        assert "ga-control-layout" in source
+        assert "ga-control-main" in source
+        assert "ga-control-side" in source
+        assert "scale=3" in source
+        assert "scale=1" in source
+        # Row wrapping is handled by scoped CSS, never a Row wrap param.
+        row_lines = [line for line in source.splitlines() if "gr.Row(" in line]
+        assert row_lines, "expected at least one gr.Row call"
+        assert all("wrap" not in line for line in row_lines), (
+            "Row must not receive wrap"
+        )
+
+    def test_folder_values_are_never_truncated(self):
+        from app.ui.tabs import control
+
+        source = Path(control.__file__).read_text(encoding="utf-8")
+        assert 'str(job.get("folder", ""))' in source
+        assert "folder" not in source.split('str(job.get("folder", ""))')[0][-20:]
+
 
 class TestFormatJobs:
     """Internal helper that formats job dicts for the Dataframe."""

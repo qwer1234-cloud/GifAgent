@@ -381,15 +381,15 @@ def build_settings_tab(context) -> None:
         "Edit values and click **Save**. Changes write to ``configs/models.yaml``."
     )
 
-    with gr.Row():
-        with gr.Column():
-            with gr.Group():
+    with gr.Row(elem_classes=["ga-settings-layout"]):
+        with gr.Column(elem_classes=["ga-settings-group"]):
+            with gr.Accordion("LLM", open=True):
                 gr.Markdown("### LLM (text synthesis)")
                 llm_provider = config_textbox("llm.provider", value="")
                 llm_model = config_textbox("llm.model", value="")
                 llm_api_key_env = config_textbox("llm.api_key_env", value="")
                 llm_base_url = config_textbox("llm.base_url", value="")
-                with gr.Row():
+                with gr.Row(elem_classes=["ga-settings-row"]):
                     with gr.Column(min_width=160):
                         llm_temperature = config_textbox("llm.temperature", value="")
                     with gr.Column(min_width=160):
@@ -399,13 +399,12 @@ def build_settings_tab(context) -> None:
                 test_llm_btn = gr.Button("Test LLM Connection")
                 test_llm_output = gr.Textbox(label="LLM Test", interactive=False)
 
-        with gr.Column():
-            with gr.Group():
+        with gr.Column(elem_classes=["ga-settings-group"]):
+            with gr.Accordion("VLM and Adaptive", open=False):
                 gr.Markdown("### VLM (vision analysis)")
                 vlm_model = config_textbox("vlm.model", value="")
                 vlm_base_url = config_textbox("vlm.base_url", value="")
 
-            with gr.Group():
                 gr.Markdown("### Adaptive Sampling")
                 ad_sample_interval = config_textbox("adaptive.sample_interval", value="")
                 ad_merge_gap = config_textbox("adaptive.merge_gap", value="")
@@ -429,17 +428,17 @@ def build_settings_tab(context) -> None:
                     "adaptive.action_vlm_verify_enabled", value=True
                 )
                 ad_vlm_temperature = config_textbox("adaptive.vlm_temperature", value="")
-                with gr.Row():
+                with gr.Row(elem_classes=["ga-settings-row"]):
                     with gr.Column(min_width=160):
                         ad_output_ratio = config_textbox("adaptive.output_ratio", value="")
                     with gr.Column(min_width=160):
                         ad_max_output = config_textbox("adaptive.max_output", value="")
                 ad_gif_fps = config_textbox("adaptive.gif_fps", value="")
 
-            with gr.Group():
+            with gr.Accordion("Preference Memory", open=True):
                 gr.Markdown("### Preference Memory")
                 pm_enabled = config_checkbox("preference_memory.enabled", value=False)
-                with gr.Row():
+                with gr.Row(elem_classes=["ga-settings-row"]):
                     with gr.Column(min_width=180):
                         pm_base_score_weight = config_textbox(
                             "preference_memory.base_score_weight", value="0.50"
