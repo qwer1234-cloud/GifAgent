@@ -14,6 +14,11 @@ import shutil
 
 import uvicorn
 
+from app.services.desktop_export_sync import (
+    start_background_sync,
+    stop_background_sync,
+)
+
 
 def _setup_runtime_files(exe_dir):
     """Copy bundled read-only config to a writable location, create data dir."""
@@ -85,6 +90,24 @@ def _init_database():
     apply_preference_schema(conn)
     conn.close()
     print("Database initialized with preference schema.")
+
+
+def _run_startup_sync():
+    """Run one full desktop reconciliation after DB init and before workers.
+
+    Startup must continue with a warning if synchronization fails.
+    """
+    from app.services.desktop_export_sync import run_reconciliation
+
+    try:
+        report = run_reconciliation()
+        print(report.log_line(), flush=True)
+    except Exception as exc:
+        print(
+            f"WARNING: desktop export synchronization failed: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
 
 def start_api_server():
@@ -245,6 +268,17 @@ def main():
     except Exception as e:
         print(f"WARNING: DB init failed: {e}")
 
+    # Initial full desktop reconciliation (after DB init, before task worker).
+    # Startup must continue with a warning if synchronization fails.
+    try:
+        _run_startup_sync()
+    except Exception as e:
+        print(f"WARNING: desktop export synchronization failed: {e}")
+
+    # Background scheduler for post-completion incremental reconciliations.
+    sync_stop_event = threading.Event()
+    start_background_sync(sync_stop_event)
+
     # Start API server in background thread
     api_thread = threading.Thread(target=start_api_server, daemon=True)
     api_thread.start()
@@ -270,6 +304,7 @@ def main():
     except Exception as e:
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
         os._exit(1)
     print("Starting Gradio on http://127.0.0.1:7861 ...")
 
@@ -278,6 +313,7 @@ def main():
     if not _wait_for_url("http://127.0.0.1:7861", "Gradio", timeout=30):
         print("ERROR: Gradio did not become ready, exiting.", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
         try:
             gradio_app.close()
         except Exception:
@@ -306,6 +342,7 @@ def main():
         # internal threads.
         print("Window closed, shutting down servers...", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
         try:
             gradio_app.close()
         except Exception:

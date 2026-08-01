@@ -38,6 +38,10 @@ from app.services.batch_queue import (
     save_queue_state,
     update_job_state,
 )
+from app.services.desktop_export_sync import (
+    DesktopSyncReport,
+    DesktopSyncScheduler,
+)
 
 
 DEFAULT_EXTENSIONS = ".mp4,.mkv,.avi,.mov,.webm,.ts"
@@ -412,13 +416,21 @@ def run_single_directory(video_dir: str, limit: int, extensions: str, force: boo
     return 0 if failed == 0 else 1
 
 
-def build_single_batch_command(video_dir: str, limit: int, extensions: str) -> list[str]:
+def build_single_batch_command(
+    video_dir: str,
+    limit: int,
+    extensions: str,
+    *,
+    sync_on_success: bool = True,
+) -> list[str]:
     if getattr(sys, "frozen", False):
         script = os.path.join(sys._MEIPASS, "scripts", "test_video_batch.py")
         command = [sys.executable, "--run-script", script]
     else:
         command = [sys.executable, "-u", "scripts/test_video_batch.py"]
-    return command + [
+    if sync_on_success:
+        command.append("--sync-on-success")
+    command += [
         "--dir",
         video_dir,
         "--limit",
@@ -426,6 +438,7 @@ def build_single_batch_command(video_dir: str, limit: int, extensions: str) -> l
         "--extensions",
         extensions,
     ]
+    return command
 
 
 def _queue_state_path(queue_file: str) -> Path:
@@ -620,12 +633,17 @@ def run_queue(
     worker_lease_file: str | Path | None = None,
     pid_file: str | Path | None = None,
     launch_token: str | None = None,
+    sync_on_success: bool = False,
+    sync_callback: Callable[[], DesktopSyncReport] | None = None,
 ) -> int:
     state_path = _queue_state_path(queue_file)
     lease_path = Path(worker_lease_file or _default_worker_lease_path(queue_file))
     worker_pid_file = Path(pid_file or _default_pid_path(queue_file))
     worker_pid = os.getpid()
     failed = False
+    sync_requested = False
+    sync_scheduler: DesktopSyncScheduler | None = None
+    sync_stop_event = threading.Event()
     lease = WorkerLease(lease_path, mode="queue")
     lease_result = _acquire_queue_lease(lease, state_path, launch_token)
     if lease_result is False:
@@ -640,6 +658,9 @@ def run_queue(
         )
         if token is None:
             return LAUNCH_REJECTED_EXIT_CODE
+        if sync_on_success:
+            sync_scheduler = DesktopSyncScheduler(sync_callback)
+            sync_scheduler.start(sync_stop_event)
 
         while True:
             with queue_state_lock(state_path):
@@ -714,6 +735,9 @@ def run_queue(
                 save_queue_state(state, state_path)
             if result == 0:
                 print(f"[QUEUE] status=OK folder={directory}", flush=True)
+                if sync_scheduler is not None:
+                    sync_scheduler.request_sync()
+                    sync_requested = True
             else:
                 detail = job_error or f"exit code {result}"
                 print(
@@ -735,6 +759,10 @@ def run_queue(
         return 1
     finally:
         _remove_pid_if_owned(worker_pid_file, worker_pid)
+        if sync_scheduler is not None:
+            if sync_requested:
+                sync_scheduler.wait_until_idle()
+            sync_scheduler.stop(sync_stop_event)
         lease.release()
 
 
@@ -747,6 +775,8 @@ def run_direct(
     worker_lease_file: str | Path = DEFAULT_WORKER_LEASE_FILE,
     pid_file: str | Path = PID_FILE,
     process_directory: Callable[[str, int, str, bool], int] = run_single_directory,
+    sync_on_success: bool = False,
+    sync_callback: Callable[[], DesktopSyncReport] | None = None,
 ) -> int:
     """Run direct mode under the same lease used by the queue orchestrator."""
     lease = WorkerLease(worker_lease_file, mode="direct")
@@ -756,14 +786,28 @@ def run_direct(
         print(f"[BATCH] status=FAILED folder={video_dir} error={exc}", flush=True)
         return WORKER_BUSY_EXIT_CODE
     pid = os.getpid()
+    sync_scheduler = None
+    sync_stop_event = threading.Event()
+    sync_requested = False
+    if sync_on_success:
+        sync_scheduler = DesktopSyncScheduler(sync_callback)
+        sync_scheduler.start(sync_stop_event)
     try:
         _atomic_write_pid(pid_file, pid)
-        return process_directory(video_dir, limit, extensions, force)
+        result = process_directory(video_dir, limit, extensions, force)
+        if sync_scheduler is not None and result == 0:
+            sync_scheduler.request_sync()
+            sync_requested = True
+        return result
     except OSError as exc:
         print(f"[BATCH] status=FAILED folder={video_dir} error={exc}", flush=True)
         return 1
     finally:
         _remove_pid_if_owned(pid_file, pid)
+        if sync_scheduler is not None:
+            if sync_requested:
+                sync_scheduler.wait_until_idle()
+            sync_scheduler.stop(sync_stop_event)
         lease.release()
 
 
@@ -782,6 +826,11 @@ def main():
         help="Cross-process lease shared by direct and queue workers",
     )
     parser.add_argument("--pid-file", default=PID_FILE, help="Worker PID handshake file")
+    parser.add_argument(
+        "--sync-on-success",
+        action="store_true",
+        help="Run a full desktop export reconciliation after the queue drains",
+    )
     args = parser.parse_args()
 
     if not args.dir and not args.queue_file:
@@ -794,6 +843,7 @@ def main():
             worker_lease_file=args.worker_lease_file,
             pid_file=args.pid_file,
             launch_token=args.launch_token,
+            sync_on_success=args.sync_on_success,
         )
 
     if args.dry_run:
@@ -813,6 +863,7 @@ def main():
         args.force,
         worker_lease_file=args.worker_lease_file,
         pid_file=args.pid_file,
+        sync_on_success=args.sync_on_success,
     )
 
 

@@ -1259,6 +1259,78 @@ tests/test_workbench_performance.py   # 10k-row performance, 60-thumbnail cap, U
 
 MIT
 
+## Desktop Export Synchronization (Favorite GIFs + PBF)
+
+The desktop sync service keeps flat desktop copies of your Favorite GIFs and
+PotPlayer PBF bookmark files in sync with the adaptive export directory.
+
+### Defaults
+
+| Item | Default path |
+|------|--------------|
+| Adaptive source root | `data/exports/adaptive_test` (CWD-relative; resolves under the packaged EXE directory at runtime) |
+| Favorite GIF destination | `~/Desktop/entertainment/favorite_gifs` |
+| PBF destination | `~/Desktop/entertainment/bookmarks/PBF` |
+| Library database | `data/library.db` |
+
+All four roots can be overridden with environment variables:
+
+- `GIFAGENT_LIBRARY_DB`
+- `GIFAGENT_ADAPTIVE_SOURCE_ROOT`
+- `GIFAGENT_FAVORITE_GIF_DEST`
+- `GIFAGENT_PBF_DEST`
+
+### Behavior
+
+- Favorite GIF rows in `library.db` are exported only when the stored `.gif`
+  actually exists under the adaptive source root. Files are copied into the
+  Favorite destination as a flat directory using their original basename.
+- Every `.pbf` under the adaptive source root (recursive) is copied into the
+  PBF destination as a flat directory using its original basename.
+- Synchronization is copy-only: source and destination files are never
+  deleted.
+- Unchanged destinations are skipped (size + mtime fast path); changed
+  sources are updated with `shutil.copy2` plus an atomic `os.replace`.
+- Case-insensitive basename collisions are reported and never silently
+  overwrite each other; unrelated files still sync.
+- Missing sources and per-file copy errors are collected in a structured
+  report and do not abort the rest of the run.
+- The per-video PBF files stay in their adaptive output directories for
+  pipeline manifests/recovery; the flat PBF directory is the synchronized copy.
+
+### Startup and completion triggers
+
+- On UI startup, one full reconciliation runs after database/schema
+  initialization and before the task worker starts. A sync failure logs a
+  warning and startup continues.
+- After every successfully completed folder/job (serial legacy queue or
+  task-engine job first transitioning to `succeeded`), a full incremental
+  reconciliation is scheduled in the background. Runs are serialized and
+  triggers are coalesced; sync failures never change a successful processing
+  result. The legacy queue worker runs its own scheduler thread, so later
+  folders continue while the reconciliation runs, and queue shutdown waits
+  for the final requested run to finish cleanly. Direct one-folder
+  `--dir` processing honors `--sync-on-success` the same way.
+
+### One-time / manual sync
+
+```bash
+uv run python scripts/sync_desktop_exports.py
+uv run python scripts/sync_desktop_exports.py --json
+```
+
+The CLI accepts `--library-db`, `--source-root`, `--favorite-dest`,
+`--pbf-dest`, and `--json`. It exits nonzero only for top-level fatal
+failures; per-file missing/conflict entries are printed in the report.
+
+### Tests
+
+```bash
+uv run pytest -q tests/test_desktop_export_sync.py
+```
+
+All sync tests use temporary directories and temporary SQLite databases.
+
 ## Links
 
 - GitHub: [https://github.com/qwer1234-cloud/GifAgent](https://github.com/qwer1234-cloud/GifAgent)

@@ -493,6 +493,7 @@ def _launch_queue_child_locked(queue_state: dict) -> str:
         "--launch-token", launch_token,
         "--worker-lease-file", BATCH_WORKER_LEASE_FILE,
         "--pid-file", PID_FILE,
+        "--sync-on-success",
     ])
 
     queue_state["status"] = "starting"

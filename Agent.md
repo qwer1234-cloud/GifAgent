@@ -746,3 +746,59 @@ Key invariants:
 Historical data in `data/` (task_state.db, quality_lab.db, library.db,
 exports, labels, Preference Memory) must be preserved unchanged across
 all tests; use `Get-Item data/*.db` to verify before/after.
+
+## Desktop Export Sync (Favorite GIFs + PBF)
+
+**Service**: `app/services/desktop_export_sync.py` (sync core + serialized
+background scheduler). **CLI**: `scripts/sync_desktop_exports.py`.
+
+**Defaults** (all overridable via env):
+
+| Env var | Default |
+|---------|---------|
+| `GIFAGENT_LIBRARY_DB` | `data/library.db` |
+| `GIFAGENT_ADAPTIVE_SOURCE_ROOT` | `data/exports/adaptive_test` |
+| `GIFAGENT_FAVORITE_GIF_DEST` | `~/Desktop/entertainment/favorite_gifs` |
+| `GIFAGENT_PBF_DEST` | `~/Desktop/entertainment/bookmarks/PBF` |
+
+**Rules**:
+
+- Favorite rows export only when the source `.gif` exists under the adaptive
+  source root; both GIF and PBF sync flatten to original basenames.
+- Never deletes anything. Idempotent: size+mtime fast path skips unchanged
+  files; changed files are updated via `shutil.copy2` + atomic `os.replace`.
+- Case-insensitive basename collisions are reported and skipped, never
+  silently overwritten. Missing sources and copy errors continue the run and
+  land in the structured report (`copied/updated/skipped/missing/conflicts/
+  errors` per GIF and PBF section).
+- The background scheduler serializes runs and coalesces triggers (a trigger
+  during a run causes one follow-up run, never concurrent scans).
+- The legacy queue worker starts its own scheduler thread when
+  `--sync-on-success` is set: each successful folder triggers a background
+  reconciliation while later folders continue, and shutdown waits for the
+  final requested run (`wait_until_idle`) before stopping the thread. Direct
+  `--dir` processing honors `--sync-on-success` too.
+
+**Hooks**:
+
+- UI startup: `app/ui/launcher.py::main` runs `_run_startup_sync()` after
+  `_init_database()` and before `_start_task_worker()`; failure logs a
+  WARNING and startup continues.
+- Legacy queue: `scripts/test_video_batch.py::run_queue` calls
+  `scheduler.request_sync()` after each successful folder when
+  `--sync-on-success` is set (Control UI launch passes it), then drains with
+  `wait_until_idle()` before stopping the scheduler.
+- Task engine: `app/task_engine/orchestrator.py::_set_job_status` calls
+  `request_background_sync()` exactly on the first transition to
+  `succeeded` (terminal re-entry and non-success terminals do not).
+
+**Manual sync**:
+
+```bash
+uv run python scripts/sync_desktop_exports.py [--json]
+```
+
+Exit code is nonzero only for top-level fatal failures. Tests:
+`tests/test_desktop_export_sync.py` (temporary dirs + temporary SQLite only;
+never touches `dist/`, runtime databases, export files, or real desktop
+destinations).
