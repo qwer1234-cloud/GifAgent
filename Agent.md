@@ -535,6 +535,10 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
 - `GET /api/candidates` is paginated and filtered server-side. Defaults:
   `status=candidate`, `limit=24`, `offset=0`; callers can use `status=all`
   and pass `folder` for exact-folder review.
+- With `folder` set, the complete filtered folder set is ordered by descending
+  GIF file mtime (newest first), with equal-mtime ties broken by
+  case-insensitive artifact path then candidate ID, before `offset`/`limit`.
+  Without `folder`, ordering stays `candidate_gifs.created_at DESC`.
 - `GET /api/candidates/folders` discovers recursive candidate folders under a
   selected root directory and returns per-folder totals, missing counts, and
   status counts. Folders with `.gif` files but no `candidate_gifs` rows are

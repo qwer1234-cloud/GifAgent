@@ -1,3 +1,4 @@
+import os
 import sqlite3
 
 import pytest
@@ -294,3 +295,237 @@ def test_feedback_errors_when_candidate_path_changed_after_load(monkeypatch, tmp
 
     assert exc.value.status_code == 409
     assert exc.value.detail["error"] == "candidate_path_changed"
+
+
+def test_list_candidates_folder_orders_by_file_mtime_descending(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    older_gif = folder / "older.gif"
+    newer_gif = folder / "newer.gif"
+    older_gif.write_bytes(b"gif")
+    newer_gif.write_bytes(b"gif")
+    base_ns = 1_700_000_000_000_000_000
+    os.utime(older_gif, ns=(base_ns, base_ns))
+    os.utime(newer_gif, ns=(base_ns, base_ns + 5_000_000_000))
+
+    conn = _setup_conn()
+    # DB created_at order disagrees with the file mtime order.
+    _insert_candidate(
+        conn,
+        "cand-older-file",
+        artifact_path=str(older_gif),
+        created_at="2026-07-05T00:00:00+00:00",
+    )
+    _insert_candidate(
+        conn,
+        "cand-newer-file",
+        artifact_path=str(newer_gif),
+        created_at="2026-07-04T00:00:00+00:00",
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="all", limit=10, offset=0, folder=str(folder)
+    )
+
+    assert payload["total"] == 2
+    assert [c["candidate_id"] for c in payload["candidates"]] == [
+        "cand-newer-file",
+        "cand-older-file",
+    ]
+
+
+def test_list_candidates_folder_sorts_before_pagination_with_deterministic_ties(
+    monkeypatch, tmp_path
+):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    newer_gif = folder / "Newer.gif"
+    gif_a = folder / "a.gif"
+    gif_b = folder / "B.gif"
+    for path in (newer_gif, gif_a, gif_b):
+        path.write_bytes(b"gif")
+    base_ns = 1_700_000_000_000_000_000
+    os.utime(newer_gif, ns=(base_ns, base_ns + 10_000_000_000))
+    os.utime(gif_a, ns=(base_ns, base_ns))
+    os.utime(gif_b, ns=(base_ns, base_ns))
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand-newer",
+        artifact_path=str(newer_gif),
+        created_at="2026-07-03T00:00:00+00:00",
+    )
+    _insert_candidate(
+        conn,
+        "cand-b",
+        artifact_path=str(gif_b),
+        created_at="2026-07-05T00:00:00+00:00",
+    )
+    _insert_candidate(
+        conn,
+        "cand-a",
+        artifact_path=str(gif_a),
+        created_at="2026-07-04T00:00:00+00:00",
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    page0 = candidates_router.list_candidates(
+        status="all", limit=2, offset=0, folder=str(folder)
+    )
+    page1 = candidates_router.list_candidates(
+        status="all", limit=2, offset=2, folder=str(folder)
+    )
+
+    assert page0["total"] == 3
+    assert page1["total"] == 3
+    assert [c["candidate_id"] for c in page0["candidates"]] == ["cand-newer", "cand-a"]
+    assert [c["candidate_id"] for c in page1["candidates"]] == ["cand-b"]
+
+
+def test_list_candidates_folder_tie_breaks_equal_mtimes_by_candidate_id(
+    monkeypatch, tmp_path
+):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    gif_path = folder / "same.gif"
+    gif_path.write_bytes(b"gif")
+    base_ns = 1_700_000_000_000_000_000
+    os.utime(gif_path, ns=(base_ns, base_ns))
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand-z",
+        artifact_path=str(gif_path),
+        created_at="2026-07-04T00:00:00+00:00",
+    )
+    _insert_candidate(
+        conn,
+        "cand-a",
+        artifact_path=str(gif_path),
+        created_at="2026-07-05T00:00:00+00:00",
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="all", limit=10, offset=0, folder=str(folder)
+    )
+
+    assert [c["candidate_id"] for c in payload["candidates"]] == ["cand-a", "cand-z"]
+
+
+def test_list_candidates_folder_materialized_gifs_use_actual_mtimes(
+    monkeypatch, tmp_path
+):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "LapkaLu" / "SceneA"
+    folder.mkdir(parents=True)
+    tracked_gif = folder / "tracked.gif"
+    untracked_gif = folder / "SceneA@@@001_10s-15s.gif"
+    tracked_gif.write_bytes(b"gif")
+    untracked_gif.write_bytes(b"gif")
+    base_ns = 1_700_000_000_000_000_000
+    os.utime(tracked_gif, ns=(base_ns, base_ns))
+    os.utime(untracked_gif, ns=(base_ns, base_ns + 20_000_000_000))
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand-tracked",
+        artifact_path=str(tracked_gif),
+        preview_path=str(tracked_gif),
+        created_at="2026-07-05T00:00:00+00:00",
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="all", limit=10, offset=0, folder=str(folder)
+    )
+
+    assert payload["total"] == 2
+    assert [
+        candidates_router._resolve_artifact_path(c["artifact_path"])
+        for c in payload["candidates"]
+    ] == [untracked_gif, tracked_gif]
+
+
+def test_list_candidates_folder_unreadable_file_returns_409(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    gif_path = folder / "one.gif"
+    gif_path.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand-one",
+        artifact_path=str(gif_path),
+        preview_path=str(gif_path),
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    original_stat = candidates_router.Path.stat
+
+    def fake_stat(self, *args, **kwargs):
+        if self == gif_path:
+            raise PermissionError("access denied")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(candidates_router.Path, "stat", fake_stat)
+
+    with pytest.raises(HTTPException) as exc:
+        candidates_router.list_candidates(
+            status="all", limit=10, offset=0, folder=str(folder)
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["error"] == "candidate_path_changed_or_missing"
+
+
+def test_list_candidates_without_folder_keeps_created_at_order(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    folder = tmp_path / "JUR-639"
+    folder.mkdir()
+    old_file = folder / "old-file.gif"
+    new_file = folder / "new-file.gif"
+    old_file.write_bytes(b"gif")
+    new_file.write_bytes(b"gif")
+    base_ns = 1_700_000_000_000_000_000
+    os.utime(old_file, ns=(base_ns, base_ns))
+    os.utime(new_file, ns=(base_ns, base_ns + 10_000_000_000))
+
+    conn = _setup_conn()
+    # The later-DB-created candidate points at the older-mtime file and vice
+    # versa, so mtime ordering would disagree with created_at ordering.
+    _insert_candidate(
+        conn,
+        "cand-new-db",
+        artifact_path=str(old_file),
+        created_at="2026-07-05T00:00:00+00:00",
+    )
+    _insert_candidate(
+        conn,
+        "cand-old-db",
+        artifact_path=str(new_file),
+        created_at="2026-07-04T00:00:00+00:00",
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(status="all", limit=10, offset=0)
+
+    assert [c["candidate_id"] for c in payload["candidates"]] == [
+        "cand-new-db",
+        "cand-old-db",
+    ]

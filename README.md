@@ -218,6 +218,10 @@ uv run python app/ui/candidate_review.py
 - `GET /api/candidates` now supports server-side pagination and filtering:
   `status`, `limit`, `offset`, and optional exact `folder`. The default status
   is `candidate`.
+- When `folder` is set, the complete filtered candidate set is ordered by
+  descending GIF file modification time (newest first), with equal-mtime ties
+  broken by case-insensitive artifact path then candidate ID, before
+  pagination. Calls without `folder` keep `candidate_gifs.created_at DESC`.
 - `GET /api/candidates/folders` discovers recursive candidate folders below a
   selected root directory and returns per-folder counts/status counts. It also
   includes folders that contain `.gif` files not yet materialized into
