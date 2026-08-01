@@ -95,6 +95,24 @@ def _is_inside(path: str | Path, root: str | Path) -> bool:
     return p.startswith(prefix)
 
 
+def _relocate_favorite_source(path: Path, source_root: Path) -> Path | None:
+    """Resolve a stale absolute Favorite path under the configured root.
+
+    Packaged data can retain absolute paths from the source checkout even
+    after the export tree has moved under ``dist/GifAgentUI``.  Preserve the
+    path below the last matching source-root directory name and only accept a
+    candidate that actually exists under the configured root.
+    """
+    root_name = source_root.name.casefold()
+    for index in range(len(path.parts) - 1, -1, -1):
+        if path.parts[index].casefold() != root_name:
+            continue
+        candidate = source_root.joinpath(*path.parts[index + 1 :])
+        if candidate.is_file() and _is_inside(candidate, source_root):
+            return candidate
+    return None
+
+
 def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -341,23 +359,27 @@ def _sync_favorites(
     for row in rows:
         full_path = str(row["full_path"])
         src = Path(full_path)
-        if not src.is_file():
-            report.add(
-                report.gifs,
-                "missing",
-                SyncEntry(full_path, reason="source not found"),
-            )
-            continue
-        if not _is_inside(src, source_root):
-            report.add(
-                report.gifs,
-                "missing",
-                SyncEntry(
-                    full_path,
-                    reason="source outside adaptive export root",
-                ),
-            )
-            continue
+        if not (src.is_file() and _is_inside(src, source_root)):
+            relocated = _relocate_favorite_source(src, source_root)
+            if relocated is not None:
+                src = relocated
+            elif src.is_file():
+                report.add(
+                    report.gifs,
+                    "missing",
+                    SyncEntry(
+                        full_path,
+                        reason="source outside adaptive export root",
+                    ),
+                )
+                continue
+            else:
+                report.add(
+                    report.gifs,
+                    "missing",
+                    SyncEntry(full_path, reason="source not found"),
+                )
+                continue
         sources.append(src)
     _sync_files_preflight(report, report.gifs, sources, favorite_dest)
 

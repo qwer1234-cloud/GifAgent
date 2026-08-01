@@ -765,6 +765,9 @@ background scheduler). **CLI**: `scripts/sync_desktop_exports.py`.
 
 - Favorite rows export only when the source `.gif` exists under the adaptive
   source root; both GIF and PBF sync flatten to original basenames.
+- Stale absolute Favorite paths from a source checkout are relocated by their
+  suffix below `adaptive_test`, but only when the resulting file exists under
+  the configured adaptive source root.
 - Never deletes anything. Idempotent: size+mtime fast path skips unchanged
   files; changed files are updated via `shutil.copy2` + atomic `os.replace`.
 - Case-insensitive basename collisions are reported and skipped, never

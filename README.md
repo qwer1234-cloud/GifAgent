@@ -1285,6 +1285,9 @@ All four roots can be overridden with environment variables:
 - Favorite GIF rows in `library.db` are exported only when the stored `.gif`
   actually exists under the adaptive source root. Files are copied into the
   Favorite destination as a flat directory using their original basename.
+  If a packaged database still contains an absolute path from an older
+  checkout, the service safely relocates the suffix below `adaptive_test`
+  into the configured adaptive source root.
 - Every `.pbf` under the adaptive source root (recursive) is copied into the
   PBF destination as a flat directory using its original basename.
 - Synchronization is copy-only: source and destination files are never

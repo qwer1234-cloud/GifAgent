@@ -108,6 +108,31 @@ def test_favorite_selection_exports_only_existing_gifs_under_adaptive_root(
     assert "source outside adaptive export root" in missing_reasons
 
 
+def test_stale_absolute_favorite_path_is_relocated_to_configured_root(
+    sync_env, tmp_path
+):
+    actual = _write_test_file(
+        sync_env["root"] / "folder-a" / "moved.gif", b"moved"
+    )
+    stale = (
+        tmp_path
+        / "old-checkout"
+        / "data"
+        / "exports"
+        / "adaptive_test"
+        / "folder-a"
+        / "moved.gif"
+    )
+    assert not stale.exists()
+    _make_library_db(sync_env["db"], [("cand-moved", str(stale))])
+
+    report = run_reconciliation()
+
+    assert (sync_env["fav_dest"] / actual.name).read_bytes() == b"moved"
+    assert report.gif_summary["copied"] == 1
+    assert report.gif_summary["missing"] == 0
+
+
 def test_nested_gifs_and_pbfs_flatten_to_original_basenames(sync_env):
     gif_a = _write_test_file(
         sync_env["root"] / "folder-a" / "clip-one.gif", b"gif-a"
