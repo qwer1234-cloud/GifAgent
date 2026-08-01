@@ -381,6 +381,194 @@ class TestTaskWorkerRunOnce:
         worker = TaskWorker(repo, "worker-1", {})
         assert worker.run_once(now=T0) is False
 
+    def test_retry_consumed_for_attention_job(self, tmp_path: Path):
+        """run_once consumes a retry command even when no stage is claimable."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        # Reproduce the runtime failure: the job/stage are needs_attention,
+        # so no stage is claimable and the retry command would previously
+        # stay pending forever.
+        conn.execute(
+            "UPDATE task_stages SET status='needs_attention', attempt_count=3 "
+            "WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='needs_attention' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='needs_attention' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+        repo.append_command(job.job_id, "retry", {})
+
+        worker = TaskWorker(repo, "worker-1", {})
+        assert worker.run_once(now=T0) is True
+
+        # The retry command was handled by the existing orchestrator logic...
+        cmd = conn.execute(
+            "SELECT status FROM task_commands WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert cmd["status"] == "completed"
+
+        # ...and the stage/video/job were reset per existing _retry_job
+        # semantics (pending, attempt_count 0, job running).
+        stage_row = conn.execute(
+            "SELECT status, attempt_count FROM task_stages WHERE stage_id=?",
+            (stage.stage_id,),
+        ).fetchone()
+        assert stage_row["status"] == "pending"
+        assert stage_row["attempt_count"] == 0
+        vid_row = conn.execute(
+            "SELECT status FROM task_videos WHERE video_id=?",
+            (video.video_id,),
+        ).fetchone()
+        assert vid_row["status"] == "running"
+        job_row = conn.execute(
+            "SELECT status FROM task_jobs WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert job_row["status"] == "running"
+
+    def test_next_iteration_claims_reset_stage(self, tmp_path: Path):
+        """After the worker consumes a retry, the next run_once claims the stage."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        conn.execute(
+            "UPDATE task_stages SET status='needs_attention', attempt_count=3 "
+            "WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='needs_attention' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='needs_attention' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+        repo.append_command(job.job_id, "retry", {})
+
+        adapter = MockAdapter()
+        worker = TaskWorker(repo, "worker-1", {"discover": adapter})
+
+        # First iteration only consumes the retry command.
+        assert worker.run_once(now=T0) is True
+        assert len(adapter.called_with) == 0
+
+        # The next iteration can claim and run the reset stage.
+        assert worker.run_once(now=T0 + timedelta(seconds=1)) is True
+        assert len(adapter.called_with) == 1
+        assert stage_status(conn, stage.stage_id) == "succeeded"
+
+    def test_cancel_consumed_when_no_stage_claimable(self, tmp_path: Path):
+        """run_once consumes a cancel command when no stage is claimable."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        # retry_wait with a future retry_at is not claimable by the worker.
+        conn.execute(
+            "UPDATE task_stages SET status='retry_wait', "
+            "retry_at='2999-01-01T00:00:00.000000+00:00' WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='running' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='running' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+        repo.append_command(job.job_id, "cancel", {})
+
+        worker = TaskWorker(repo, "worker-1", {})
+        assert worker.run_once(now=T0) is True
+
+        # advance_job's existing cancel semantics apply: command completed,
+        # non-terminal stage/video cancelled, job cancelled.
+        cmd = conn.execute(
+            "SELECT status FROM task_commands WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert cmd["status"] == "completed"
+        assert stage_status(conn, stage.stage_id) == "cancelled"
+        vid_row = conn.execute(
+            "SELECT status FROM task_videos WHERE video_id=?",
+            (video.video_id,),
+        ).fetchone()
+        assert vid_row["status"] == "cancelled"
+        job_row = conn.execute(
+            "SELECT status FROM task_jobs WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert job_row["status"] == "cancelled"
+
+    def test_attention_job_without_commands_returns_false(self, tmp_path: Path):
+        """An idle worker with no commands returns promptly and invents no work."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        conn.execute(
+            "UPDATE task_stages SET status='needs_attention' WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='needs_attention' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='needs_attention' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+
+        worker = TaskWorker(repo, "worker-1", {})
+        assert worker.run_once(now=T0) is False
+
+        # Nothing was invented or mutated.
+        assert stage_status(conn, stage.stage_id) == "needs_attention"
+        job_row = conn.execute(
+            "SELECT status FROM task_jobs WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert job_row["status"] == "needs_attention"
+
     def test_happy_path(self, tmp_path: Path):
         """Claim a pending stage, run the adapter, complete it."""
         repo, conn = make_repo(tmp_path)
