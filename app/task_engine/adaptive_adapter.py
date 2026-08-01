@@ -15,6 +15,20 @@ _ADAPTIVE_SCRIPT = (
 )
 
 
+def _stage_script_invocation(script_path: Path) -> list[str]:
+    """Return the launcher prefix used to run a stage-mode script.
+
+    Source builds invoke the script directly with the current interpreter.
+    Frozen builds must go through the launcher's ``--run-script`` mode:
+    ``sys.executable`` is ``GifAgentUI.exe``, and launching it without
+    ``--run-script`` would start a second GUI process instead of executing
+    the bundled script.
+    """
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--run-script", str(script_path)]
+    return [sys.executable, str(script_path)]
+
+
 def run_adaptive_stage(
     stage_name: StageName,
     *,
@@ -59,8 +73,7 @@ def run_adaptive_stage(
     result_file = work_dir / f"result_{stage_name}.json"
 
     cmd = [
-        sys.executable,
-        str(_ADAPTIVE_SCRIPT),
+        *_stage_script_invocation(_ADAPTIVE_SCRIPT),
         "--task-stage",
         stage_name,
         "--video",

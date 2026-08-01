@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -368,6 +369,65 @@ class TestRunAdaptiveStage:
             idx = cmd.index("--task-work-dir") + 1
             work_dirs.append(cmd[idx])
         assert work_dirs[0] != work_dirs[1]
+
+    def test_source_mode_command_has_no_run_script(self, tmp_path, monkeypatch):
+        """Source builds keep the direct interpreter invocation."""
+        monkeypatch.delattr(sys, "frozen", raising=False)
+        video = tmp_path / "video.mp4"
+        video.write_text("fake")
+        work_dir = tmp_path / "work"
+        config_snap = tmp_path / "config.json"
+        config_snap.write_text("{}")
+
+        fake_runner, captured = _make_fake_runner(tmp_path)
+        run_adaptive_stage(
+            "sample",
+            video=video,
+            work_dir=work_dir,
+            config_snapshot=config_snap,
+            _runner=fake_runner,
+        )
+
+        cmd = captured[0]
+        assert cmd[0] == sys.executable
+        assert cmd[1].endswith("test_video_adaptive.py")
+        assert "--run-script" not in cmd
+        assert cmd[cmd.index("--task-stage") + 1] == "sample"
+
+    def test_frozen_mode_command_uses_single_run_script(
+        self, tmp_path, monkeypatch
+    ):
+        """Frozen builds route stage scripts through --run-script."""
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", "C:/GifAgentUI.exe")
+        video = tmp_path / "video.mp4"
+        video.write_text("fake")
+        work_dir = tmp_path / "work"
+        config_snap = tmp_path / "config.json"
+        config_snap.write_text("{}")
+
+        fake_runner, captured = _make_fake_runner(tmp_path)
+        run_adaptive_stage(
+            "discover",
+            video=video,
+            work_dir=work_dir,
+            config_snapshot=config_snap,
+            job_id="j1",
+            video_id="v1",
+            stage_id="s1",
+            _runner=fake_runner,
+        )
+
+        cmd = captured[0]
+        assert cmd[0] == "C:/GifAgentUI.exe"
+        assert cmd[1] == "--run-script"
+        assert cmd[2].endswith("test_video_adaptive.py")
+        assert cmd.count("--run-script") == 1
+        # All stage arguments remain intact after the script path.
+        assert cmd[cmd.index("--task-stage") + 1] == "discover"
+        assert "--task-work-dir" in cmd
+        assert "--task-result" in cmd
+        assert "--task-config" in cmd
 
 
 class TestAdapterOutcomeContract:

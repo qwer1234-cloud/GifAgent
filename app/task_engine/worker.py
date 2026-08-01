@@ -19,6 +19,8 @@ from app.task_engine.stages import StageAdapter, StageContext, StageResult
 
 _RESULT_FILE = ".stage_result.json"
 
+_MAX_CHILD_OUTPUT_CHARS = 4096
+
 
 def _iso(dt: datetime) -> str:
     if dt.tzinfo is None:
@@ -28,6 +30,32 @@ def _iso(dt: datetime) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _decode_child_output(value: bytes | str | None) -> str:
+    """Decode captured subprocess output without raising on invalid bytes."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _child_output_excerpt(exc: subprocess.CalledProcessError) -> str:
+    """Return a bounded, readable excerpt of a failed child's output.
+
+    Prefers stderr and falls back to stdout only when stderr is empty.
+    The returned tail is capped so failure diagnostics stored in task DB
+    rows cannot grow without limit.
+    """
+    text = _decode_child_output(getattr(exc, "stderr", None)).strip()
+    if not text:
+        text = _decode_child_output(getattr(exc, "stdout", None)).strip()
+    if not text:
+        return ""
+    if len(text) <= _MAX_CHILD_OUTPUT_CHARS:
+        return text
+    return f"[child output truncated] {text[-_MAX_CHILD_OUTPUT_CHARS:]}"
 
 
 def classify_error(exc: Exception, stage_name: StageName) -> StageError:
@@ -66,9 +94,13 @@ def classify_error(exc: Exception, stage_name: StageName) -> StageError:
             if isinstance(exc.cmd, (list, tuple))
             else str(exc.cmd)
         )
+        message = str(exc)
+        excerpt = _child_output_excerpt(exc)
+        if excerpt:
+            message = f"{message}\n[child output]\n{excerpt}"
         if "ffmpeg" in cmd_str.lower():
-            return StageError("ffmpeg_error", str(exc), transient=False)
-        return StageError("process_error", str(exc), transient=True)
+            return StageError("ffmpeg_error", message, transient=False)
+        return StageError("process_error", message, transient=True)
 
     # ------------------------------------------------------------------
     # OSError (incl. FileNotFoundError, PermissionError) — classify by

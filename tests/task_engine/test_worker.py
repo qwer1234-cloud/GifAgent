@@ -264,6 +264,87 @@ class TestClassifyError:
         assert err.code == "process_error"
         assert err.transient is True
 
+    def test_called_process_error_preserves_stderr_tail(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["GifAgentUI.exe", "--run-script", "test_video_adaptive.py"],
+                stderr=(
+                    "Traceback (most recent call last):\n"
+                    "ModuleNotFoundError: No module named "
+                    "'app.services.clip_merge'\n"
+                ),
+            ),
+            "discover",
+        )
+        assert err.code == "process_error"
+        assert err.transient is True
+        assert "ModuleNotFoundError" in err.message
+        assert "app.services.clip_merge" in err.message
+        assert "[child output]" in err.message
+
+    def test_called_process_error_bytes_stderr_decodes_safely(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["some_tool"],
+                stderr=b"ModuleNotFoundError: No module named '\xff\xfe'\n",
+            ),
+            "sample",
+        )
+        assert err.code == "process_error"
+        assert err.transient is True
+        assert "ModuleNotFoundError" in err.message
+        assert "\ufffd" in err.message
+
+    def test_called_process_error_prefers_stderr_over_stdout(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["some_tool"],
+                output="stdout-noise",
+                stderr="real-error-line",
+            ),
+            "sample",
+        )
+        assert "real-error-line" in err.message
+        assert "stdout-noise" not in err.message
+
+    def test_called_process_error_falls_back_to_stdout(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1, ["some_tool"], output="stdout-error-line"
+            ),
+            "sample",
+        )
+        assert "stdout-error-line" in err.message
+
+    def test_called_process_error_large_output_is_bounded(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["some_tool"],
+                stderr="x" * 100_000 + "\nTAIL-MARKER",
+            ),
+            "sample",
+        )
+        assert "TAIL-MARKER" in err.message
+        assert "truncated" in err.message
+        assert len(err.message) < 8192
+
+    def test_ffmpeg_called_process_error_with_stderr_stays_attention(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["ffmpeg", "-i", "x.mp4"],
+                stderr="broken pipe",
+            ),
+            "sample",
+        )
+        assert err.code == "ffmpeg_error"
+        assert err.transient is False
+        assert "broken pipe" in err.message
+
     def test_model_not_found_by_class_name_is_attention(self):
         class ModelNotFoundError(Exception):
             pass
