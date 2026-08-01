@@ -102,19 +102,28 @@ def publish_profile_and_refresh(profile_version: str | None):
     return result, dropdown, status
 
 
-def backfill_profile_vectors():
+def backfill_profile_vectors(progress: gr.Progress = gr.Progress()):
     """Create missing vectors only for candidates with effective feedback."""
     conn = None
     try:
         from app.db import get_connection
         from app.services.candidate_vectors import backfill_candidate_vectors
-        from app.services.embedding import compute_text_embedding
+        from app.services.embedding import (
+            compute_text_embedding,
+            compute_text_embeddings_batch,
+        )
 
         conn = get_connection()
         result = backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
+            batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
+            progress_cb=lambda completed, total: progress(
+                (completed, total),
+                desc="Backfilling missing vectors",
+                unit="vectors",
+            ),
         )
         return json.dumps(result, indent=2)
     except Exception as e:

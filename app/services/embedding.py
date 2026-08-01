@@ -60,6 +60,38 @@ def compute_text_embedding(text: str) -> List[float]:
     return _ollama_embed(text)
 
 
+def compute_text_embeddings_batch(texts: List[str]) -> List[List[float]]:
+    """Generate embeddings for multiple texts using Ollama /api/embed.
+
+    Returns one vector (list of floats) per input text, in the same order.
+    An empty input list returns [] without making an HTTP request.
+    """
+    if not texts:
+        return []
+
+    resp = httpx.post(
+        f"{EMBED_BASE}/api/embed",
+        json={"model": EMBED_TEXT_MODEL, "input": list(texts)},
+        timeout=httpx.Timeout(60.0, connect=5.0),
+    )
+    resp.raise_for_status()
+
+    payload = resp.json()
+    embeddings = payload.get("embeddings")
+    if not isinstance(embeddings, list):
+        raise ValueError(
+            f"expected {len(texts)} embeddings, got {type(embeddings).__name__}"
+        )
+    if len(embeddings) != len(texts):
+        raise ValueError(
+            f"expected {len(texts)} embeddings, got {len(embeddings)}"
+        )
+    for vector in embeddings:
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("each embedding must be a non-empty list")
+    return embeddings
+
+
 def compute_image_embedding(image_path: str) -> Optional[List[float]]:
     """Generate an embedding for an image.
 

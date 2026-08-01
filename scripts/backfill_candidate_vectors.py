@@ -14,7 +14,7 @@ sys.path.insert(0, str(_project_root))
 
 from app.config import load_config
 from app.services.candidate_vectors import backfill_candidate_vectors
-from app.services.embedding import compute_text_embedding
+from app.services.embedding import compute_text_embedding, compute_text_embeddings_batch
 from app.services.preference_schema import apply_preference_schema
 
 
@@ -52,6 +52,7 @@ def main() -> None:
         result = backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
+            batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=args.feedback_only,
             dry_run=args.dry_run,
             limit=args.limit,
@@ -60,7 +61,7 @@ def main() -> None:
         conn.close()
 
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    if result.get("failed"):
+    if result.get("aborted") or result.get("failed"):
         raise SystemExit(2)
 
 

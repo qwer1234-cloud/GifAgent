@@ -484,6 +484,14 @@ By default the script embeds only candidates with effective like/dislike
 feedback. Use `--all-candidates` to fill every `candidate_gifs` row and
 `--dry-run` to count missing vectors without calling Ollama.
 
+The backfill processes missing rows in batches of 32, committing each batch
+before starting the next and reporting `(completed, total)` progress. The
+first batch-level HTTP/validation/insert failure rolls back only the in-flight
+batch and aborts (`aborted=true`); previously committed batches stay durable.
+Existing `candidate_vectors` rows are skipped, making reruns resumable. The
+configured WSL/Ollama instance must already be running before the backfill
+starts.
+
 Profile publishing is available in the Candidate Review Profile panel. Click
 `Refresh Profiles`, choose a completed profile version, then click
 `Publish Selected Profile`. The panel calls

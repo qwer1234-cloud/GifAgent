@@ -16,6 +16,8 @@ from app.services.preference_memory import (
 )
 
 EmbeddingFn = Callable[[str], list[float]]
+BatchEmbeddingFn = Callable[[list[str]], list[list[float]]]
+ProgressCb = Callable[[int, int], None]
 
 
 def _loads_json(value: str | None, fallback: Any) -> Any:
@@ -107,14 +109,29 @@ def _vector_blob(vector: list[float], *, embedding_dim: int) -> bytes:
 def backfill_candidate_vectors(
     conn: sqlite3.Connection,
     *,
-    embed_fn: EmbeddingFn,
+    embed_fn: EmbeddingFn | None = None,
     embedding_model: str = REQUIRED_EMBEDDING_MODEL,
     embedding_dim: int = REQUIRED_EMBEDDING_DIM,
     only_feedback: bool = False,
     dry_run: bool = False,
     limit: int | None = None,
+    batch_embed_fn: BatchEmbeddingFn | None = None,
+    batch_size: int = 32,
+    progress_cb: ProgressCb | None = None,
 ) -> dict[str, Any]:
-    """Create missing candidate_vectors rows for candidate GIFs."""
+    """Create missing candidate_vectors rows for candidate GIFs.
+
+    ``embed_fn`` (single-text) is preserved for legacy callers; at least one
+    of ``embed_fn``/``batch_embed_fn`` must be supplied when embedding is
+    performed.  When ``batch_embed_fn`` is supplied, missing rows are found
+    once, embedded in batches of ``batch_size``, and committed once per
+    successful batch.  The first batch call/validation/insert failure rolls
+    back the current batch and stops immediately; previously committed
+    batches stay durable.
+    """
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+
     rows = _candidate_rows(conn, only_feedback=only_feedback)
     result: dict[str, Any] = {
         "scanned": len(rows),
@@ -127,8 +144,13 @@ def backfill_candidate_vectors(
         "only_feedback": only_feedback,
         "embedding_model": embedding_model,
         "embedding_dim": embedding_dim,
+        "aborted": False,
+        "remaining": 0,
+        "batches": 0,
+        "batch_size": batch_size,
     }
 
+    missing_rows: list[sqlite3.Row] = []
     for row in rows:
         candidate_id = row["candidate_id"]
         if _has_vector(
@@ -140,15 +162,41 @@ def backfill_candidate_vectors(
             result["skipped_existing"] += 1
             continue
 
-        result["missing"] += 1
-        if limit is not None and result["inserted"] >= limit:
-            continue
-        if dry_run:
-            continue
+        missing_rows.append(row)
 
-        text = build_candidate_embedding_text(row)
+    result["missing"] = len(missing_rows)
+
+    if dry_run:
+        result["remaining"] = result["missing"] - result["inserted"]
+        return result
+
+    if batch_embed_fn is not None:
+        return _backfill_batch(
+            conn,
+            missing_rows,
+            result,
+            batch_embed_fn=batch_embed_fn,
+            batch_size=batch_size,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+            limit=limit,
+            progress_cb=progress_cb,
+        )
+
+    if embed_fn is None:
+        raise ValueError(
+            "backfill_candidate_vectors requires embed_fn or batch_embed_fn"
+        )
+
+    for row in missing_rows:
+        if limit is not None and result["inserted"] >= limit:
+            break
+        candidate_id = row["candidate_id"]
         try:
-            blob = _vector_blob(embed_fn(text), embedding_dim=embedding_dim)
+            blob = _vector_blob(
+                embed_fn(build_candidate_embedding_text(row)),
+                embedding_dim=embedding_dim,
+            )
             conn.execute(
                 """INSERT OR REPLACE INTO candidate_vectors
                    (candidate_id, vector_type, embedding_model, embedding_dim,
@@ -162,7 +210,108 @@ def backfill_candidate_vectors(
             result["failed"] += 1
             result["errors"].append({"candidate_id": candidate_id, "error": str(exc)})
 
+    result["remaining"] = result["missing"] - result["inserted"]
+
     return result
+
+
+def _backfill_batch(
+    conn: sqlite3.Connection,
+    missing_rows: list[sqlite3.Row],
+    result: dict[str, Any],
+    *,
+    batch_embed_fn: BatchEmbeddingFn,
+    batch_size: int,
+    embedding_model: str,
+    embedding_dim: int,
+    limit: int | None,
+    progress_cb: ProgressCb | None,
+) -> dict[str, Any]:
+    """Batch-embed missing rows, committing once per successful batch.
+
+    Failures roll back the in-flight batch and abort immediately; already
+    committed batches remain durable.  Transient endpoint failures are not
+    written to ``candidate_vector_exclusions``.
+    """
+    if limit is not None and limit <= 0:
+        to_process = []
+    elif limit is not None:
+        to_process = missing_rows[:limit]
+    else:
+        to_process = missing_rows
+    total = len(to_process)
+
+    _notify_progress(progress_cb, 0, total, result)
+
+    for start in range(0, total, batch_size):
+        chunk = to_process[start : start + batch_size]
+        try:
+            texts = [build_candidate_embedding_text(row) for row in chunk]
+            vectors = batch_embed_fn(texts)
+            blobs = _validate_batch_vectors(vectors, chunk, embedding_dim)
+            for row, blob in zip(chunk, blobs):
+                conn.execute(
+                    """INSERT OR REPLACE INTO candidate_vectors
+                       (candidate_id, vector_type, embedding_model, embedding_dim,
+                        vector_blob, normalized)
+                       VALUES (?,?,?,?,?,?)""",
+                    (row["candidate_id"], "clip", embedding_model, embedding_dim, blob, 1),
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            result["aborted"] = True
+            result["error"] = str(exc)
+            result["errors"].append(
+                {
+                    "candidate_id": chunk[0]["candidate_id"] if chunk else None,
+                    "error": str(exc),
+                }
+            )
+            result["remaining"] = result["missing"] - result["inserted"]
+            return result
+
+        result["inserted"] += len(chunk)
+        result["batches"] += 1
+        _notify_progress(progress_cb, result["inserted"], total, result)
+
+    result["remaining"] = result["missing"] - result["inserted"]
+    return result
+
+
+def _validate_batch_vectors(
+    vectors: Any,
+    chunk: list[sqlite3.Row],
+    embedding_dim: int,
+) -> list[bytes]:
+    """Validate count and every dimension before any insert in the batch."""
+    if not isinstance(vectors, list) or len(vectors) != len(chunk):
+        raise ValueError(
+            f"batch embedder returned "
+            f"{len(vectors) if isinstance(vectors, list) else type(vectors).__name__} "
+            f"vectors for {len(chunk)} inputs"
+        )
+    blobs: list[bytes] = []
+    for vector in vectors:
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("each embedding must be a non-empty list")
+        blobs.append(_vector_blob(vector, embedding_dim=embedding_dim))
+    return blobs
+
+
+def _notify_progress(
+    progress_cb: ProgressCb | None,
+    completed: int,
+    total: int,
+    result: dict[str, Any],
+) -> None:
+    """Run the progress callback, recording failures without aborting."""
+    if progress_cb is None:
+        return
+    try:
+        progress_cb(completed, total)
+    except Exception as exc:
+        result.setdefault("progress_errors", []).append(str(exc))
 
 
 def backfill_missing_vectors(

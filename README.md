@@ -661,6 +661,17 @@ uv run python scripts/preference_memory.py build
 # Backfill candidate vectors required by profile builds.
 # Default scope is effective like/dislike feedback targets.
 uv run python scripts/backfill_candidate_vectors.py --db dist/GifAgentUI/data/library.db
+```
+
+The backfill embeds missing rows in batches of 32 (`batch_size=32`), commits
+each batch before starting the next, and reports progress as
+`(completed, total)`. On the first batch-level HTTP/validation/insert failure
+it rolls back only the in-flight batch and aborts (`aborted=true`) while
+keeping previously committed batches durable. Rows that already have a
+matching `candidate_vectors` entry are skipped, so rerunning resumes naturally.
+The configured WSL/Ollama instance must already be running before starting.
+
+```
 
 # 发布画像
 uv run python scripts/preference_memory.py publish --profile-version <version>
