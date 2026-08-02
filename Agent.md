@@ -123,7 +123,9 @@ These contain the runtime databases, history, exports junction, labels,
 Preference Memory, and settings edited through the UI. Never replace only the
 EXE: release the matching `_internal/` tree as well. Before and after building,
 compare hashes for the writable config, databases, and checkpoints. A full
-historical queue rerun is optional; prefer a small new-video smoke test.
+historical queue rerun is optional; prefer a small new-video smoke test that
+reaches at least `discover`/`sample`. UI/API startup does not exercise the
+bundled stage-script import closure.
 
 ### Services
 ```bash
@@ -232,17 +234,17 @@ E2E scenarios: success, VLM outage, invalid VLM payload, and valid zero-clip.
 Tests must use temporary data and must not mutate historical databases, exports,
 labels, checkpoints, or writable configuration.
 
-### Task API Endpoints (7 new)
+### Task API Endpoints (7)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/tasks/commands` | Enqueue a command (cancel/pause/resume) |
-| GET | `/api/tasks/commands/pending` | Poll pending commands |
+| POST | `/api/tasks/jobs` | Create a directory-processing job |
+| POST | `/api/tasks/jobs/{job_id}/cancel` | Request job cancellation |
+| POST | `/api/tasks/jobs/{job_id}/retry` | Retry a failed or `needs_attention` job |
 | GET | `/api/tasks/jobs` | List all jobs with status counts |
-| GET | `/api/tasks/jobs/{job_id}` | Job detail + videos + stages |
-| GET | `/api/tasks/stages` | Query stages by status/worker/video |
-| POST | `/api/tasks/export-candidates` | Package candidate GIFs for export |
-| POST | `/api/tasks/import-legacy` | Import legacy queue/checkpoint state |
+| GET | `/api/tasks/jobs/{job_id}` | Job detail, video list, and stage counts |
+| GET | `/api/tasks/events` | Read task events using stable ID-based paging |
+| GET | `/api/tasks/attention` | List jobs requiring attention |
 
 ### Control Tab Cutover
 
@@ -257,6 +259,31 @@ folders serially and uses explicit starting/running/draining/cleanup handoffs.
 Per-video and per-GIF terminal lines are retained in the status log; an empty
 or failed GIF export returns a non-zero video result. Keep the queue modules and
 their regression tests when changing the Workbench entrypoint.
+
+### Packaged Execution and Idle-Command Invariants (2026-08-01)
+
+- `adaptive_adapter._stage_script_invocation()` must produce
+  `[sys.executable, script]` in source mode and
+  `[GifAgentUI.exe, "--run-script", script]` when `sys.frozen` is true.
+  Launching the frozen executable without `--run-script` starts another GUI and
+  leaves the claimed stage unable to run.
+- `scripts/test_video_adaptive.py` is bundled as data, so PyInstaller cannot
+  discover its imports. Keep the direct stage dependencies in
+  `build_exe.spec` hidden imports and keep
+  `tests/task_engine/test_packaged_stage_imports.py` synchronized with them.
+- `classify_error()` stores at most the final 4096 characters of child output,
+  preferring stderr and falling back to stdout. Preserve this diagnostic path;
+  it is what exposes packaged import errors in `last_error_json`.
+- `TaskWorker.run_once()` must check pending `retry`/`cancel` commands when
+  `claim_stage()` returns `None`. Command transitions stay centralized in
+  `orchestrator.advance_job()`: retry resets eligible stages and attempt counts,
+  and the following worker iteration claims the reset stage.
+
+Targeted regression gate:
+
+```powershell
+uv run pytest -q tests/task_engine/test_packaged_stage_imports.py tests/task_engine/test_stage_adapter.py tests/task_engine/test_worker.py
+```
 
 ### Scripts
 

@@ -249,7 +249,9 @@ both `dist/GifAgentUI/data/` and the writable
 `dist/GifAgentUI/configs/models.yaml`, so rebuilding does not reset the task
 history, GIF exports, labels, Preference Memory, databases, or settings edited
 through the UI. Do not replace only `GifAgentUI.exe`; the matching `_internal/`
-runtime must be released with it.
+runtime must be released with it. For task-engine releases, smoke-test at least
+one real queued video through `discover`/`sample`; UI and API startup alone do
+not exercise the bundled stage-script imports.
 
 ### Adaptive duplicate reduction tuning (2026-07-05 / 2026-07-25)
 
@@ -333,13 +335,13 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 | POST | `/api/preference/profiles/build` | 构建新的偏好画像 |
 | POST | `/api/preference/profiles/{version}/publish` | 发布指定版本的偏好画像 |
 | POST | `/api/preference/evaluate` | 偏好画像发布门禁评估（holdout 评估） |
-| POST | `/api/tasks/commands` | (Phase 1) 任务引擎：下发控制命令（cancel/pause/resume） |
-| GET | `/api/tasks/commands/pending` | (Phase 1) 轮询待处理命令 |
+| POST | `/api/tasks/jobs` | (Phase 1) 创建目录处理任务 |
+| POST | `/api/tasks/jobs/{job_id}/cancel` | (Phase 1) 请求取消任务 |
+| POST | `/api/tasks/jobs/{job_id}/retry` | (Phase 1) 重试失败或 `needs_attention` 任务 |
 | GET | `/api/tasks/jobs` | (Phase 1) 列出所有任务及其状态统计 |
-| GET | `/api/tasks/jobs/{job_id}` | (Phase 1) 查看任务详情（含视频和阶段） |
-| GET | `/api/tasks/stages` | (Phase 1) 按状态/工作者/视频查询阶段 |
-| POST | `/api/tasks/export-candidates` | (Phase 1) 打包候选 GIF |
-| POST | `/api/tasks/import-legacy` | (Phase 1) 导入旧版队列/检查点状态 |
+| GET | `/api/tasks/jobs/{job_id}` | (Phase 1) 查看任务详情、视频列表和阶段统计 |
+| GET | `/api/tasks/events` | (Phase 1) 按事件 ID 增量读取任务事件 |
+| GET | `/api/tasks/attention` | (Phase 1) 列出需要人工关注的任务 |
 
 ---
 
@@ -769,17 +771,17 @@ payload, valid zero-clip execution, and the persistent serial folder queue. The
 merged 2026-07-18 baseline is `1012 passed, 2 skipped, 3 warnings`; the warnings
 are dependency deprecations.
 
-### Task API Endpoints (7 new)
+### Task API Endpoints (7)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/tasks/commands` | Enqueue a command (cancel/pause/resume) |
-| GET | `/api/tasks/commands/pending` | Poll pending commands |
+| POST | `/api/tasks/jobs` | Create a directory-processing job |
+| POST | `/api/tasks/jobs/{job_id}/cancel` | Request job cancellation |
+| POST | `/api/tasks/jobs/{job_id}/retry` | Retry a failed or `needs_attention` job |
 | GET | `/api/tasks/jobs` | List all jobs with status counts |
-| GET | `/api/tasks/jobs/{job_id}` | Job detail with videos and stages |
-| GET | `/api/tasks/stages` | Query stages by status/worker/video |
-| POST | `/api/tasks/export-candidates` | Package candidate GIFs for export |
-| POST | `/api/tasks/import-legacy` | Import legacy queue/checkpoint state |
+| GET | `/api/tasks/jobs/{job_id}` | Job detail, video list, and stage counts |
+| GET | `/api/tasks/events` | Read task events using stable ID-based paging |
+| GET | `/api/tasks/attention` | List jobs that require attention |
 
 ### New Scripts
 
@@ -810,6 +812,29 @@ directories are canonicalized and deduplicated, processed serially under a
 single-worker lease, and recovered across launch, handoff, cleanup, or PID
 failures. Status output includes every video and every attempted GIF; failed or
 empty GIF exports make the video fail instead of being counted as successful.
+
+### Packaged Worker Recovery (2026-08-01)
+
+- Frozen builds execute adaptive stage scripts through
+  `GifAgentUI.exe --run-script <script>`; source runs continue to use the
+  current Python interpreter directly. This prevents a stage subprocess from
+  opening a second GUI instead of processing the claimed stage.
+- `build_exe.spec` explicitly includes the service modules imported by the
+  bundled stage script, because PyInstaller does not statically analyze scripts
+  stored as package data.
+- A failed child process records a bounded tail of stderr (stdout fallback) in
+  the stage error. `ModuleNotFoundError`, ffmpeg output, and other real child
+  failures are therefore visible instead of only a generic exit code.
+- When no stage is currently claimable, the worker still consumes pending
+  `retry` and `cancel` commands. Retrying a `needs_attention` job resets its
+  failed stages through the orchestrator; the next worker iteration can claim
+  and resume them without restarting the application.
+
+Regression tests:
+
+```powershell
+uv run pytest -q tests/task_engine/test_packaged_stage_imports.py tests/task_engine/test_stage_adapter.py tests/task_engine/test_worker.py
+```
 
 ### Config
 
