@@ -647,6 +647,32 @@ class TestTaskWorkerRunOnce:
         expected = base_dir / "discover" / stage.stage_id
         assert ctx.work_dir == expected
 
+    def test_default_relative_work_dir_when_task_work_dir_omitted(
+        self, tmp_path: Path,
+    ):
+        """Omitting ``task_work_dir`` must fall back to the relative
+        ``data/task_work`` default (the production sample->vlm failure
+        path).  The stage is only observed, not written, so no repo
+        ``data/`` directory is created."""
+        repo, _ = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({}),  # no task_work_dir key
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        adapter = MockAdapter(raise_exc=RuntimeError("stop before writes"))
+        worker = TaskWorker(repo, "worker-1", {"discover": adapter})
+        worker.run_once(now=T0)
+
+        ctx = adapter.called_with[0]
+        expected = Path("data/task_work") / "discover" / stage.stage_id
+        assert ctx.work_dir == expected
+        assert not ctx.work_dir.is_absolute()
+
     def test_save_result_file_after_success(self, tmp_path: Path):
         """After a successful run, .stage_result.json should exist."""
         repo, _ = make_repo(tmp_path)

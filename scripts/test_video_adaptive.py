@@ -2273,7 +2273,15 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     sample_frames = []
     dark_dropped = 0
     for i, ts in enumerate(timestamps):
-        out_path = os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
+        # Canonical path: the frame path stored in frame_entries and hashed
+        # into frame_entries[].artifact_id MUST use the same absolute
+        # representation that _make_artifact() reports and that the adapter
+        # persists into task_artifacts.  Hashing a raw relative
+        # data/task_work path here produced a different artifact_id than the
+        # one the VLM resolver reads, splitting sample -> vlm.
+        out_path = os.path.abspath(
+            os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
+        )
         subprocess.run(
             ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
              "-vf", "scale=640:-1", "-vframes", "1", out_path],
@@ -2333,6 +2341,49 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     }
 
 
+def _resolve_legacy_sample_frame_ref(
+    aid: str,
+    entry_path: str,
+    sample_frames_refs: list[dict],
+) -> dict | None:
+    """Strictly resolve a legacy sample_frames ID derived from a relative path.
+
+    Manifests written before the canonical-path fix hashed the raw
+    ``frame_entries[].path`` (e.g. ``data/task_work/sample/.../ts_000016.jpg``)
+    while ``task_artifacts`` persisted the same frame under its absolute
+    path.  This fallback accepts ONLY when:
+
+    * exactly one resolver entry has the same normalized absolute path as
+      the manifest entry (ambiguous matches are rejected); and
+    * the manifest's legacy ID equals the hash of the manifest's legacy
+      path and the upstream sample stage id, proving the ID relationship.
+
+    Returns ``None`` for unknown IDs, missing paths, ambiguous matches,
+    missing upstream stage provenance, or any other case that cannot be
+    proven.  Callers keep rejecting those cases as unknown artifact IDs.
+    """
+    if not entry_path:
+        return None
+    target_abs = os.path.normcase(os.path.abspath(entry_path))
+    matches = []
+    for ref in sample_frames_refs:
+        ref_path = ref.get("path", "")
+        if ref_path and os.path.normcase(os.path.abspath(ref_path)) == target_abs:
+            matches.append(ref)
+    if len(matches) != 1:
+        return None
+    ref = matches[0]
+    expected_legacy_id = _hash_artifact_id(
+        "sample_frames",
+        entry_path,
+        stage_id=ref.get("stage_id", ""),
+        clip_id=ref.get("clip_id"),
+    )
+    if expected_legacy_id != aid:
+        return None
+    return ref
+
+
 # ---------------------------------------------------------------------------
 # Stage 3: vlm — VLM scoring of sampled frames only
 # ---------------------------------------------------------------------------
@@ -2344,6 +2395,9 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     P1-3: Cross-references sample_manifest frame_entries with sample_frames
     resolver entries by artifact_id.  Fails if a frame is missing, SHA
     mismatched, duplicate artifact_id, or manifest references unknown frame.
+    Legacy manifests whose frame entry ID was hashed from a relative path are
+    recovered only when the legacy ID provably matches the entry path and
+    the upstream sample stage id (see _resolve_legacy_sample_frame_ref).
 
     Does NOT re-execute sampling.
     """
@@ -2384,6 +2438,14 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
             )
 
         resolver_ref = frames_by_artifact_id.get(aid)
+        if resolver_ref is None:
+            # Legacy manifests hashed the raw (possibly relative) frame path
+            # while task_artifacts persisted the absolute path.  Recover only
+            # when the legacy ID provably belongs to this entry; anything
+            # unproven stays an unknown-ID rejection.
+            resolver_ref = _resolve_legacy_sample_frame_ref(
+                aid, path, sample_frames_refs,
+            )
         if resolver_ref is None:
             raise ValueError(
                 f"sample_manifest references artifact_id {aid!r} (ts={ts}) "
