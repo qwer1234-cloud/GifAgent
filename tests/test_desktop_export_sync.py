@@ -839,8 +839,20 @@ def _install_fake_webview(monkeypatch):
     import sys
     import types
 
+    class FakeClosedEvent:
+        def __init__(self):
+            self.callback = None
+
+        def __iadd__(self, callback):
+            self.callback = callback
+            return self
+
+    class FakeWindow:
+        def __init__(self):
+            self.events = types.SimpleNamespace(closed=FakeClosedEvent())
+
     fake = types.ModuleType("webview")
-    fake.create_window = lambda *args, **kwargs: None
+    fake.create_window = lambda *args, **kwargs: FakeWindow()
     fake.start = _fake_webview_start
     sys.modules["webview"] = fake
 
@@ -917,3 +929,50 @@ def test_startup_sync_failure_logs_warning_and_startup_continues(
     assert calls.index("db") < calls.index("sync") < calls.index("bg")
     output = capsys.readouterr().out
     assert "WARNING: desktop export synchronization failed" in output
+
+
+def test_window_close_forces_process_exit_when_graceful_shutdown_blocks():
+    from app.ui import launcher
+
+    class FakeClosedEvent:
+        def __init__(self):
+            self.callback = None
+
+        def __iadd__(self, callback):
+            self.callback = callback
+            return self
+
+    class FakeWindow:
+        def __init__(self):
+            self.events = type("Events", (), {"closed": FakeClosedEvent()})()
+
+    window = FakeWindow()
+    cleanup_started = threading.Event()
+    release_cleanup = threading.Event()
+    exit_called = threading.Event()
+    exit_codes = []
+
+    def blocking_cleanup():
+        cleanup_started.set()
+        release_cleanup.wait(timeout=1.0)
+
+    def record_exit(code):
+        exit_codes.append(code)
+        exit_called.set()
+
+    launcher._register_window_shutdown(
+        window,
+        blocking_cleanup,
+        force_timeout=0.02,
+        exit_process=record_exit,
+    )
+
+    callback_thread = threading.Thread(target=window.events.closed.callback)
+    callback_thread.start()
+    try:
+        assert cleanup_started.wait(timeout=0.5)
+        assert exit_called.wait(timeout=0.5)
+        assert exit_codes[0] == 0
+    finally:
+        release_cleanup.set()
+        callback_thread.join(timeout=1.0)

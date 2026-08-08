@@ -219,6 +219,55 @@ def _stop_worker(stop_event, thread):
         thread.join(timeout=3.0)
 
 
+def _register_window_shutdown(
+    window,
+    graceful_shutdown,
+    *,
+    force_timeout=12.0,
+    exit_process=None,
+):
+    """Exit even if pywebview or a server cleanup call never returns.
+
+    pywebview dispatches ``closed`` callbacks independently of its GUI loop.
+    Registering here therefore keeps process shutdown reachable when
+    ``webview.start()`` does not return. A watchdog also bounds synchronous
+    cleanup such as ``gradio_app.close()``.
+    """
+    if exit_process is None:
+        exit_process = os._exit
+
+    state_lock = threading.Lock()
+    shutdown_complete = threading.Event()
+    shutdown_started = False
+
+    def shutdown():
+        nonlocal shutdown_started
+        with state_lock:
+            if shutdown_started:
+                return
+            shutdown_started = True
+
+        def force_exit_watchdog():
+            if not shutdown_complete.wait(force_timeout):
+                print("Shutdown timed out; forcing process exit.", flush=True)
+                exit_process(0)
+
+        threading.Thread(
+            target=force_exit_watchdog,
+            daemon=True,
+            name="shutdown-watchdog",
+        ).start()
+
+        try:
+            graceful_shutdown()
+        finally:
+            shutdown_complete.set()
+            exit_process(0)
+
+    window.events.closed += shutdown
+    return shutdown
+
+
 def _run_script_mode():
     """When invoked as `GifAgentUI.exe --run-script <path> [args...]`,
     run the given .py script via runpy instead of starting the GUI.
@@ -324,13 +373,24 @@ def main():
     # until the user closes the window. On Windows the GUI message loop must run
     # on the main thread, so this has to be the last thing main() does.
     import webview
-    webview.create_window(
+    window = webview.create_window(
         "GifAgent",
         "http://127.0.0.1:7861",
         width=1400,
         height=900,
         min_size=(1024, 680),
     )
+
+    def graceful_shutdown():
+        print("Window closed, shutting down servers...", flush=True)
+        _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
+        try:
+            gradio_app.close()
+        except Exception:
+            pass
+
+    shutdown = _register_window_shutdown(window, graceful_shutdown)
     try:
         webview.start()
     except Exception as e:
@@ -340,14 +400,7 @@ def main():
         # then exit. FastAPI runs in a daemon thread and is killed when the
         # process exits. os._exit() avoids hanging on Gradio's non-daemon
         # internal threads.
-        print("Window closed, shutting down servers...", flush=True)
-        _stop_worker(worker_stop_event, worker_thread)
-        stop_background_sync(sync_stop_event)
-        try:
-            gradio_app.close()
-        except Exception:
-            pass
-        os._exit(0)
+        shutdown()
 
 
 if __name__ == "__main__":
