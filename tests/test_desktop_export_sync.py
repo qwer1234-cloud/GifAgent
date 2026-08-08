@@ -976,3 +976,34 @@ def test_window_close_forces_process_exit_when_graceful_shutdown_blocks():
     finally:
         release_cleanup.set()
         callback_thread.join(timeout=1.0)
+
+
+def test_graceful_shutdown_stops_ollama_runtime(monkeypatch, capsys):
+    """Desktop shutdown must invoke the Ollama runtime shutdown exactly once."""
+    from app.ui import launcher
+
+    calls = []
+    monkeypatch.setattr(launcher, "_init_database", lambda: calls.append("db"))
+    monkeypatch.setattr(launcher, "_run_startup_sync", lambda: calls.append("sync"))
+    monkeypatch.setattr(launcher, "_start_task_worker", lambda: (None, None))
+    monkeypatch.setattr(launcher, "start_api_server", lambda: None)
+    monkeypatch.setattr(launcher, "_wait_for_url", lambda *a, **k: True)
+    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app: None)
+    monkeypatch.setattr(
+        launcher, "start_background_sync", lambda event: calls.append("bg")
+    )
+    monkeypatch.setattr(launcher, "stop_background_sync", lambda event=None: None)
+
+    shutdown_calls = []
+    monkeypatch.setattr(
+        launcher.ollama_runtime,
+        "shutdown_runtime",
+        lambda: shutdown_calls.append(1),
+    )
+    _install_fake_webview(monkeypatch)
+    _install_os_exit_guard(monkeypatch)
+
+    with pytest.raises(SystemExit):
+        launcher.main()
+
+    assert shutdown_calls == [1]

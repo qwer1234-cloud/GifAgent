@@ -302,3 +302,130 @@ def test_backfill_candidate_vectors_can_scope_to_feedback_targets():
     assert result["inserted"] == 1
     rows = conn.execute("SELECT candidate_id FROM candidate_vectors").fetchall()
     assert [row["candidate_id"] for row in rows] == ["cand-liked"]
+
+
+def test_batch_backfill_structured_retry_exhaustion_commits_nothing_and_no_exclusions():
+    from app.services.candidate_vectors import backfill_candidate_vectors
+    from app.services.ollama_runtime import EmbeddingRuntimeError
+
+    raw = _conn()
+    _insert_candidates(raw, [f"cand-{i:03d}" for i in range(1, 33)])
+    conn = _TrackingConn(raw)
+
+    def embed(texts):
+        raise EmbeddingRuntimeError(
+            "Ollama embedding request failed after 3 attempts: unreachable",
+            phase="embed",
+            attempts=3,
+            base_url="http://172.27.227.98:11434",
+            retryable=True,
+            cause=RuntimeError("unreachable"),
+        )
+
+    result = backfill_candidate_vectors(conn, batch_embed_fn=embed, batch_size=32)
+
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+    assert result["aborted"] is True
+    assert result["inserted"] == 0
+    assert result["batches"] == 0
+    assert result["phase"] == "embed"
+    assert result["attempts"] == 3
+    assert result["base_url"] == "http://172.27.227.98:11434"
+    assert result["retryable"] is True
+    assert "unreachable" in result["error"]
+    assert len(result["errors"]) == 1
+    entry = result["errors"][0]
+    assert entry["phase"] == "embed"
+    assert entry["retryable"] is True
+    assert entry["first_candidate_id"] == "cand-001"
+    assert (
+        raw.execute("SELECT COUNT(*) FROM candidate_vector_exclusions")
+        .fetchone()[0]
+        == 0
+    )
+    assert raw.execute("SELECT COUNT(*) FROM candidate_vectors").fetchone()[0] == 0
+
+
+def test_batch_backfill_durable_then_exhaustion_resumes():
+    from app.services.candidate_vectors import backfill_candidate_vectors
+    from app.services.ollama_runtime import EmbeddingRuntimeError
+
+    raw = _conn()
+    ids = [f"cand-{i:03d}" for i in range(1, 66)]
+    _insert_candidates(raw, ids)
+    conn = _TrackingConn(raw)
+    call_sizes = []
+
+    def embed(texts):
+        call_sizes.append(len(texts))
+        if len(call_sizes) == 2:
+            raise EmbeddingRuntimeError(
+                "Ollama embedding request failed after 3 attempts: unreachable",
+                phase="embed",
+                attempts=3,
+                base_url="http://172.27.227.98:11434",
+                retryable=True,
+                cause=RuntimeError("unreachable"),
+            )
+        return [[0.1] * 768 for _ in texts]
+
+    first = backfill_candidate_vectors(conn, batch_embed_fn=embed, batch_size=32)
+
+    assert call_sizes == [32, 32]
+    assert conn.commits == 1
+    assert conn.rollbacks == 1
+    assert first["inserted"] == 32
+    assert first["aborted"] is True
+    assert first["batches"] == 1
+    assert first["phase"] == "embed"
+    assert first["retryable"] is True
+
+    conn2 = _TrackingConn(raw)
+    second_calls = []
+
+    def embed_ok(texts):
+        second_calls.append(len(texts))
+        return [[0.2] * 768 for _ in texts]
+
+    second = backfill_candidate_vectors(
+        conn2, batch_embed_fn=embed_ok, batch_size=32
+    )
+
+    assert second["skipped_existing"] == 32
+    assert second["missing"] == 33
+    assert second["inserted"] == 33
+    assert second_calls == [32, 1]
+    assert raw.execute("SELECT COUNT(*) FROM candidate_vectors").fetchone()[0] == 65
+    assert (
+        raw.execute("SELECT COUNT(*) FROM candidate_vector_exclusions")
+        .fetchone()[0]
+        == 0
+    )
+
+
+def test_legacy_backfill_does_not_exclude_transient_endpoint_failures():
+    from app.services.candidate_vectors import backfill_missing_vectors
+    from app.services.ollama_runtime import EmbeddingRuntimeError
+
+    raw = _conn()
+    _insert_candidates(raw, ["cand-a"])
+
+    def embed(text):
+        raise EmbeddingRuntimeError(
+            "Ollama embedding request failed after 3 attempts: unreachable",
+            phase="embed",
+            attempts=3,
+            base_url="http://172.27.227.98:11434",
+            retryable=True,
+            cause=RuntimeError("unreachable"),
+        )
+
+    report = backfill_missing_vectors(raw, embed)
+
+    assert report["failed"] == 1
+    assert (
+        raw.execute("SELECT COUNT(*) FROM candidate_vector_exclusions")
+        .fetchone()[0]
+        == 0
+    )

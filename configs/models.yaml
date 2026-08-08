@@ -37,7 +37,17 @@ embedding:
   provider: "ollama"
   image_model: "llava:13b"
   text_model: "nomic-embed-text:latest"
-  base_url: "http://172.27.227.98:11434"
+  # Portable runtime: "auto" resolves the live WSL address at call time.
+  # Set GIFAGENT_OLLAMA_BASE to pin a deterministic/remote endpoint.
+  base_url: "auto"
+  manage_lifecycle: true
+  launch_mode: "wsl"
+  wsl_distro: "Ubuntu-20.04"
+  startup_timeout_s: 120
+  request_timeout_s: 60
+  retry_attempts: 3
+  retry_backoff_s: 2
+  keep_alive: "30m"
 
 scheduler:
   model_switch_wait: 10

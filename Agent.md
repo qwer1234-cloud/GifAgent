@@ -516,8 +516,58 @@ before starting the next and reporting `(completed, total)` progress. The
 first batch-level HTTP/validation/insert failure rolls back only the in-flight
 batch and aborts (`aborted=true`); previously committed batches stay durable.
 Existing `candidate_vectors` rows are skipped, making reruns resumable. The
-configured WSL/Ollama instance must already be running before the backfill
-starts.
+backfill is self-starting for the default WSL/Ollama setup and never requires
+the distro to be running beforehand.
+
+### Ollama embedding runtime (WSL backfill)
+
+`app/services/ollama_runtime.py` owns the embedding endpoint lifecycle and is
+the single place that resolves the base URL at call time:
+
+1. **Environment override**: `GIFAGENT_OLLAMA_BASE` (normalized) wins and
+   suppresses WSL lifecycle entirely.
+2. **Explicit config**: `embedding.base_url` is used as-is when it is not
+   `"auto"`.
+3. **Automatic WSL mode**: with `embedding.manage_lifecycle: true` and
+   `embedding.launch_mode: wsl`, the runtime starts an owned hidden keeper
+   (`wsl.exe -d <distro> --exec sleep infinity`, no visible console),
+   discovers the current address via
+   `wsl.exe -d <distro> -- hostname -I`, constructs
+   `http://<first-ip>:11434`, polls `/api/version` for
+   `embedding.startup_timeout_s`, and pre-warms `nomic-embed-text:latest`
+   with a one-input `/api/embed` call, verifying exactly 768 dimensions.
+
+Only successful runtime state is cached. Transport failures invalidate the
+cached URL/readiness so the next attempt rediscovers a changed WSL IP.
+Shutdown is idempotent, terminates only the keeper this process created, and
+is registered with `atexit` plus the desktop launcher's graceful shutdown;
+it never runs `wsl --shutdown` and never stops external Ollama services.
+
+The embedding client (`app/services/embedding.py`) routes single and batch
+requests through the runtime, includes `embedding.keep_alive` when set, and
+retries only transient conditions (timeouts, transport errors, HTTP
+408/429/500/502/503/504) using `embedding.retry_attempts` total attempts with
+exponential backoff. Permanent 4xx, invalid JSON, wrong vector counts, empty
+vectors, and dimension mismatches are not retried. Exhaustion or startup
+failure raises a structured `EmbeddingRuntimeError` carrying `phase`,
+`attempts`, `base_url`, and `retryable`; `backfill_candidate_vectors` surfaces
+those fields in its result and never writes transient endpoint failures to
+`candidate_vector_exclusions`.
+
+Portable keys in `configs/models.yaml`:
+
+```yaml
+embedding:
+  base_url: "auto"
+  manage_lifecycle: true
+  launch_mode: "wsl"
+  wsl_distro: "Ubuntu-20.04"
+  startup_timeout_s: 120
+  request_timeout_s: 60
+  retry_attempts: 3
+  retry_backoff_s: 2
+  keep_alive: "30m"
+```
 
 Profile publishing is available in the Candidate Review Profile panel. Click
 `Refresh Profiles`, choose a completed profile version, then click

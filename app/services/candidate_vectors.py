@@ -14,6 +14,7 @@ from app.services.preference_memory import (
     REQUIRED_EMBEDDING_DIM,
     REQUIRED_EMBEDDING_MODEL,
 )
+from app.services.ollama_runtime import EmbeddingRuntimeError
 
 EmbeddingFn = Callable[[str], list[float]]
 BatchEmbeddingFn = Callable[[list[str]], list[list[float]]]
@@ -148,6 +149,10 @@ def backfill_candidate_vectors(
         "remaining": 0,
         "batches": 0,
         "batch_size": batch_size,
+        "phase": None,
+        "attempts": None,
+        "base_url": None,
+        "retryable": None,
     }
 
     missing_rows: list[sqlite3.Row] = []
@@ -262,12 +267,24 @@ def _backfill_batch(
             conn.rollback()
             result["aborted"] = True
             result["error"] = str(exc)
-            result["errors"].append(
-                {
-                    "candidate_id": chunk[0]["candidate_id"] if chunk else None,
-                    "error": str(exc),
-                }
-            )
+            first_candidate_id = chunk[0]["candidate_id"] if chunk else None
+            error_entry: dict[str, Any] = {
+                "candidate_id": first_candidate_id,
+                "first_candidate_id": first_candidate_id,
+                "error": str(exc),
+            }
+            if isinstance(exc, EmbeddingRuntimeError):
+                result["phase"] = exc.phase
+                result["attempts"] = exc.attempts
+                result["base_url"] = exc.base_url
+                result["retryable"] = exc.retryable
+                error_entry.update(
+                    phase=exc.phase,
+                    attempts=exc.attempts,
+                    base_url=exc.base_url,
+                    retryable=exc.retryable,
+                )
+            result["errors"].append(error_entry)
             result["remaining"] = result["missing"] - result["inserted"]
             return result
 
@@ -383,6 +400,10 @@ def backfill_missing_vectors(
             pending.append((candidate_id, blob))
         except Exception as exc:
             report["failed"] += 1
+            if isinstance(exc, EmbeddingRuntimeError) and exc.retryable:
+                # A transient endpoint failure must never become a durable
+                # candidate exclusion; the run is resumable as-is.
+                continue
             pending_exclusions.append(
                 (candidate_id, f"embedding_failed: {exc}")
             )

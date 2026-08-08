@@ -94,6 +94,15 @@ llm:
 embedding:
   provider: "ollama"
   text_model: "nomic-embed-text:latest"
+  base_url: "auto"                    # auto = discover current WSL address at runtime
+  manage_lifecycle: true              # keep WSL/Ollama resident with an owned keeper
+  launch_mode: "wsl"                  # none | native | wsl
+  wsl_distro: "Ubuntu-20.04"
+  startup_timeout_s: 120              # wait for /api/version after launch
+  request_timeout_s: 60
+  retry_attempts: 3                   # total attempts for transient failures
+  retry_backoff_s: 2
+  keep_alive: "30m"
 
 preference_memory:
   enabled: false                      # 偏好记忆功能开关
@@ -671,7 +680,22 @@ each batch before starting the next, and reports progress as
 it rolls back only the in-flight batch and aborts (`aborted=true`) while
 keeping previously committed batches durable. Rows that already have a
 matching `candidate_vectors` entry are skipped, so rerunning resumes naturally.
-The configured WSL/Ollama instance must already be running before starting.
+
+The backfill is self-starting for the default `Ubuntu-20.04` WSL/Ollama setup.
+`app/services/ollama_runtime.py` resolves `embedding.base_url` at call time
+with this precedence: `GIFAGENT_OLLAMA_BASE` env override, explicit configured
+URL, then automatic discovery. In automatic mode with
+`embedding.manage_lifecycle: true`, it starts an owned hidden keeper
+(`wsl.exe -d Ubuntu-20.04 --exec sleep infinity`), discovers the current WSL
+address (`wsl.exe -d Ubuntu-20.04 -- hostname -I`) instead of using a
+hard-coded IP, waits up to `embedding.startup_timeout_s` for `/api/version`,
+and pre-warms `nomic-embed-text:latest` (768-dim) before the first request.
+Transient failures (timeouts, network errors, HTTP 408/429/5xx) are retried
+with exponential backoff; a failed batch rolls back and aborts with structured
+`phase`/`attempts`/`base_url`/`retryable` fields, and rerunning resumes from
+the first missing row. Endpoint failures are never recorded as candidate
+exclusions. The desktop launcher shuts down the owned keeper idempotently on
+window close.
 
 ```
 

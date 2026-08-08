@@ -18,6 +18,7 @@ from app.services.desktop_export_sync import (
     start_background_sync,
     stop_background_sync,
 )
+from app.services import ollama_runtime
 
 
 def _setup_runtime_files(exe_dir):
@@ -389,6 +390,13 @@ def main():
             gradio_app.close()
         except Exception:
             pass
+        try:
+            ollama_runtime.shutdown_runtime()
+        except Exception as exc:
+            print(
+                f"WARNING: Ollama runtime shutdown failed: {exc}",
+                flush=True,
+            )
 
     shutdown = _register_window_shutdown(window, graceful_shutdown)
     try:
