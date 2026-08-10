@@ -8,6 +8,7 @@ from app.quality_moe.models import (
     ExpertEvidence,
     QualityAssessment,
     QualityDecision,
+    RepairValidation,
     RepairRecipe,
 )
 from app.quality_moe.policy import enforce_decision, hard_gate_reasons
@@ -55,7 +56,12 @@ def test_repair_recipe_copies_mutable_geometry_values():
 def test_assessment_copies_mutable_reason_codes():
     codes = ["underexposed_subject"]
     assessment = QualityAssessment(
-        decision=QualityDecision.REVIEW,
+        candidate_id="c1",
+        evaluation_version="quality-moe-v1",
+        config_hash="config-sha",
+        policy_version="quality-moe-policy-v1",
+        recommended_decision=QualityDecision.REVIEW,
+        effective_decision=QualityDecision.REVIEW,
         confidence=0.6,
         reason_codes=codes,
     )
@@ -112,12 +118,66 @@ def test_config_accepts_and_copies_spec_shaped_expert_and_judge_settings():
     assert config.judge["model_id"] == "local-video"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("photometric_mode", "per_frame_auto"),
+        ("geometric_mode", "generative_outpainting"),
+    ],
+)
+def test_config_rejects_non_v1_repair_modes(field, value):
+    with pytest.raises(ValueError, match=field):
+        QualityMoeConfig.from_mapping(
+            {"quality_moe": {"repairability": {field: value}}}
+        )
+
+
 @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])
 def test_config_rejects_non_finite_thresholds(bad_value):
     with pytest.raises(ValueError, match="min_confidence"):
         QualityMoeConfig.from_mapping(
             {"quality_moe": {"repairability": {"min_confidence": bad_value}}}
         )
+
+
+def _evidence(
+    signal_family: str,
+    *,
+    status: EvidenceStatus = EvidenceStatus.AVAILABLE,
+    expert_id: str = "expert",
+    input_hash: str = "source-sha",
+    config_hash: str = "config-sha",
+) -> ExpertEvidence:
+    return ExpertEvidence(
+        candidate_id="c1",
+        evaluation_version="quality-moe-v1",
+        expert_id=expert_id,
+        expert_version="v1",
+        signal_family=signal_family,
+        status=status,
+        scores={"technical_integrity": 0.4},
+        input_hash=input_hash,
+        config_hash=config_hash,
+    )
+
+
+def _enforce(
+    *,
+    proposed: QualityDecision,
+    config: QualityMoeConfig,
+    evidence: tuple[ExpertEvidence, ...] = (),
+    hard_reasons: tuple[str, ...] = (),
+    repair: RepairRecipe | None = None,
+):
+    return enforce_decision(
+        candidate_id="c1",
+        proposed=proposed,
+        confidence=0.95,
+        evidence=evidence,
+        hard_reasons=hard_reasons,
+        repair=repair,
+        config=config,
+    )
 
 
 @pytest.mark.parametrize(
@@ -128,90 +188,145 @@ def test_config_rejects_non_finite_thresholds(bad_value):
     ],
 )
 def test_hard_gate_cannot_be_overridden_by_keep(field, value):
-    result = enforce_decision(
+    result = _enforce(
         proposed=QualityDecision.KEEP_AS_IS,
-        confidence=0.99,
-        negative_signal_families=(),
         hard_reasons=hard_gate_reasons({field: value}),
-        repair=None,
         config=QualityMoeConfig.defaults(),
     )
 
-    assert result.decision is QualityDecision.REJECT
+    assert result.recommended_decision is QualityDecision.REJECT
+    assert result.effective_decision is QualityDecision.REJECT
 
 
-def test_soft_reject_requires_two_independent_families():
-    result = enforce_decision(
+def test_report_only_soft_rejection_is_effectively_review():
+    result = _enforce(
         proposed=QualityDecision.REJECT,
-        confidence=0.95,
-        negative_signal_families=("nr_vqa", "nr_vqa"),
-        hard_reasons=(),
-        repair=None,
+        evidence=(_evidence("nr_vqa"), _evidence("semantic_video_critic", expert_id="judge")),
         config=QualityMoeConfig.defaults(),
     )
 
-    assert result.decision is QualityDecision.REVIEW
+    assert result.recommended_decision is QualityDecision.REJECT
+    assert result.effective_decision is QualityDecision.REVIEW
 
 
-def test_report_only_records_qualified_rejection_without_overriding_hard_rejection():
-    soft_result = enforce_decision(
+def test_soft_rejection_counts_only_available_canonical_evidence_families():
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    result = _enforce(
         proposed=QualityDecision.REJECT,
+        evidence=(
+            _evidence("nr_vqa"),
+            _evidence("nr_vqa"),
+            _evidence("semantic_video_critic", status=EvidenceStatus.UNAVAILABLE),
+            _evidence("unknown_family", expert_id="unknown"),
+        ),
+        config=config,
+    )
+
+    assert result.negative_signal_families == ("nr_vqa",)
+    assert result.effective_decision is QualityDecision.REVIEW
+
+
+def test_assessment_serializes_frozen_provenance_fields():
+    assessment = QualityAssessment(
+        candidate_id="c1",
+        evaluation_version="quality-moe-v1",
+        config_hash="config-sha",
+        policy_version="quality-moe-policy-v1",
+        recommended_decision=QualityDecision.REJECT,
+        effective_decision=QualityDecision.REVIEW,
         confidence=0.95,
-        negative_signal_families=("nr_vqa", "semantic_video_critic"),
-        hard_reasons=(),
-        repair=None,
-        config=QualityMoeConfig.defaults(),
-    )
-    hard_result = enforce_decision(
-        proposed=QualityDecision.KEEP_AS_IS,
-        confidence=0.99,
-        negative_signal_families=(),
-        hard_reasons=("transition_drop",),
-        repair=None,
-        config=QualityMoeConfig.defaults(),
     )
 
-    assert soft_result.decision is QualityDecision.REJECT
-    assert hard_result.decision is QualityDecision.REJECT
+    assert assessment.to_dict() == {
+        "candidate_id": "c1",
+        "evaluation_version": "quality-moe-v1",
+        "config_hash": "config-sha",
+        "policy_version": "quality-moe-policy-v1",
+        "recommended_decision": "REJECT",
+        "effective_decision": "REVIEW",
+        "confidence": 0.95,
+        "negative_signal_families": [],
+        "hard_reasons": [],
+        "repair": None,
+        "reason_codes": [],
+        "summary": "",
+    }
 
 
-def test_keep_for_repair_requires_a_validated_recipe():
-    unvalidated = RepairRecipe(recipe_id="repair-1", validated=False)
+def test_keep_for_repair_requires_bound_available_validation_evidence():
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    unvalidated = RepairRecipe(
+        recipe_id="repair-1", quality_gain=0.15, confidence=0.80
+    )
+    delta = _evidence(
+        "repair_delta", expert_id="repair-scorer", config_hash=config.config_hash
+    )
     validated = RepairRecipe(
         recipe_id="repair-2",
         quality_gain=0.15,
         confidence=0.80,
-        validated=True,
+        validation=RepairValidation(
+            source_input_hash="source-sha",
+            proxy_artifact_hash="proxy-sha",
+            recipe_hash=RepairRecipe(recipe_id="repair-2", quality_gain=0.15, confidence=0.80).recipe_hash,
+            config_hash=config.config_hash,
+            repair_delta_evidence_id=delta.identity_hash,
+            repair_delta_status=EvidenceStatus.AVAILABLE,
+        ),
     )
-    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
 
-    assert enforce_decision(
+    assert _enforce(
         proposed=QualityDecision.KEEP_FOR_REPAIR,
-        confidence=0.9,
-        negative_signal_families=(),
-        hard_reasons=(),
         repair=unvalidated,
         config=config,
-    ).decision is QualityDecision.REVIEW
-    assert enforce_decision(
+    ).effective_decision is QualityDecision.REVIEW
+    assert _enforce(
         proposed=QualityDecision.KEEP_FOR_REPAIR,
-        confidence=0.9,
-        negative_signal_families=(),
-        hard_reasons=(),
         repair=validated,
+        evidence=(delta,),
         config=config,
-    ).decision is QualityDecision.KEEP_FOR_REPAIR
+    ).effective_decision is QualityDecision.KEEP_FOR_REPAIR
+
+
+def test_repair_validation_requires_matching_delta_source_and_config_hashes():
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    delta = _evidence(
+        "repair_delta", expert_id="repair-scorer", config_hash=config.config_hash
+    )
+    recipe = RepairRecipe(
+        recipe_id="repair-1",
+        quality_gain=0.15,
+        confidence=0.80,
+        validation=RepairValidation(
+            source_input_hash="different-source-sha",
+            proxy_artifact_hash="proxy-sha",
+            recipe_hash=RepairRecipe(recipe_id="repair-1", quality_gain=0.15, confidence=0.80).recipe_hash,
+            config_hash=config.config_hash,
+            repair_delta_evidence_id=delta.identity_hash,
+            repair_delta_status=EvidenceStatus.AVAILABLE,
+        ),
+    )
+
+    assert _enforce(
+        proposed=QualityDecision.KEEP_FOR_REPAIR,
+        repair=recipe,
+        evidence=(delta,),
+        config=config,
+    ).effective_decision is QualityDecision.REVIEW
+
+
+def test_repair_recipe_does_not_accept_a_caller_supplied_validated_boolean():
+    with pytest.raises(TypeError, match="validated"):
+        RepairRecipe(recipe_id="repair-1", validated=True)
 
 
 def test_judge_refusal_is_abstain_without_negative_family():
-    result = enforce_decision(
+    result = _enforce(
         proposed=QualityDecision.ABSTAIN,
-        confidence=0.0,
-        negative_signal_families=("semantic_video_critic",),
-        hard_reasons=(),
-        repair=None,
+        evidence=(_evidence("semantic_video_critic"),),
         config=QualityMoeConfig.defaults(),
     )
 
-    assert result.decision is QualityDecision.ABSTAIN
+    assert result.recommended_decision is QualityDecision.ABSTAIN
+    assert result.effective_decision is QualityDecision.ABSTAIN
     assert result.negative_signal_families == ()

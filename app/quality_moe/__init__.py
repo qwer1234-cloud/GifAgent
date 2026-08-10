@@ -6,6 +6,7 @@ from app.quality_moe.models import (
     ExpertEvidence,
     QualityAssessment,
     QualityDecision,
+    RepairValidation,
     RepairRecipe,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "QualityAssessment",
     "QualityDecision",
     "QualityMoeConfig",
+    "RepairValidation",
     "RepairRecipe",
 ]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
+import json
 import math
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -96,6 +98,15 @@ class ExpertEvidence:
     def available_scores(self) -> dict[str, float]:
         return dict(self.scores) if self.status is EvidenceStatus.AVAILABLE else {}
 
+    @property
+    def identity_hash(self) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                self.to_dict(), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
     def to_dict(self) -> dict[str, object]:
         return {
             "candidate_id": self.candidate_id,
@@ -115,6 +126,38 @@ class ExpertEvidence:
 
 
 @dataclass(frozen=True)
+class RepairValidation:
+    source_input_hash: str
+    proxy_artifact_hash: str
+    recipe_hash: str
+    config_hash: str
+    repair_delta_evidence_id: str
+    repair_delta_status: EvidenceStatus
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "source_input_hash", "proxy_artifact_hash", "recipe_hash",
+            "config_hash", "repair_delta_evidence_id",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be a non-empty string")
+        object.__setattr__(
+            self, "repair_delta_status", EvidenceStatus(self.repair_delta_status)
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "source_input_hash": self.source_input_hash,
+            "proxy_artifact_hash": self.proxy_artifact_hash,
+            "recipe_hash": self.recipe_hash,
+            "config_hash": self.config_hash,
+            "repair_delta_evidence_id": self.repair_delta_evidence_id,
+            "repair_delta_status": self.repair_delta_status.value,
+        }
+
+
+@dataclass(frozen=True)
 class RepairRecipe:
     recipe_id: str
     exposure_ev: float = 0.0
@@ -129,7 +172,7 @@ class RepairRecipe:
     perspective_corner_movement: float = 0.0
     quality_gain: float = 0.0
     confidence: float = 0.0
-    validated: bool = False
+    validation: RepairValidation | None = None
 
     def __post_init__(self) -> None:
         try:
@@ -178,8 +221,23 @@ class RepairRecipe:
             raise ValueError("repair gain and confidence must be in [0, 1]")
         return self
 
-    def to_dict(self) -> dict[str, object]:
-        self.validate()
+    @property
+    def recipe_hash(self) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                self._recipe_payload(), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @property
+    def validated(self) -> bool:
+        return (
+            self.validation is not None
+            and self.validation.repair_delta_status is EvidenceStatus.AVAILABLE
+        )
+
+    def _recipe_payload(self) -> dict[str, object]:
         return {
             "recipe_id": self.recipe_id,
             "exposure_ev": self.exposure_ev,
@@ -194,13 +252,26 @@ class RepairRecipe:
             "perspective_corner_movement": self.perspective_corner_movement,
             "quality_gain": self.quality_gain,
             "confidence": self.confidence,
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        self.validate()
+        return {
+            **self._recipe_payload(),
+            "recipe_hash": self.recipe_hash,
+            "validation": self.validation.to_dict() if self.validation else None,
             "validated": self.validated,
         }
 
 
 @dataclass(frozen=True)
 class QualityAssessment:
-    decision: QualityDecision
+    candidate_id: str
+    evaluation_version: str
+    config_hash: str
+    policy_version: str
+    recommended_decision: QualityDecision
+    effective_decision: QualityDecision
     confidence: float
     negative_signal_families: tuple[str, ...] = ()
     hard_reasons: tuple[str, ...] = ()
@@ -209,7 +280,18 @@ class QualityAssessment:
     summary: str = ""
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "decision", QualityDecision(self.decision))
+        for field_name in (
+            "candidate_id", "evaluation_version", "config_hash", "policy_version",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be a non-empty string")
+        object.__setattr__(
+            self, "recommended_decision", QualityDecision(self.recommended_decision)
+        )
+        object.__setattr__(
+            self, "effective_decision", QualityDecision(self.effective_decision)
+        )
         object.__setattr__(self, "confidence", _score(self.confidence, field_name="confidence"))
         object.__setattr__(self, "negative_signal_families", tuple(dict.fromkeys(
             family for family in self.negative_signal_families if isinstance(family, str) and family
@@ -223,7 +305,12 @@ class QualityAssessment:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "decision": self.decision.value,
+            "candidate_id": self.candidate_id,
+            "evaluation_version": self.evaluation_version,
+            "config_hash": self.config_hash,
+            "policy_version": self.policy_version,
+            "recommended_decision": self.recommended_decision.value,
+            "effective_decision": self.effective_decision.value,
             "confidence": self.confidence,
             "negative_signal_families": list(self.negative_signal_families),
             "hard_reasons": list(self.hard_reasons),

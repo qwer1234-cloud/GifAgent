@@ -146,6 +146,12 @@ class QualityMoeConfig:
             photometric_mode=_string(repair_values["photometric_mode"], name="photometric_mode"),
             geometric_mode=_string(repair_values["geometric_mode"], name="geometric_mode"),
         )
+        if repairability.photometric_mode != "clip_global":
+            raise ValueError("photometric_mode must be clip_global")
+        if repairability.geometric_mode != "fixed_or_validated_smooth":
+            raise ValueError(
+                "geometric_mode must be fixed_or_validated_smooth"
+            )
         experts = _freeze_mapping(values["experts"], name="quality_moe.experts")
         judge = _freeze_primitive_mapping(
             values["judge"], name="quality_moe.judge"
