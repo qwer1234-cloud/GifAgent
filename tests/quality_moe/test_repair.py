@@ -4,6 +4,7 @@ import inspect
 from pathlib import Path
 import shutil
 import subprocess
+import threading
 
 import cv2
 import numpy as np
@@ -160,6 +161,84 @@ def test_contact_sheets_do_not_overwrite_source_named_like_legacy_default(tmp_pa
     names = {path.name for path in tmp_path.iterdir()}
     assert "original-contact-sheet.png" in names
     assert any(name.endswith("-original-contact-sheet.png") and name != source.name for name in names)
+
+
+def test_contact_sheet_atomic_create_allows_one_concurrent_winner_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    import app.quality_moe.repair as repair
+
+    target = tmp_path / "contended-contact-sheet.png"
+    monkeypatch.setattr(repair, "_contact_destination", lambda *_args, **_kwargs: target)
+    first = gradient_sample()
+    second = SampledClip(
+        candidate_id=first.candidate_id,
+        video_path=first.video_path,
+        start_ts=first.start_ts,
+        end_ts=first.end_ts,
+        timestamps=first.timestamps,
+        frames=tuple(np.full_like(frame, 255) for frame in first.frames),
+    )
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def write(sample: SampledClip) -> None:
+        try:
+            barrier.wait()
+            repair._save_contact_sheet(tmp_path, sample, kind="original", frames=sample.frames)
+        except BaseException as exc:  # Thread assertion is checked below.
+            errors.append(exc)
+
+    workers = [threading.Thread(target=write, args=(sample,)) for sample in (first, second)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert target.is_file()
+    assert len(errors) == 1
+    assert isinstance(errors[0], FileExistsError)
+    rendered = cv2.imread(str(target), cv2.IMREAD_COLOR)
+    assert rendered is not None
+    assert (
+        rendered.mean() == pytest.approx(first.frames[0].mean(), abs=1.0)
+        or rendered.mean() == pytest.approx(255.0, abs=1.0)
+    )
+
+
+def test_best_contact_name_includes_config_recipe_and_proxy_hashes(tmp_path: Path):
+    from app.quality_moe.repair import _contact_destination
+
+    sample = gradient_sample()
+    config = QualityMoeConfig.defaults()
+    recipe = RepairRecipe(recipe_id="best", exposure_ev=0.35)
+    proxy = gradient_sample(video_path="synthetic://proxy")
+    destination = _contact_destination(
+        tmp_path, sample, kind="best", config=config, recipe=recipe, proxy=proxy,
+    )
+
+    assert sample.input_hash[:12] in destination.name
+    assert config.config_hash[:12] in destination.name
+    assert recipe.recipe_hash[:12] in destination.name
+    assert proxy.input_hash[:12] in destination.name
+
+
+def test_ffmpeg_timeout_is_bounded_and_cannot_certify_recipe(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.quality_moe.repair as repair
+
+    called: dict[str, object] = {}
+
+    def timed_out(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        called.update(kwargs)
+        raise subprocess.TimeoutExpired("ffmpeg", 1.0)
+
+    monkeypatch.setattr(repair.subprocess, "run", timed_out)
+    with pytest.raises(repair.RepairProxyRenderError, match="timed out"):
+        repair.render_recipe_proxy(dark_sample(), RepairRecipe(recipe_id="timeout"), timeout_seconds=1.0)
+
+    assert called["timeout"] == 1.0
 
 
 def test_ffmpeg_filter_is_bounded_and_has_identical_palette_and_gif_prefix():
