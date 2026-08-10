@@ -61,7 +61,10 @@ def evaluate_candidate(
     enforcement.
     """
     candidate_id, video_path, start_ts, end_ts = _candidate_fields(candidate)
-    source_hash = _file_hash(video_path)
+    source_hash = _source_hash(video_path)
+    if source_hash is None:
+        unavailable_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": "unavailable", "start_ts": start_ts, "end_ts": end_ts})
+        return _abstained(candidate_id, video_path, "unavailable", start_ts, end_ts, unavailable_input, config, "source_unavailable", "Source media is missing, unreadable, or cannot be fully hashed.")
     fallback_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": source_hash, "start_ts": start_ts, "end_ts": end_ts})
     hard_reasons = hard_gate_reasons(candidate)
     if hard_reasons:
@@ -80,10 +83,10 @@ def evaluate_candidate(
     except Exception as error:  # A bad candidate is data, never a batch failure.
         return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, "sampling_exception", str(error), _latencies(sampler=_elapsed_ms(sampler_started, clock), total=_elapsed_ms(total_started, clock)))
     sampler_latency = _elapsed_ms(sampler_started, clock)
-    current_source_hash = _file_hash(video_path)
-    if current_source_hash != source_hash:
-        current_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": current_source_hash, "start_ts": start_ts, "end_ts": end_ts})
-        return _abstained(candidate_id, video_path, current_source_hash, start_ts, end_ts, current_input, config, "source_hash_changed", "Source media changed while sampling.", _latencies(sampler=sampler_latency, total=_elapsed_ms(total_started, clock)))
+    current_source_hash = _source_hash(video_path)
+    if current_source_hash is None or current_source_hash != source_hash:
+        current_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": current_source_hash or "unavailable", "start_ts": start_ts, "end_ts": end_ts})
+        return _abstained(candidate_id, video_path, current_source_hash or "unavailable", start_ts, end_ts, current_input, config, "source_hash_changed", "Source media changed while sampling.", _latencies(sampler=sampler_latency, total=_elapsed_ms(total_started, clock)))
     sampling_failure = _validate_sampled(sampled, candidate_id, video_path, start_ts, end_ts, source_hash, candidate)
     if sampling_failure is not None:
         return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, sampling_failure, "Sampler output did not prove the requested source interval.", _latencies(sampler=sampler_latency, total=_elapsed_ms(total_started, clock)))
@@ -241,6 +244,18 @@ def _validate_repair_context(result: RepairSearchResult | None, sampled: Sampled
     if result is None or result.best_recipe is None or result.best_proxy is None or result.repair_delta is None:
         return "repair_proxy_missing"
     recipe, proxy, delta, validation = result.best_recipe, result.best_proxy, result.repair_delta, result.best_recipe.validation
+    if proxy.status is not EvidenceStatus.AVAILABLE or not proxy.frames:
+        return "repair_proxy_unavailable"
+    if proxy.candidate_id != sampled.candidate_id or _normal_path(proxy.video_path) != _normal_path(sampled.video_path):
+        return "repair_proxy_context_mismatch"
+    if abs(proxy.start_ts - sampled.start_ts) > 1e-6 or abs(proxy.end_ts - sampled.end_ts) > 1e-6:
+        return "repair_proxy_context_mismatch"
+    if len(proxy.frames) != len(sampled.frames) or len(proxy.timestamps) != len(sampled.timestamps):
+        return "repair_proxy_shape_mismatch"
+    if any(abs(actual - expected) > 1e-6 for actual, expected in zip(proxy.timestamps, sampled.timestamps)):
+        return "repair_proxy_timestamp_mismatch"
+    if any(actual.shape != expected.shape for actual, expected in zip(proxy.frames, sampled.frames)):
+        return "repair_proxy_shape_mismatch"
     if validation is None or validation.candidate_id != sampled.candidate_id or validation.evaluation_version != config.evaluation_version or validation.config_hash != config.config_hash:
         return "repair_validation_context_mismatch"
     if validation.source_input_hash != sampled.input_hash or validation.proxy_artifact_hash != proxy.input_hash or validation.recipe_hash != recipe.recipe_hash:
@@ -310,7 +325,10 @@ def _judge_request(work_dir: str | Path, original: SampledClip, proxy: SampledCl
     directory = Path(work_dir) / "quality_moe" / original.input_hash
     original_path = _contact_sheet(directory, "original", original.frames)
     proxy_path = _contact_sheet(directory, "best-proxy", proxy.frames)
-    return JudgeRequest(original.candidate_id, original.input_hash, original_path, proxy_path, tuple(evidence), (recipe_id,))
+    # Prompt construction is a deterministic projection; persisted evidence
+    # retains measured latency separately for audit.
+    prompt_evidence = tuple(replace(item, latency_ms=0) for item in _sorted_evidence(evidence))
+    return JudgeRequest(original.candidate_id, original.input_hash, original_path, proxy_path, prompt_evidence, (recipe_id,))
 
 
 def _contact_sheet(directory: Path, name: str, frames: Sequence[np.ndarray]) -> Path:
@@ -377,15 +395,19 @@ def _expert_confidence(evidence: Sequence[ExpertEvidence]) -> float:
     return max(0.0, min(1.0, sum(values) / len(values))) if values else 0.0
 
 
-def _file_hash(path: str) -> str:
+def _source_hash(path: str) -> str | None:
     digest = hashlib.sha256()
     try:
-        with Path(path).open("rb") as source:
+        source_path = Path(path)
+        if not source_path.is_file():
+            return None
+        with source_path.open("rb") as source:
             for chunk in iter(lambda: source.read(1024 * 1024), b""):
                 digest.update(chunk)
     except OSError:
-        return "unavailable"
-    return digest.hexdigest()
+        return None
+    value = digest.hexdigest()
+    return value if len(value) == 64 and all(character in "0123456789abcdef" for character in value) else None
 
 
 def _hash_json(value: Mapping[str, object]) -> str:

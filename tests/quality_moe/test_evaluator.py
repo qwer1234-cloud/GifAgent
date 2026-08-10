@@ -224,6 +224,17 @@ def test_default_sampler_unavailable_cannot_keep_and_routes_to_manual_review(tmp
     assert assessment.provenance["failure"]["code"] == "sampling_unavailable"
 
 
+def test_missing_source_cannot_be_bypassed_by_injected_available_sample(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    candidate = {"candidate_id": "c1", "video_path": str(tmp_path / "missing.mp4"), "start_ts": 1.0, "end_ts": 2.0}
+    forged = _sample(video_path=str(candidate["video_path"]))
+    assessment = evaluate_candidate(candidate, config=_config(), work_dir=tmp_path, sampler=_CountingSampler(forged))
+
+    assert assessment.decision is QualityDecision.ABSTAIN
+    assert assessment.provenance["failure"]["code"] == "source_unavailable"
+
+
 def test_sampler_wrong_source_or_bounds_is_abstained_before_experts(tmp_path):
     from app.quality_moe.evaluator import evaluate_candidate
 
@@ -282,6 +293,28 @@ def test_stale_judge_context_is_invalid_and_its_rejection_is_not_adopted(tmp_pat
     assert any(item.status is EvidenceStatus.INVALID for item in assessment.evidence)
 
 
+def test_foreign_repair_proxy_cannot_reach_judge(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+
+    def foreign_proxy(source, repair_config, *, work_dir=None):
+        result = _repair(source, repair_config, work_dir=work_dir)
+        proxy = SampledClip("foreign", source.video_path, source.start_ts, source.end_ts, source.timestamps, result.best_proxy.frames)
+        return replace(result, best_proxy=proxy)
+
+    assessment = evaluate_candidate(
+        candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
+        experts=(_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal")),
+        repair_search=foreign_proxy, judge=_Judge(_judge_result(config, sample, QualityDecision.REJECT)),
+    )
+
+    assert assessment.decision is QualityDecision.REVIEW
+    assert any(item.status is EvidenceStatus.INVALID and item.signal_family == "repair_delta" for item in assessment.evidence)
+
+
 def test_stage_latencies_are_recorded_but_do_not_change_evaluation_hash(tmp_path):
     from app.quality_moe.evaluator import evaluate_candidate
 
@@ -314,3 +347,20 @@ def test_repair_and_judge_stage_latencies_are_nonzero(tmp_path):
     assert assessment.provenance["latency_ms"]["repair"] > 0
     assert assessment.provenance["latency_ms"]["judge"] > 0
     assert assessment.provenance["judge"]["model_hash"] == "model-hash"
+
+
+def test_judge_prompt_and_evaluation_hashes_ignore_dynamic_latencies(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+    experts = (_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal"))
+    first_ticks = iter(range(0, 500_000_000, 2_000_000))
+    first = evaluate_candidate(candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), experts=experts, repair_search=_repair, judge=_Judge(_judge_result(config, sample, QualityDecision.REJECT)), clock=lambda: next(first_ticks))
+    second_ticks = iter(range(900_000_000, 1_500_000_000, 7_000_000))
+    second = evaluate_candidate(candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), experts=experts, repair_search=_repair, judge=_Judge(_judge_result(config, sample, QualityDecision.REJECT)), clock=lambda: next(second_ticks))
+
+    assert first.provenance["judge"]["prompt_hash"] == second.provenance["judge"]["prompt_hash"]
+    assert first.provenance["evaluation_hash"] == second.provenance["evaluation_hash"]
+    assert first.provenance["latency_ms"] != second.provenance["latency_ms"]
