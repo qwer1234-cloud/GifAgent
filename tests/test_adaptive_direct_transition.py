@@ -206,3 +206,56 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
         "input": 1, "split": 1, "trim": 0, "drop": 0, "unverified": 0,
         "hard_cut": 1, "soft_transition": 0, "motion": 1,
     }
+
+
+def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
+    tmp_path, monkeypatch,
+):
+    quality_cfg = test_video_adaptive.extract_config({
+        "quality_moe": {"report_only": True},
+    })
+
+    def fake_quality(candidates, **_kwargs):
+        routed = []
+        for index, candidate in enumerate(candidates):
+            candidate_id = f"direct-repair-{index}"
+            routed.append({
+                **candidate,
+                "candidate_id": candidate_id,
+                "clip_id": candidate_id,
+                "quality_assessment": {
+                    "candidate_id": candidate_id,
+                    "effective_decision": "KEEP_FOR_REPAIR",
+                    "selected_recipe_id": "repair-1",
+                    "repair": {"recipe_id": "repair-1"},
+                    "evidence_hashes": [],
+                },
+            })
+        return routed, {"assessments": []}
+
+    monkeypatch.setattr(
+        test_video_adaptive, "_evaluate_quality_pipeline_candidates", fake_quality
+    )
+    monkeypatch.setattr(
+        test_video_adaptive, "_validated_repair_recipe", lambda *_a, **_k: object()
+    )
+
+    result = _run_direct_pipeline_fixture(
+        tmp_path,
+        monkeypatch,
+        max_output=1,
+        cfg_overrides={
+            "quality_moe": quality_cfg["quality_moe"],
+            "quality_moe_config_hash": quality_cfg["quality_moe_config_hash"],
+        },
+    )
+
+    command = result["_fixture_export_attempts"][0]
+    palette_filter = command["palette_command"][
+        command["palette_command"].index("-vf") + 1
+    ]
+    gif_filter = command["gif_command"][
+        command["gif_command"].index("-filter_complex") + 1
+    ]
+    assert "eq=" not in palette_filter
+    assert "eq=" not in gif_filter

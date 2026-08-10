@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from types import SimpleNamespace
 
 from app.quality_moe.evaluator import QualityBatchResult
@@ -25,6 +26,7 @@ def _assessment(candidate_id: str, config_hash: str, decision: QualityDecision):
         recommended_decision=decision,
         effective_decision=decision,
         confidence=0.91,
+        input_hash=hashlib.sha256(candidate_id.encode("utf-8")).hexdigest(),
     )
 
 
@@ -52,6 +54,12 @@ def test_zero_clip_staged_rank_manifest_records_quality_summary(tmp_path, monkey
         "report_only": True,
         "evaluation_version": "quality-moe-v1",
         "config_hash": cfg["quality_moe_config_hash"],
+        "policy_snapshot": {
+            "report_only": True,
+            "min_judge_confidence": 0.8,
+            "min_independent_negative_families": 2,
+            "policy_version": "quality-moe-policy-v1",
+        },
         "input_count": 0,
         "assessed_count": 0,
         "effective_count": 0,
@@ -163,7 +171,7 @@ def test_report_only_preserves_hard_rejected_candidate_for_existing_export(
     assert summary["effective_count"] == 1
 
 
-def test_stage_gif_uses_one_shared_repair_filter_for_palette_and_encoding(
+def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
     tmp_path, monkeypatch,
 ):
     source = tmp_path / "source.mp4"
@@ -211,7 +219,8 @@ def test_stage_gif_uses_one_shared_repair_filter_for_palette_and_encoding(
 
     def fake_filter(recipe, *, fps, max_width):
         filter_calls.append((recipe, fps, max_width))
-        return "fps=12,eq=brightness=0.1,scale=320:-1:flags=lanczos"
+        repair = ",eq=brightness=0.1" if recipe is not None else ""
+        return f"fps=12{repair},scale=320:-1:flags=lanczos"
 
     monkeypatch.setattr(adaptive, "build_ffmpeg_filter", fake_filter)
     commands = {}
@@ -223,7 +232,10 @@ def test_stage_gif_uses_one_shared_repair_filter_for_palette_and_encoding(
         return SimpleNamespace(success=True, size_bytes=9, error=None)
 
     monkeypatch.setattr(adaptive, "run_gif_export_attempt", fake_export)
-    cfg = adaptive.extract_config({"adaptive": {"gif_fps": 12, "gif_max_width": 320}})
+    cfg = adaptive.extract_config({
+        "adaptive": {"gif_fps": 12, "gif_max_width": 320},
+        "quality_moe": {"report_only": True},
+    })
     export_dir = tmp_path / "exports"
     frames_dir = tmp_path / "frames"
     export_dir.mkdir()
@@ -235,11 +247,12 @@ def test_stage_gif_uses_one_shared_repair_filter_for_palette_and_encoding(
     )
 
     assert len(filter_calls) == 1
+    assert filter_calls[0][0] is None
     assert commands["palette"][commands["palette"].index("-vf") + 1] == (
-        "fps=12,eq=brightness=0.1,scale=320:-1:flags=lanczos,palettegen"
+        "fps=12,scale=320:-1:flags=lanczos,palettegen"
     )
     assert commands["gif"][commands["gif"].index("-lavfi") + 1] == (
-        "fps=12,eq=brightness=0.1,scale=320:-1:flags=lanczos[x];[x][1:v]paletteuse"
+        "fps=12,scale=320:-1:flags=lanczos[x];[x][1:v]paletteuse"
     )
     assert source.read_bytes() == b"source-remains-unchanged"
     manifest = json.loads(
@@ -248,8 +261,9 @@ def test_stage_gif_uses_one_shared_repair_filter_for_palette_and_encoding(
     assert manifest["quality_decision"] == "KEEP_FOR_REPAIR"
     assert manifest["current_quality"] == 0.55
     assert manifest["recoverable_quality"] == 0.78
-    assert manifest["selected_recipe_id"] == "repair-1"
-    assert manifest["selected_recipe"] == assessment["repair"]
+    assert manifest["repair_applied"] is False
+    assert manifest["selected_recipe_id"] is None
+    assert manifest["selected_recipe"] is None
     assert manifest["evidence_hashes"] == ["2" * 64]
     assert manifest["config_hash"] == cfg["quality_moe_config_hash"]
     assert manifest["parent_source"] == {

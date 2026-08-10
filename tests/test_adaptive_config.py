@@ -264,3 +264,60 @@ def test_models_yaml_enables_report_only_quality_moe_by_default():
     assert cfg["quality_moe"]["enabled"] is True
     assert cfg["quality_moe"]["report_only"] is True
     assert cfg["quality_moe"]["repairability"]["photometric_mode"] == "clip_global"
+    assert config_data["quality_moe"]["judge"]["base_url"] == "inherit_vlm"
+
+
+def test_quality_runtime_snapshot_resolves_inherit_vlm_once():
+    from scripts import test_video_adaptive as adaptive
+
+    source = {
+        "vlm": {
+            "provider": "ollama",
+            "model": "llava:13b",
+            "base_url": "http://frozen-vlm.example:11434/",
+        },
+        "quality_moe": {
+            "judge": {"model_id": "llava:13b", "base_url": "inherit_vlm"},
+        },
+    }
+
+    frozen = adaptive._resolve_quality_runtime_snapshot(source)
+    source["vlm"]["base_url"] = "http://drifted.example:11434"
+    source["quality_moe"]["judge"]["base_url"] = "http://drifted.example:11434"
+
+    assert frozen["vlm"]["base_url"] == "http://frozen-vlm.example:11434"
+    assert frozen["quality_moe"]["judge"]["base_url"] == (
+        "http://frozen-vlm.example:11434"
+    )
+    cfg = adaptive.extract_config(frozen)
+    assert cfg["quality_moe"]["judge"]["base_url"].startswith("http://")
+    assert "inherit_vlm" not in cfg["quality_moe"]["judge"]["base_url"]
+
+
+def test_quality_runtime_snapshot_resolves_auto_before_judge_http_boundary():
+    from scripts import test_video_adaptive as adaptive
+
+    seen = []
+
+    def resolve_auto(runtime, _snapshot):
+        seen.append(runtime.base_url)
+        return "http://resolved-once.example:11434"
+
+    frozen = adaptive._resolve_quality_runtime_snapshot(
+        {
+            "vlm": {
+                "provider": "ollama",
+                "model": "llava:13b",
+                "base_url": "auto",
+            },
+            "quality_moe": {
+                "judge": {"model_id": "llava:13b", "base_url": "auto"},
+            },
+        },
+        auto_resolver=resolve_auto,
+    )
+
+    assert seen == ["auto"]
+    assert frozen["quality_moe"]["judge"]["base_url"] == (
+        "http://resolved-once.example:11434"
+    )

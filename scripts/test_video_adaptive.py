@@ -421,6 +421,64 @@ def _resolve_vlm_runtime(config_data: dict | None) -> VlmRuntimeConfig:
     )
 
 
+def _resolve_quality_runtime_snapshot(
+    config_data: dict,
+    *,
+    auto_resolver=None,
+) -> dict:
+    """Resolve sentinel Ollama URLs once and return a detached job snapshot."""
+    snapshot = json.loads(json.dumps(config_data))
+    quality = snapshot.get("quality_moe")
+    if not isinstance(quality, dict):
+        return snapshot
+    judge = quality.get("judge")
+    if not isinstance(judge, dict):
+        return snapshot
+    configured = str(judge.get("base_url", "") or "").strip()
+    if configured.lower() not in {"inherit_vlm", "auto"}:
+        if configured:
+            from app.services.ollama_runtime import normalize_base_url
+            judge["base_url"] = normalize_base_url(configured)
+        return snapshot
+
+    vlm_runtime = _resolve_vlm_runtime(snapshot)
+    vlm_base = str(vlm_runtime.base_url).strip()
+
+    def default_auto_resolver(runtime, frozen_snapshot):
+        from app.services.ollama_runtime import (
+            EmbeddingRuntimeConfig,
+            OllamaRuntimeManager,
+        )
+
+        vlm = frozen_snapshot.get("vlm") or {}
+        runtime_config = EmbeddingRuntimeConfig(
+            base_url="auto",
+            manage_lifecycle=runtime.manage_lifecycle,
+            launch_mode=runtime.launch_mode,
+            wsl_distro=str(vlm.get("wsl_distro", "Ubuntu-20.04")),
+            startup_timeout_s=float(vlm.get("startup_timeout_s", 120.0)),
+            request_timeout_s=float(vlm.get("timeout_seconds", 120.0)),
+            embedding_model=runtime.model,
+        )
+        return OllamaRuntimeManager().resolve_base_url(runtime_config)
+
+    resolver = auto_resolver or default_auto_resolver
+    if configured.lower() == "auto" or vlm_base.lower() == "auto":
+        resolved_base = resolver(vlm_runtime, snapshot)
+    else:
+        resolved_base = vlm_base
+
+    from app.services.ollama_runtime import normalize_base_url
+    resolved_base = normalize_base_url(str(resolved_base))
+    if not resolved_base.startswith(("http://", "https://")):
+        raise ValueError("resolved quality judge base_url must be absolute")
+    judge["base_url"] = resolved_base
+    vlm = snapshot.get("vlm")
+    if isinstance(vlm, dict):
+        vlm["base_url"] = resolved_base
+    return snapshot
+
+
 def _ollama_command(runtime: VlmRuntimeConfig, *args: str) -> list[str]:
     """Build the platform command for a VLM lifecycle action."""
     if runtime.launch_mode == "native":
@@ -660,6 +718,14 @@ def _quality_moe_summary(
         "report_only": bool(quality["report_only"]),
         "evaluation_version": str(quality["evaluation_version"]),
         "config_hash": quality_config.config_hash,
+        "policy_snapshot": {
+            "report_only": bool(quality["report_only"]),
+            "min_judge_confidence": quality_config.soft_reject.min_judge_confidence,
+            "min_independent_negative_families": (
+                quality_config.soft_reject.min_independent_negative_families
+            ),
+            "policy_version": "quality-moe-policy-v1",
+        },
         "input_count": input_count,
         "assessed_count": len(assessments),
         "effective_count": effective_count,
@@ -884,10 +950,27 @@ def _validated_repair_recipe(
     return recipe
 
 
+def _export_repair_recipe(
+    assessment: object,
+    *,
+    candidate_id: str,
+    quality_config: QualityMoeConfig,
+) -> RepairRecipe | None:
+    """Resolve the applied recipe under the frozen report/active policy."""
+    if quality_config.report_only:
+        return None
+    return _validated_repair_recipe(
+        assessment,
+        candidate_id=candidate_id,
+        config_hash=quality_config.config_hash,
+    )
+
+
 _QUALITY_LINEAGE_FIELDS = (
     "quality_decision",
     "current_quality",
     "recoverable_quality",
+    "repair_applied",
     "selected_recipe_id",
     "selected_recipe",
     "evidence_hashes",
@@ -928,6 +1011,7 @@ def _quality_export_lineage(
         "quality_decision": assessment.get("effective_decision"),
         "current_quality": assessment.get("current_quality"),
         "recoverable_quality": assessment.get("recoverable_quality"),
+        "repair_applied": repair_applied,
         "selected_recipe_id": selected_recipe_id,
         "selected_recipe": selected_recipe,
         "evidence_hashes": list(assessment.get("evidence_hashes", [])),
@@ -1850,10 +1934,10 @@ def run_pipeline(
 
         fps = GIF_FPS
         assessment = clip.get("quality_assessment")
-        repair_recipe = _validated_repair_recipe(
+        repair_recipe = _export_repair_recipe(
             assessment,
             candidate_id=str(clip.get("candidate_id", clip.get("clip_id", ""))),
-            config_hash=str(cfg["quality_moe_config_hash"]),
+            quality_config=_quality_config_from_pipeline_cfg(cfg),
         )
         ffmpeg_filter = build_ffmpeg_filter(
             repair_recipe, fps=fps, max_width=GIF_MAX_WIDTH
@@ -2103,7 +2187,7 @@ def run_pipeline(
 
 def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
     """Run the full adaptive pipeline with lock, cleanup, and result persistence."""
-    config_data = load_config()
+    config_data = _resolve_quality_runtime_snapshot(load_config())
     init_db()
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -2245,6 +2329,7 @@ def run_stage_mode(
     # Handles both historical config_snapshot wrapper and new flat format.
     from app.quality_lab.config_builder import normalize_task_config
     config_data = normalize_task_config(config_data)
+    config_data = _resolve_quality_runtime_snapshot(config_data)
 
     # Override the global config module so that ``get()`` calls inside
     # helpers (via imported modules) see the correct values.
@@ -3721,10 +3806,10 @@ def _stage_gif_clip(
     ffmpeg_start = _ffmpeg_seconds(start_ts)
     ffmpeg_duration = _ffmpeg_seconds(end_ts - start_ts)
     assessment = target_clip.get("quality_assessment")
-    repair_recipe = _validated_repair_recipe(
+    repair_recipe = _export_repair_recipe(
         assessment,
         candidate_id=str(clip_id or ""),
-        config_hash=quality_config.config_hash,
+        quality_config=quality_config,
     )
     ffmpeg_filter = build_ffmpeg_filter(
         repair_recipe, fps=GIF_FPS, max_width=GIF_MAX_WIDTH
@@ -3892,17 +3977,23 @@ def _stage_materialize(
         terminal_statuses = config_data.get("_gif_clip_terminal_statuses", [])
 
     # Build a lookup of clip_id -> gif_clip manifest data.
+    from app.task_engine.artifacts import validate_manifest_json
+
     clip_meta: dict[str, dict] = {}
     for entry in gif_manifest_entries:
         path = entry.get("path", "")
         if path and os.path.exists(path):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    gm = json.load(f)
+                with open(path, "rb") as f:
+                    gm = validate_manifest_json(
+                        f.read(),
+                        "gif_clip_manifest",
+                        expected_stage="gif_clip",
+                    )
                 cid = gm.get("clip_id", entry.get("clip_id", ""))
                 if cid:
                     clip_meta[cid] = gm
-            except (json.JSONDecodeError, OSError):
+            except OSError:
                 pass
 
     # Validate each gif_file entry.

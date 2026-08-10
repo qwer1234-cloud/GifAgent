@@ -902,6 +902,13 @@ _QUALITY_EVIDENCE_STATUSES = frozenset(
 _QUALITY_EVIDENCE_POLARITIES = frozenset(
     {"POSITIVE", "NEGATIVE", "NEUTRAL"}
 )
+_QUALITY_HARD_REASONS = frozenset({
+    "transition_drop",
+    "transition_unverified",
+    "action_completeness_invalid",
+    "action_incomplete",
+    "media_undecodable",
+})
 
 
 def _require_v2_field(
@@ -1030,7 +1037,7 @@ def _quality_hash(value: object, field: str, *, context: str) -> str:
     return value
 
 
-def _validate_quality_repair(value: object, *, assessment: dict, context: str) -> None:
+def _validate_quality_repair(value: object, *, assessment: dict, context: str):
     from app.quality_moe.models import RepairRecipe, RepairValidation
 
     if not isinstance(value, dict):
@@ -1104,6 +1111,7 @@ def _validate_quality_repair(value: object, *, assessment: dict, context: str) -
         or not matching_delta
     ):
         raise ValueError(f"{context} repair validation does not match assessment context")
+    return recipe
 
 
 def _validate_quality_assessment(value: object, *, context: str) -> None:
@@ -1130,6 +1138,11 @@ def _validate_quality_assessment(value: object, *, context: str) -> None:
         _quality_hash(value["input_hash"], "input_hash", context=context)
     if "decision" in value and value["decision"] != value["recommended_decision"]:
         raise ValueError(f"{context} decision must match recommended_decision")
+    hard_reasons = value.get("hard_reasons", [])
+    if not isinstance(hard_reasons, list) or any(
+        reason not in _QUALITY_HARD_REASONS for reason in hard_reasons
+    ):
+        raise ValueError(f"{context} hard_reasons contains an unknown hard gate")
     evidence = value.get("evidence", [])
     if not isinstance(evidence, list):
         raise ValueError(f"{context} evidence must be an array")
@@ -1200,6 +1213,7 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
         raise ValueError(f"{context} must be an object")
     for field in (
         "enabled", "report_only", "evaluation_version", "config_hash",
+        "policy_snapshot",
         "input_count", "assessed_count", "effective_count",
         "human_review_count", "decision_counts", "top_assessments", "assessments",
     ):
@@ -1212,6 +1226,34 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise ValueError(f"{context} {field} must be a non-negative integer")
     _quality_hash(value["config_hash"], "config_hash", context=context)
+    policy_snapshot = value["policy_snapshot"]
+    if not isinstance(policy_snapshot, dict):
+        raise ValueError(f"{context} policy_snapshot must be an object")
+    for field in (
+        "report_only", "min_judge_confidence",
+        "min_independent_negative_families", "policy_version",
+    ):
+        _require_v2_field(policy_snapshot, field, context=f"{context} policy_snapshot")
+    if policy_snapshot["report_only"] is not value["report_only"]:
+        raise ValueError(f"{context} policy_snapshot report_only does not match summary")
+    min_confidence = _finite_number(
+        policy_snapshot["min_judge_confidence"],
+        "min_judge_confidence",
+        context=f"{context} policy_snapshot",
+    )
+    if not 0.8 <= float(min_confidence) <= 1.0:
+        raise ValueError(f"{context} policy_snapshot min_judge_confidence must be in [0.8, 1]")
+    min_families = policy_snapshot["min_independent_negative_families"]
+    if (
+        isinstance(min_families, bool)
+        or not isinstance(min_families, int)
+        or not 2 <= min_families <= 5
+    ):
+        raise ValueError(
+            f"{context} policy_snapshot min_independent_negative_families must be in [2, 5]"
+        )
+    if not isinstance(policy_snapshot["policy_version"], str) or not policy_snapshot["policy_version"]:
+        raise ValueError(f"{context} policy_snapshot policy_version must be non-empty")
     assessments = value["assessments"]
     if not isinstance(assessments, list):
         raise ValueError(f"{context} assessments must be an array")
@@ -1233,6 +1275,91 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
             raise ValueError(f"{context} assessment config_hash does not match summary")
         if assessment["evaluation_version"] != value["evaluation_version"]:
             raise ValueError(f"{context} assessment evaluation_version does not match summary")
+        if assessment["policy_version"] != policy_snapshot["policy_version"]:
+            raise ValueError(f"{context} assessment policy_version does not match snapshot")
+    if value["enabled"]:
+        from app.quality_moe.config import (
+            QualityMoeConfig,
+            SoftRejectConfig,
+        )
+        from app.quality_moe.models import (
+            EvidencePolarity,
+            EvidenceStatus,
+            ExpertEvidence,
+            QualityDecision,
+        )
+        from app.quality_moe.policy import enforce_decision, hard_gate_reasons
+
+        defaults = QualityMoeConfig.defaults()
+        frozen_policy_config = QualityMoeConfig(
+            enabled=True,
+            report_only=value["report_only"],
+            evaluation_version=value["evaluation_version"],
+            soft_reject=SoftRejectConfig(
+                min_judge_confidence=float(min_confidence),
+                min_independent_negative_families=min_families,
+            ),
+            repairability=defaults.repairability,
+            experts=defaults.experts,
+            judge=defaults.judge,
+            config_hash=value["config_hash"],
+        )
+        clips_by_id = {clip["clip_id"]: clip for clip in clips}
+        for index, assessment in enumerate(assessments):
+            evidence = tuple(
+                ExpertEvidence(
+                    candidate_id=item["candidate_id"],
+                    evaluation_version=item["evaluation_version"],
+                    expert_id=item.get("expert_id", ""),
+                    expert_version=item.get("expert_version", ""),
+                    signal_family=item.get("signal_family", ""),
+                    status=EvidenceStatus(item["status"]),
+                    scores=item.get("scores", {}),
+                    findings=tuple(item.get("findings", [])),
+                    summary=item.get("summary", ""),
+                    input_hash=item["input_hash"],
+                    config_hash=item["config_hash"],
+                    parent_input_hash=item.get("parent_input_hash"),
+                    polarity=EvidencePolarity(item["polarity"]),
+                    prompt_hash=item.get("prompt_hash"),
+                    latency_ms=item.get("latency_ms", 0),
+                )
+                for item in assessment.get("evidence", [])
+            )
+            repair = None
+            if assessment["recommended_decision"] == "KEEP_FOR_REPAIR":
+                repair = _validate_quality_repair(
+                    assessment.get("repair"),
+                    assessment=assessment,
+                    context=f"{context} assessments[{index}]",
+                )
+            clip = clips_by_id.get(assessment["candidate_id"])
+            serialized_hard_reasons = tuple(assessment.get("hard_reasons", []))
+            hard_reasons = (
+                hard_gate_reasons(clip) if clip is not None else serialized_hard_reasons
+            )
+            recomputed = enforce_decision(
+                candidate_id=assessment["candidate_id"],
+                input_hash=assessment.get("input_hash", ""),
+                proposed=QualityDecision(assessment["recommended_decision"]),
+                confidence=assessment["confidence"],
+                evidence=evidence,
+                hard_reasons=hard_reasons,
+                repair=repair,
+                config=frozen_policy_config,
+                policy_version=policy_snapshot["policy_version"],
+            )
+            if (
+                assessment["recommended_decision"]
+                != recomputed.recommended_decision.value
+                or assessment["effective_decision"]
+                != recomputed.effective_decision.value
+                or tuple(assessment.get("negative_signal_families", []))
+                != recomputed.negative_signal_families
+            ):
+                raise ValueError(
+                    f"{context} assessments[{index}] failed policy recomputation"
+                )
     actual_counts: dict[str, int] = {}
     for assessment in assessments:
         decision = assessment["effective_decision"]
@@ -1327,7 +1454,7 @@ def _validate_gif_quality_lineage(value: dict) -> None:
     _validate_quality_assessment(assessment, context=f"{context} assessment")
     for field in (
         "quality_decision", "current_quality", "recoverable_quality",
-        "selected_recipe_id", "selected_recipe", "evidence_hashes",
+        "repair_applied", "selected_recipe_id", "selected_recipe", "evidence_hashes",
         "config_hash", "parent_source",
     ):
         _require_v2_field(value, field, context=context)
@@ -1352,10 +1479,17 @@ def _validate_gif_quality_lineage(value: dict) -> None:
         _quality_hash(evidence_hash, "evidence_hashes", context=context)
     if evidence_hashes != assessment.get("evidence_hashes", []):
         raise ValueError(f"{context} evidence_hashes do not match assessment")
-    if value["selected_recipe_id"] != assessment.get("selected_recipe_id"):
-        raise ValueError(f"{context} selected_recipe_id does not match assessment")
-    if value["selected_recipe"] != assessment.get("repair"):
-        raise ValueError(f"{context} selected_recipe does not match assessment")
+    if not isinstance(value["repair_applied"], bool):
+        raise ValueError(f"{context} repair_applied must be a boolean")
+    if value["repair_applied"]:
+        if assessment["effective_decision"] != "KEEP_FOR_REPAIR":
+            raise ValueError(f"{context} applied repair requires KEEP_FOR_REPAIR")
+        if value["selected_recipe_id"] != assessment.get("selected_recipe_id"):
+            raise ValueError(f"{context} selected_recipe_id does not match assessment")
+        if value["selected_recipe"] != assessment.get("repair"):
+            raise ValueError(f"{context} selected_recipe does not match assessment")
+    elif value["selected_recipe_id"] is not None or value["selected_recipe"] is not None:
+        raise ValueError(f"{context} unapplied repair must not select a recipe")
     parent = value["parent_source"]
     if not isinstance(parent, dict):
         raise ValueError(f"{context} parent_source must be an object")

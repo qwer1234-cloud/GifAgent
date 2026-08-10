@@ -103,7 +103,7 @@ quality_moe:
     model_id: llava:13b
     temperature: 0
     timeout_seconds: 120
-    base_url: http://172.27.227.98:11434
+    base_url: inherit_vlm
     schema_version: quality-judge-v1
   repairability:
     enabled: true

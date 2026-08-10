@@ -309,13 +309,36 @@ class TestMaterializeArtifactContract:
         gif.write_bytes(b"GIF89a")
         import hashlib
         gif_sha = hashlib.sha256(gif.read_bytes()).hexdigest()
-        quality_lineage = {
-            "quality_decision": "KEEP_FOR_REPAIR",
+        quality_assessment = {
+            "candidate_id": "clip-1",
+            "evaluation_version": "quality-moe-v1",
+            "config_hash": "1" * 64,
+            "policy_version": "quality-moe-policy-v1",
+            "recommended_decision": "KEEP_AS_IS",
+            "effective_decision": "KEEP_AS_IS",
+            "decision": "KEEP_AS_IS",
+            "confidence": 0.9,
+            "negative_signal_families": [],
+            "hard_reasons": [],
+            "repair": None,
+            "reason_codes": [],
+            "summary": "clean",
+            "input_hash": "4" * 64,
+            "evidence": [],
+            "provenance": {"source_file_sha256": "5" * 64},
+            "evidence_hashes": [],
+            "selected_recipe_id": None,
             "current_quality": 0.55,
             "recoverable_quality": 0.78,
-            "selected_recipe_id": "repair-1",
-            "selected_recipe": {"recipe_id": "repair-1", "recipe_hash": "3" * 64},
-            "evidence_hashes": ["2" * 64],
+        }
+        quality_lineage = {
+            "quality_decision": "KEEP_AS_IS",
+            "current_quality": 0.55,
+            "recoverable_quality": 0.78,
+            "repair_applied": False,
+            "selected_recipe_id": None,
+            "selected_recipe": None,
+            "evidence_hashes": [],
             "config_hash": "1" * 64,
             "parent_source": {
                 "candidate_id": "clip-1",
@@ -334,8 +357,17 @@ class TestMaterializeArtifactContract:
             "gif_path": str(gif),
             "gif_name": "clip.gif",
             "sha256": gif_sha,
+            "duration_s": 4.0,
+            "size_bytes": gif.stat().st_size,
+            "status": "succeeded",
             "start_ts": 1.0,
             "end_ts": 5.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+            "quality_assessment": quality_assessment,
             **quality_lineage,
         }), encoding="utf-8")
         work_dir = tmp_path / "materialize-work"
@@ -374,6 +406,61 @@ class TestMaterializeArtifactContract:
             "gif_name": "clip.gif",
             **quality_lineage,
         }
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [
+            {"schema_version": 2, "stage": "gif_clip", "clip_id": "clip-1"},
+            {
+                "schema_version": 2,
+                "stage": "rank_dedup",
+                "clip_id": "clip-1",
+                "gif_path": "clip.gif",
+                "sha256": "a" * 64,
+                "duration_s": 4.0,
+                "size_bytes": 6,
+                "status": "succeeded",
+                "start_ts": 1.0,
+                "end_ts": 5.0,
+            },
+        ],
+    )
+    def test_materialize_rejects_tampered_gif_manifest_before_consuming(
+        self, tmp_path: Path, manifest: dict,
+    ):
+        from scripts.test_video_adaptive import _stage_materialize, extract_config
+
+        video = tmp_path / "source.mp4"
+        video.write_bytes(b"video")
+        gif = tmp_path / "clip.gif"
+        gif.write_bytes(b"GIF89a")
+        import hashlib
+        gif_sha = hashlib.sha256(gif.read_bytes()).hexdigest()
+        gif_manifest = tmp_path / "gif_clip_manifest.json"
+        gif_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+        work_dir = tmp_path / "materialize-work"
+        work_dir.mkdir()
+
+        with pytest.raises(ValueError):
+            _stage_materialize(
+                str(video), str(tmp_path / "unused"), str(work_dir),
+                extract_config({"adaptive": {"potplayer_pbf_enabled": False}}),
+                inputs={
+                    "schema_version": 1,
+                    "stage": "materialize",
+                    "artifacts": {
+                        "gif_file": [{
+                            "path": str(gif), "clip_id": "clip-1",
+                            "sha256": gif_sha, "size_bytes": gif.stat().st_size,
+                        }],
+                        "gif_clip_manifest": [{
+                            "path": str(gif_manifest), "clip_id": "clip-1",
+                        }],
+                    },
+                    "stage_statuses": [],
+                },
+                config_data={"export_base_dir": str(tmp_path / "formal")},
+            )
 
 
 class TestAdapterRejectsUnknownKind:

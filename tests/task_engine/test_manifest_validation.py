@@ -102,6 +102,12 @@ def _valid_quality_rank_manifest() -> dict:
             "report_only": True,
             "evaluation_version": "quality-moe-v1",
             "config_hash": "b" * 64,
+            "policy_snapshot": {
+                "report_only": True,
+                "min_judge_confidence": 0.8,
+                "min_independent_negative_families": 2,
+                "policy_version": "quality-moe-policy-v1",
+            },
             "input_count": 1,
             "assessed_count": 1,
             "effective_count": 1,
@@ -698,6 +704,12 @@ class TestManifestValidation:
                 "report_only": True,
                 "evaluation_version": "quality-moe-v1",
                 "config_hash": "b" * 64,
+                "policy_snapshot": {
+                    "report_only": True,
+                    "min_judge_confidence": 0.8,
+                    "min_independent_negative_families": 2,
+                    "policy_version": "quality-moe-policy-v1",
+                },
                 "input_count": 1,
                 "assessed_count": 1,
                 "effective_count": 1,
@@ -745,6 +757,12 @@ class TestManifestValidation:
                 "report_only": True,
                 "evaluation_version": "quality-moe-v1",
                 "config_hash": "b" * 64,
+                "policy_snapshot": {
+                    "report_only": True,
+                    "min_judge_confidence": 0.8,
+                    "min_independent_negative_families": 2,
+                    "policy_version": "quality-moe-policy-v1",
+                },
                 "input_count": 0,
                 "assessed_count": 0,
                 "effective_count": 0,
@@ -826,6 +844,67 @@ class TestManifestValidation:
         })
 
         with pytest.raises(ValueError, match="report_only"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_active_rank_manifest_rejects_forged_soft_reject_without_evidence(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        assessment.update({
+            "recommended_decision": "REJECT",
+            "effective_decision": "REJECT",
+            "decision": "REJECT",
+            "confidence": 0.95,
+            "evidence": [],
+            "evidence_hashes": [],
+            "current_quality": None,
+            "recoverable_quality": None,
+        })
+        manifest["quality_moe"]["report_only"] = False
+        manifest["quality_moe"]["policy_snapshot"]["report_only"] = False
+        manifest["quality_moe"]["effective_count"] = 0
+        manifest["quality_moe"]["decision_counts"] = {"REJECT": 1}
+        manifest["quality_moe"]["top_assessments"] = [{
+            "candidate_id": "clip-1",
+            "effective_decision": "REJECT",
+            "confidence": 0.95,
+        }]
+        manifest["clips"] = []
+        manifest["clip_count"] = 0
+
+        with pytest.raises(ValueError, match="policy recomputation"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_active_rank_manifest_rejects_invented_hard_gate_reason(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        assessment.update({
+            "recommended_decision": "REJECT",
+            "effective_decision": "REJECT",
+            "decision": "REJECT",
+            "confidence": 1.0,
+            "hard_reasons": ["invented_gate"],
+        })
+        manifest["quality_moe"]["report_only"] = False
+        manifest["quality_moe"]["policy_snapshot"]["report_only"] = False
+        manifest["quality_moe"]["effective_count"] = 0
+        manifest["quality_moe"]["decision_counts"] = {"REJECT": 1}
+        manifest["quality_moe"]["top_assessments"] = [{
+            "candidate_id": "clip-1",
+            "effective_decision": "REJECT",
+            "confidence": 1.0,
+        }]
+        manifest["clips"] = []
+        manifest["clip_count"] = 0
+
+        with pytest.raises(ValueError, match="hard_reasons"):
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
             )
@@ -920,6 +999,7 @@ class TestManifestValidation:
             "quality_decision": "KEEP_AS_IS",
             "current_quality": 0.81,
             "recoverable_quality": 0.81,
+            "repair_applied": False,
             "selected_recipe_id": None,
             "selected_recipe": None,
             "evidence_hashes": ["e" * 64],
@@ -939,6 +1019,53 @@ class TestManifestValidation:
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"), "gif_clip_manifest"
             )
+
+    def test_gif_manifest_preserves_repair_recommendation_without_applying_pixels(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        assessment = _valid_quality_repair_rank_manifest()["quality_moe"][
+            "assessments"
+        ][0]
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "sha256": "a" * 64,
+            "duration_s": 6.0,
+            "size_bytes": 123,
+            "status": "succeeded",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+            "quality_assessment": assessment,
+            "quality_decision": "KEEP_FOR_REPAIR",
+            "current_quality": assessment["current_quality"],
+            "recoverable_quality": assessment["recoverable_quality"],
+            "repair_applied": False,
+            "selected_recipe_id": None,
+            "selected_recipe": None,
+            "evidence_hashes": assessment["evidence_hashes"],
+            "config_hash": assessment["config_hash"],
+            "parent_source": {
+                "candidate_id": "clip-1",
+                "input_hash": assessment["input_hash"],
+                "source_file_sha256": "d" * 64,
+                "video_path": "source.mp4",
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+            },
+        }
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "gif_clip_manifest"
+        )
+        assert validated["repair_applied"] is False
+        assert validated["quality_assessment"]["selected_recipe_id"] == "repair-1"
 
 
 class TestManifestSchemaVersion:
