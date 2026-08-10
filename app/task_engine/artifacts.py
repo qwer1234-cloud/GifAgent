@@ -513,6 +513,7 @@ def validate_rank_manifest_with_db_lineage(
         candidate_ledger_bytes=Path(ledger_ref.path).read_bytes(),
         candidate_ledger_ref=ledger_ref.__dict__,
         upstream_artifact_ref=upstream_ref.__dict__,
+        require_external_quality_ledger=True,
     )
 
 
@@ -1391,6 +1392,7 @@ def _validate_quality_candidate_ledger(
     candidate_ledger_bytes: bytes | None,
     candidate_ledger_ref: dict | None,
     upstream_artifact_ref: dict | None,
+    require_external: bool,
 ) -> list[dict]:
     context = "rank_dedup_manifest quality_moe candidate ledger"
     embedded = _validate_assessed_candidates(
@@ -1404,6 +1406,10 @@ def _validate_quality_candidate_ledger(
     }:
         raise ValueError(f"{context} mode must be embedded or external")
     if metadata["mode"] == "embedded":
+        if require_external:
+            raise ValueError(
+                f"{context} must use an external candidate ledger"
+            )
         return embedded
 
     if (
@@ -1835,6 +1841,7 @@ def validate_manifest_json(
     candidate_ledger_bytes: bytes | None = None,
     candidate_ledger_ref: dict | None = None,
     upstream_artifact_ref: dict | None = None,
+    require_external_quality_ledger: bool = False,
 ) -> dict:
     """Validate a manifest JSON artifact and return the parsed dict.
 
@@ -1936,6 +1943,7 @@ def validate_manifest_json(
                     candidate_ledger_bytes=candidate_ledger_bytes,
                     candidate_ledger_ref=candidate_ledger_ref,
                     upstream_artifact_ref=upstream_artifact_ref,
+                    require_external=require_external_quality_ledger,
                 )
                 if data["quality_moe"].get("enabled") is True:
                     for index, clip in enumerate(clips):

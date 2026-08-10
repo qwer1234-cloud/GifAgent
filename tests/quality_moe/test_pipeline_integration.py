@@ -5,6 +5,8 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.quality_moe.evaluator import QualityBatchResult
 from app.quality_moe.models import (
     EvidencePolarity,
@@ -221,6 +223,157 @@ def test_direct_quality_summary_keeps_independent_assessed_candidate_ledger(
             b'{"transition_action":"keep"}'
         ).hexdigest(),
     }]
+
+
+@pytest.mark.parametrize(
+    "candidates",
+    [
+        [{"start_ts": 1.0, "end_ts": 2.0}],
+        [
+            {"candidate_id": "same", "start_ts": 1.0, "end_ts": 2.0},
+            {"candidate_id": "same", "start_ts": 3.0, "end_ts": 4.0},
+        ],
+    ],
+    ids=["missing", "duplicate"],
+)
+def test_shared_quality_boundary_rejects_missing_or_duplicate_candidate_ids(
+    candidates, tmp_path, monkeypatch,
+):
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": False}})
+    monkeypatch.setattr(
+        adaptive,
+        "evaluate_candidates",
+        lambda *_a, **_k: pytest.fail("invalid IDs reached the evaluator"),
+    )
+
+    with pytest.raises(ValueError, match="candidate_id"):
+        adaptive._evaluate_quality_pipeline_candidates(
+            candidates, video_path="source.mp4", cfg=cfg, work_dir=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "batch_factory",
+    [
+        lambda keep, review, values: QualityBatchResult(
+            (keep,), (values[0],), (values[1],)
+        ),
+        lambda keep, review, values: QualityBatchResult(
+            (review, keep), (values[0],), (values[1],)
+        ),
+    ],
+    ids=["missing-assessment", "reordered-assessments"],
+)
+def test_shared_quality_boundary_requires_assessments_one_to_one_in_input_order(
+    batch_factory, tmp_path, monkeypatch,
+):
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": False}})
+    candidates = [
+        {"candidate_id": "keep", "start_ts": 1.0, "end_ts": 2.0},
+        {"candidate_id": "review", "start_ts": 3.0, "end_ts": 4.0},
+    ]
+
+    def fake_evaluate(values, **_kwargs):
+        keep = _assessment(
+            "keep", cfg["quality_moe_config_hash"], QualityDecision.KEEP_AS_IS
+        )
+        review = _assessment(
+            "review", cfg["quality_moe_config_hash"], QualityDecision.REVIEW
+        )
+        return batch_factory(keep, review, values)
+
+    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+
+    with pytest.raises(ValueError, match="assessments"):
+        adaptive._evaluate_quality_pipeline_candidates(
+            candidates, video_path="source.mp4", cfg=cfg, work_dir=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "effective_ids,human_ids",
+    [
+        (["foreign"], ["review"]),
+        (["keep"], ["foreign"]),
+        (["keep", "keep"], ["review"]),
+        (["keep"], ["review", "review"]),
+        (["review"], ["review"]),
+        (["keep"], ["keep"]),
+    ],
+    ids=[
+        "foreign-effective", "foreign-human", "duplicate-effective",
+        "duplicate-human", "wrong-effective-route", "wrong-human-route",
+    ],
+)
+def test_shared_quality_boundary_rejects_invalid_batch_routing(
+    effective_ids, human_ids, tmp_path, monkeypatch,
+):
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": False}})
+    candidates = [
+        {"candidate_id": "keep", "start_ts": 1.0, "end_ts": 2.0},
+        {"candidate_id": "review", "start_ts": 3.0, "end_ts": 4.0},
+    ]
+
+    def fake_evaluate(values, **_kwargs):
+        assessments = (
+            _assessment(
+                "keep", cfg["quality_moe_config_hash"],
+                QualityDecision.KEEP_AS_IS,
+            ),
+            _assessment(
+                "review", cfg["quality_moe_config_hash"],
+                QualityDecision.REVIEW,
+            ),
+        )
+        by_id = {item["candidate_id"]: item for item in values}
+        by_id["foreign"] = {"candidate_id": "foreign", "start_ts": 9.0}
+        return QualityBatchResult(
+            assessments,
+            tuple(by_id[item_id] for item_id in effective_ids),
+            tuple(by_id[item_id] for item_id in human_ids),
+        )
+
+    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+
+    with pytest.raises(ValueError, match="routing"):
+        adaptive._evaluate_quality_pipeline_candidates(
+            candidates, video_path="source.mp4", cfg=cfg, work_dir=tmp_path,
+        )
+
+
+def test_shared_quality_boundary_rebuilds_routed_payload_from_original_input(
+    tmp_path, monkeypatch,
+):
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": False}})
+    candidate = {
+        "candidate_id": "keep",
+        "clip_id": "keep",
+        "start_ts": 1.0,
+        "end_ts": 2.0,
+        "nested": {"source": "original"},
+    }
+    assessment = _assessment(
+        "keep", cfg["quality_moe_config_hash"], QualityDecision.KEEP_AS_IS
+    )
+    replacement = {
+        **candidate,
+        "start_ts": 99.0,
+        "nested": {"source": "batch-replacement"},
+    }
+    monkeypatch.setattr(
+        adaptive,
+        "evaluate_candidates",
+        lambda *_a, **_k: QualityBatchResult(
+            (assessment,), (replacement,), (),
+        ),
+    )
+
+    routed, _summary = adaptive._evaluate_quality_pipeline_candidates(
+        [candidate], video_path="source.mp4", cfg=cfg, work_dir=tmp_path,
+    )
+
+    assert routed[0]["start_ts"] == 1.0
+    assert routed[0]["nested"] == {"source": "original"}
 
 
 def test_report_only_quality_evaluation_preserves_candidate_order(tmp_path, monkeypatch):
@@ -527,7 +680,7 @@ def test_repair_filter_selection_requires_bound_recipe_validation():
     ) is None
 
 
-def test_staged_rank_writes_valid_report_only_assessments_after_dedup(
+def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
     tmp_path, monkeypatch,
 ):
     clips = [
@@ -571,7 +724,11 @@ def test_staged_rank_writes_valid_report_only_assessments_after_dedup(
             for value in values
         )
         effective = tuple(
-            {**value, "quality_assessment": assessment.to_dict()}
+            {
+                **value,
+                "gif_worthiness": -1.0,
+                "quality_assessment": assessment.to_dict(),
+            }
             for value, assessment in zip(values, assessments)
         )
         return QualityBatchResult(assessments, effective, ())
@@ -584,13 +741,13 @@ def test_staged_rank_writes_valid_report_only_assessments_after_dedup(
             "output_ratio": 1.0,
             "max_output": 0,
         },
-        "quality_moe": {"report_only": True},
+        "quality_moe": {"report_only": False},
     })
 
     result = adaptive._stage_rank_dedup(
         "source.mp4", str(tmp_path / "exports"), str(tmp_path), cfg,
         {"synthesize_manifest": [_synthesize_lineage_ref()]},
-        config_data={"quality_moe": {"report_only": True}},
+        config_data={"quality_moe": {"report_only": False}},
     )
     manifest = json.loads(open(result["_artifacts"][0]["path"], encoding="utf-8").read())
 

@@ -12,6 +12,7 @@ import atexit
 import sys
 import os
 import subprocess
+from copy import deepcopy
 from dataclasses import dataclass
 import json
 import re
@@ -55,9 +56,9 @@ from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_n
 from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
 from app.quality_moe.config import QualityMoeConfig
-from app.quality_moe.evaluator import evaluate_candidates
+from app.quality_moe.evaluator import QualityBatchResult, evaluate_candidates
 from app.quality_moe.judge import OllamaQualityJudge
-from app.quality_moe.models import EvidenceStatus, QualityDecision, RepairRecipe, RepairValidation
+from app.quality_moe.models import EvidenceStatus, QualityAssessment, QualityDecision, RepairRecipe, RepairValidation
 from app.quality_moe.repair import build_ffmpeg_filter
 
 # ---- Helpers (kept at module level, no side effects) ---------------
@@ -833,15 +834,15 @@ def _evaluate_quality_pipeline_candidates(
     quality_config = _quality_config_from_pipeline_cfg(cfg)
 
     normalized: list[dict] = []
-    for index, candidate in enumerate(candidates):
-        clip = dict(candidate)
+    candidate_ids: list[str] = []
+    for candidate in candidates:
+        clip = deepcopy(candidate)
         candidate_id = clip.get("candidate_id") or clip.get("clip_id")
         if not isinstance(candidate_id, str) or not candidate_id:
-            identity = (
-                f"{os.path.basename(video_path)}:{clip.get('start_ts')}:"
-                f"{clip.get('end_ts')}:{index}"
-            )
-            candidate_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+            raise ValueError("quality candidate_id must be a non-empty string")
+        if candidate_id in candidate_ids:
+            raise ValueError(f"quality candidate_id must be unique: {candidate_id}")
+        candidate_ids.append(candidate_id)
         clip["candidate_id"] = candidate_id
         clip.setdefault("clip_id", candidate_id)
         clip["video_path"] = video_path
@@ -866,6 +867,63 @@ def _evaluate_quality_pipeline_candidates(
         work_dir=work_dir,
         judge=judge,
     )
+    if not isinstance(batch, QualityBatchResult):
+        raise ValueError("quality evaluator returned an invalid batch")
+    if any(
+        not isinstance(assessment, QualityAssessment)
+        for assessment in batch.assessments
+    ):
+        raise ValueError("quality batch assessments must be QualityAssessment values")
+    assessment_ids = [assessment.candidate_id for assessment in batch.assessments]
+    if assessment_ids != candidate_ids:
+        raise ValueError(
+            "quality batch assessments must map one-to-one in input order"
+        )
+
+    def routed_ids(values, *, route_name: str) -> list[str]:
+        ids: list[str] = []
+        for value in values:
+            if not isinstance(value, dict):
+                raise ValueError(f"quality batch {route_name} routing is invalid")
+            candidate_id = value.get("candidate_id")
+            if (
+                not isinstance(candidate_id, str)
+                or candidate_id not in candidate_ids
+                or candidate_id in ids
+            ):
+                raise ValueError(f"quality batch {route_name} routing is invalid")
+            ids.append(candidate_id)
+        return ids
+
+    effective_ids = routed_ids(
+        batch.effective_clips, route_name="effective_clips"
+    )
+    human_ids = routed_ids(
+        batch.human_review_clips, route_name="human_review_clips"
+    )
+    keep_decisions = {
+        QualityDecision.KEEP_AS_IS, QualityDecision.KEEP_FOR_REPAIR,
+    }
+    expected_effective_ids = [
+        assessment.candidate_id
+        for assessment in batch.assessments
+        if (
+            quality_config.report_only and not assessment.hard_reasons
+        ) or assessment.effective_decision in keep_decisions
+    ]
+    expected_human_ids = [
+        assessment.candidate_id
+        for assessment in batch.assessments
+        if assessment.effective_decision in {
+            QualityDecision.REVIEW, QualityDecision.ABSTAIN,
+        }
+    ]
+    if (
+        effective_ids != expected_effective_ids
+        or human_ids != expected_human_ids
+    ):
+        raise ValueError("quality batch routing does not match assessments")
+
     candidates_by_id = {
         str(candidate["candidate_id"]): candidate for candidate in normalized
     }
@@ -880,19 +938,17 @@ def _evaluate_quality_pipeline_candidates(
         assessment["candidate_id"]: assessment for assessment in assessments
     }
     routed: list[dict] = []
-    route_source = normalized if quality_config.report_only else batch.effective_clips
-    for candidate in route_source:
-        clip = dict(candidate)
-        assessment = by_candidate_id.get(str(clip.get("candidate_id")))
-        if assessment is not None:
-            clip["quality_assessment"] = assessment
+    route_ids = candidate_ids if quality_config.report_only else effective_ids
+    for candidate_id in route_ids:
+        clip = deepcopy(candidates_by_id[candidate_id])
+        clip["quality_assessment"] = by_candidate_id[candidate_id]
         routed.append(clip)
     summary = _quality_moe_summary(
         cfg,
         assessments,
         input_count=len(normalized),
         effective_count=len(routed),
-        human_review_count=len(batch.human_review_clips),
+        human_review_count=len(human_ids),
         assessed_candidates=assessed_candidates,
     )
     return routed, summary
@@ -1712,6 +1768,23 @@ def run_pipeline(
         print(
             f"  Temporal dedup disabled -- {len(deduped_clips)} clips passed through"
         )
+
+    # Direct mode has no upstream rank artifact to assign clip identities.
+    # Establish stable, real candidate IDs before crossing the strict shared
+    # quality boundary; the boundary itself never invents missing identities.
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    for index, clip in enumerate(deduped_clips):
+        candidate_id = clip.get("candidate_id") or clip.get("clip_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            identity = (
+                f"{video_name}:{clip.get('start_ts')}:"
+                f"{clip.get('end_ts')}:{index}"
+            )
+            candidate_id = hashlib.sha256(
+                identity.encode("utf-8")
+            ).hexdigest()[:16]
+        clip["candidate_id"] = candidate_id
+        clip.setdefault("clip_id", candidate_id)
 
     deduped_clips, quality_moe = _evaluate_quality_pipeline_candidates(
         list(deduped_clips),
@@ -2595,6 +2668,7 @@ def _read_upstream_manifest(inputs: dict, artifact_kind: str, stage: str) -> dic
     # P1-2: Call shared validator with expected stage, clip_id.
     lineage_kwargs = {}
     if artifact_kind == "rank_dedup_manifest":
+        lineage_kwargs["require_external_quality_ledger"] = True
         ledger_entries = inputs.get("rank_candidate_ledger", [])
         upstream_entries = inputs.get("synthesize_manifest", [])
         if ledger_entries and upstream_entries:

@@ -166,6 +166,40 @@ def _valid_quality_rank_manifest() -> dict:
     }
 
 
+def _external_quality_ledger_fixture(manifest: dict) -> tuple[bytes, dict, dict]:
+    upstream_ref = {
+        "artifact_id": "synthesize-artifact",
+        "stage_id": "synthesize-stage",
+        "artifact_kind": "synthesize_manifest",
+        "sha256": "a" * 64,
+        "size_bytes": 123,
+    }
+    quality = manifest["quality_moe"]
+    ledger = {
+        "schema_version": 1,
+        "stage": "rank_input",
+        "upstream_artifact": upstream_ref,
+        "assessed_candidates": quality["assessed_candidates"],
+        "assessed_candidates_digest": quality["assessed_candidates_digest"],
+    }
+    ledger_bytes = json.dumps(
+        ledger, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    ledger_ref = {
+        "artifact_id": "candidate-ledger-artifact",
+        "stage_id": "rank-stage",
+        "artifact_kind": "rank_candidate_ledger",
+        "sha256": hashlib.sha256(ledger_bytes).hexdigest(),
+        "size_bytes": len(ledger_bytes),
+    }
+    quality["candidate_ledger"] = {
+        "mode": "external",
+        **ledger_ref,
+        "upstream_artifact": upstream_ref,
+    }
+    return ledger_bytes, ledger_ref, upstream_ref
+
+
 def _valid_quality_repair_rank_manifest() -> dict:
     from app.quality_moe.models import EvidenceStatus, RepairRecipe, RepairValidation
 
@@ -1005,6 +1039,64 @@ class TestManifestValidation:
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
             )
 
+    def test_staged_quality_context_rejects_embedded_candidate_ledger(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+
+        with pytest.raises(ValueError, match="external candidate ledger"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+                require_external_quality_ledger=True,
+            )
+
+    def test_staged_quality_context_rejects_missing_candidate_ledger_input(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        _ledger_bytes, _ledger_ref, upstream_ref = (
+            _external_quality_ledger_fixture(manifest)
+        )
+
+        with pytest.raises(ValueError, match="external lineage inputs"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+                upstream_artifact_ref=upstream_ref,
+                require_external_quality_ledger=True,
+            )
+
+    def test_staged_quality_context_rejects_missing_synthesize_lineage(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        ledger_bytes, ledger_ref, _upstream_ref = (
+            _external_quality_ledger_fixture(manifest)
+        )
+
+        with pytest.raises(ValueError, match="external lineage inputs"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"),
+                "rank_dedup_manifest",
+                candidate_ledger_bytes=ledger_bytes,
+                candidate_ledger_ref=ledger_ref,
+                require_external_quality_ledger=True,
+            )
+
+    def test_direct_quality_context_still_accepts_embedded_candidate_ledger(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+        )
+
+        assert validated["quality_moe"]["candidate_ledger"] == {
+            "mode": "embedded"
+        }
+
     def test_staged_rank_rejects_synchronized_ledger_forgery_against_db_sha(
         self, tmp_path: Path,
     ):
@@ -1443,6 +1535,23 @@ class TestManifestSchemaVersion:
 
 class TestReadUpstreamManifestWiring:
     """Verify _read_upstream_manifest passes through to validate_manifest_json."""
+
+    def test_staged_rank_reader_requires_external_quality_ledger(
+        self, tmp_path: Path,
+    ):
+        from scripts import test_video_adaptive as adaptive
+
+        rank_path = tmp_path / "rank_dedup_manifest.json"
+        rank_path.write_text(
+            json.dumps(_valid_quality_rank_manifest()), encoding="utf-8"
+        )
+
+        with pytest.raises(ValueError, match="external candidate ledger"):
+            adaptive._read_upstream_manifest(
+                {"rank_dedup_manifest": [{"path": str(rank_path)}]},
+                "rank_dedup_manifest",
+                "gif_clip",
+            )
 
     def test_read_upstream_manifest_valid(self, tmp_path: Path):
         """_read_upstream_manifest validates and returns data for a valid manifest."""
