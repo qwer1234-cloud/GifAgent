@@ -1,0 +1,193 @@
+"""Deterministic, content-neutral quality evidence from sampled clip pixels."""
+
+from __future__ import annotations
+
+import math
+
+import cv2
+import numpy as np
+
+from app.quality_moe.config import QualityMoeConfig
+from app.quality_moe.models import EvidencePolarity, EvidenceStatus, ExpertEvidence
+from app.quality_moe.sampling import SampledClip
+
+
+def _bounded(value: float) -> float:
+    return max(0.0, min(1.0, float(value))) if math.isfinite(value) else 0.0
+
+
+def _luma(frame: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float64) / 255.0
+
+
+def _unavailable_evidence(
+    sampled_clip: SampledClip, *, expert_id: str, signal_family: str, config: QualityMoeConfig
+) -> ExpertEvidence:
+    return ExpertEvidence(
+        candidate_id=sampled_clip.candidate_id,
+        evaluation_version=config.evaluation_version,
+        expert_id=expert_id,
+        expert_version="deterministic-v1",
+        signal_family=signal_family,
+        status=sampled_clip.status,
+        findings=(dict(sampled_clip.diagnostics),),
+        summary="Sampled clip is unavailable; no quality score was inferred.",
+        input_hash=sampled_clip.input_hash,
+        config_hash=config.config_hash,
+    )
+
+
+class _BaseExpert:
+    expert_id = ""
+    signal_family = ""
+
+    def __init__(self, config: QualityMoeConfig | None = None) -> None:
+        self._config = config or QualityMoeConfig.defaults()
+
+    def _evidence(
+        self,
+        sampled_clip: SampledClip,
+        *,
+        scores: dict[str, float],
+        findings: tuple[dict[str, object], ...] = (),
+        polarity: EvidencePolarity = EvidencePolarity.NEUTRAL,
+        summary: str,
+    ) -> ExpertEvidence:
+        if sampled_clip.status is not EvidenceStatus.AVAILABLE:
+            return _unavailable_evidence(
+                sampled_clip, expert_id=self.expert_id,
+                signal_family=self.signal_family, config=self._config,
+            )
+        return ExpertEvidence(
+            candidate_id=sampled_clip.candidate_id,
+            evaluation_version=self._config.evaluation_version,
+            expert_id=self.expert_id,
+            expert_version="deterministic-v1",
+            signal_family=self.signal_family,
+            status=EvidenceStatus.AVAILABLE,
+            scores={key: _bounded(value) for key, value in scores.items()},
+            findings=findings,
+            summary=summary,
+            input_hash=sampled_clip.input_hash,
+            config_hash=self._config.config_hash,
+            polarity=polarity,
+        )
+
+
+class TechnicalAestheticExpert(_BaseExpert):
+    """Measures only technical pixel characteristics, never semantic labels."""
+
+    expert_id = "technical_aesthetic"
+    signal_family = "nr_vqa"
+
+    def evaluate(self, sampled_clip: SampledClip) -> ExpertEvidence:
+        if sampled_clip.status is not EvidenceStatus.AVAILABLE:
+            return self._evidence(sampled_clip, scores={}, summary="No technical assessment.")
+        lumas = np.concatenate([_luma(frame).ravel() for frame in sampled_clip.frames])
+        median_luma = float(np.median(lumas))
+        exposure_score = _bounded(1.0 - min(1.0, abs(median_luma - 0.5) / 0.5))
+        sharpness_values = [float(cv2.Laplacian(_luma(frame), cv2.CV_64F).var()) for frame in sampled_clip.frames]
+        sharpness_score = _bounded(1.0 - math.exp(-float(np.median(sharpness_values)) / 250.0))
+        shadow_clip = float(np.mean(lumas <= 1.0 / 255.0))
+        highlight_clip = float(np.mean(lumas >= 254.0 / 255.0))
+        clipping_penalty = _bounded(shadow_clip + highlight_clip)
+        technical_integrity = _bounded(
+            0.60 * exposure_score + 0.25 * sharpness_score + 0.15 * (1.0 - clipping_penalty)
+        )
+        findings: tuple[dict[str, object], ...] = ()
+        polarity = EvidencePolarity.NEUTRAL
+        if exposure_score < 0.4:
+            findings = ({
+                "code": "underexposed_subject",
+                "severity": "repairable",
+                "metric": "median_luma",
+                "value": median_luma,
+            },)
+            polarity = EvidencePolarity.NEGATIVE
+        elif clipping_penalty > 0.5:
+            findings = ({
+                "code": "severe_luminance_clipping",
+                "severity": "technical_failure",
+                "value": clipping_penalty,
+            },)
+            polarity = EvidencePolarity.NEGATIVE
+        return self._evidence(
+            sampled_clip,
+            scores={
+                "technical_integrity": technical_integrity,
+                "exposure_balance": exposure_score,
+                "sharpness": sharpness_score,
+                "clipping": 1.0 - clipping_penalty,
+            },
+            findings=findings,
+            polarity=polarity,
+            summary="Technical assessment uses measured exposure, detail, and clipping only.",
+        )
+
+
+class TemporalExpert(_BaseExpert):
+    """Detects measurable temporal disruptions and loop continuity."""
+
+    expert_id = "temporal"
+    signal_family = "deterministic_temporal"
+
+    def evaluate(self, sampled_clip: SampledClip) -> ExpertEvidence:
+        if sampled_clip.status is not EvidenceStatus.AVAILABLE:
+            return self._evidence(sampled_clip, scores={}, summary="No temporal assessment.")
+        normalized = [frame.astype(np.float64) / 255.0 for frame in sampled_clip.frames]
+        differences = [float(np.mean(np.abs(right - left))) for left, right in zip(normalized, normalized[1:])]
+        max_difference = max(differences, default=0.0)
+        mean_difference = float(np.mean(differences)) if differences else 0.0
+        loop_difference = float(np.mean(np.abs(normalized[0] - normalized[-1])))
+        temporal_coherence = _bounded(1.0 - max_difference)
+        loop_score = _bounded(1.0 - loop_difference)
+        findings: tuple[dict[str, object], ...] = ()
+        polarity = EvidencePolarity.NEUTRAL
+        if max_difference > 0.3:
+            findings = ({
+                "code": "luminance_flash_or_discontinuity",
+                "severity": "technical_failure",
+                "max_frame_difference": max_difference,
+            },)
+            polarity = EvidencePolarity.NEGATIVE
+        return self._evidence(
+            sampled_clip,
+            scores={
+                "temporal_coherence": temporal_coherence,
+                "loop_continuity": loop_score,
+                "mean_frame_difference": _bounded(1.0 - mean_difference),
+            },
+            findings=findings,
+            polarity=polarity,
+            summary="Temporal assessment reports only measured frame discontinuities.",
+        )
+
+
+class CinematicExpert(_BaseExpert):
+    """Produces descriptive film-style evidence without content or style penalties."""
+
+    expert_id = "cinematic"
+    signal_family = "cinematic_classifier"
+
+    def evaluate(self, sampled_clip: SampledClip) -> ExpertEvidence:
+        if sampled_clip.status is not EvidenceStatus.AVAILABLE:
+            return self._evidence(sampled_clip, scores={}, summary="No cinematic assessment.")
+        lumas = np.concatenate([_luma(frame).ravel() for frame in sampled_clip.frames])
+        median_luma = float(np.median(lumas))
+        channel_means = np.mean(
+            np.concatenate([frame.reshape(-1, 3) for frame in sampled_clip.frames], axis=0), axis=0
+        ) / 255.0
+        color_balance = _bounded(1.0 - float(np.max(channel_means) - np.min(channel_means)))
+        findings: tuple[dict[str, object], ...] = ()
+        if median_luma < 0.35:
+            findings = ({
+                "code": "low_key_lighting",
+                "severity": "descriptive",
+                "median_luma": median_luma,
+            },)
+        return self._evidence(
+            sampled_clip,
+            scores={"color_balance": color_balance},
+            findings=findings,
+            summary="Film-style attributes are descriptive and do not create a negative signal.",
+        )
