@@ -1,15 +1,21 @@
 # GIF/图片 MoE 美学裁决与非生成式可挽救性设计
 
+> Implementation status (2026-08-11): **implemented, pending final release
+> gates**. This status supersedes the legacy pre-implementation status line
+> below. Report-only operation remains mandatory until the complete release
+> verification and human calibration gates in section 16 pass; this document
+> does not yet claim those final gates have passed.
+
 ## 1. 文档状态
 
-- 日期：2026-08-09
-- 状态：设计已确认，等待书面规格复核
+- 日期：2026-08-11
+- 状态：已实现，等待最终发布门禁；在完整回归与人工校准门禁通过前保持 `report_only`
 - 适用对象：GIF 候选片段、静态图片候选，以及由视频候选生成的预览代理
 - 目标版本：第一版外部质量专家、统一裁决与非生成式可挽救性评估
 - 依赖设计：
   - `2026-07-29-transition-aware-gif-extraction-design.md`
   - `2026-07-29-action-completeness-design.md`
-- 本文只定义产品与技术规格，不代表相关代码已经实现。
+- 相关代码已实现；本文不表示最终发布回归或第 16 节人工校准门禁已经通过。
 
 ## 2. 背景与问题
 

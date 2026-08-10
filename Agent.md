@@ -89,6 +89,46 @@ score, merge type, and caption summary.
 
 ## How to Run
 
+### Quality MoE evaluation and repair boundary
+
+Quality MoE is enabled in `configs/models.yaml` with `report_only: true` by
+default. In that mode it records expert evidence, the recommended decision,
+and a validated repair recipe, but soft quality decisions do not remove or
+reorder candidates and recommended repairs are not applied to exported pixels.
+Deterministic transition/action hard gates remain authoritative.
+
+The unified visual judge uses the existing Ollama runtime. Its endpoint is
+resolved once when the job/CLI starts and the absolute URL is frozen into the
+configuration snapshot. An unavailable endpoint, timeout, malformed response,
+or content refusal degrades to structured `UNAVAILABLE`, `INVALID`, or
+`ABSTAINED` evidence; it is never converted into a negative score and does not
+fail the whole candidate batch. Use `--skip-judge` in the explicit-file smoke
+runner to record `SKIPPED` without constructing an external transport:
+
+```powershell
+uv run python scripts/evaluate_quality_moe.py `
+  --video "C:\path\to\movie.mp4" --start 1800 --duration 12 `
+  --config configs/models.yaml `
+  --output-dir build/quality_moe_smoke/example --skip-judge
+```
+
+Smoke artifacts are isolated below the selected output directory:
+`quality_assessment.json`, the original contact sheet, and, only when a repair
+passes validation, the best-repair contact sheet. The source video is hashed
+before and after the run and is never opened for writing. Reusing a non-empty
+output directory creates a new run subdirectory instead of overwriting prior
+evidence.
+
+Active soft rejection must not be enabled until the documented human
+calibration gate passes (at least 200 stratified candidates, soft-reject
+precision at least 95%, and all release acceptance metrics). Even then, a soft
+automatic rejection requires judge confidence at least `0.80` and at least two
+independent negative signal families. V1 repairs are clip-global,
+pixel-preserving photometric transforms with at most 12 proxies, measured gain
+at least `0.15`, and confidence at least `0.80`. Generative outpainting,
+inpainting, new viewpoints, missing-content synthesis, and action generation
+remain out of scope.
+
 ### Prerequisites
 ```bash
 ollama pull llava:13b
