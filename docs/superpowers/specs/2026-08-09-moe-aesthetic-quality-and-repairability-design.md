@@ -1,15 +1,14 @@
 # GIF/图片 MoE 美学裁决与非生成式可挽救性设计
 
-> Implementation status (2026-08-11): **implemented, pending final release
-> gates**. This status supersedes the legacy pre-implementation status line
-> below. Report-only operation remains mandatory until the complete release
+> Implementation status (2026-08-11): **implementation complete, verification
+> pending**. Report-only operation remains mandatory until the complete release
 > verification and human calibration gates in section 16 pass; this document
 > does not yet claim those final gates have passed.
 
 ## 1. 文档状态
 
 - 日期：2026-08-11
-- 状态：已实现，等待最终发布门禁；在完整回归与人工校准门禁通过前保持 `report_only`
+- 状态：实现完成、验证待定；在完整回归与人工校准门禁通过前保持 `report_only`
 - 适用对象：GIF 候选片段、静态图片候选，以及由视频候选生成的预览代理
 - 目标版本：第一版外部质量专家、统一裁决与非生成式可挽救性评估
 - 依赖设计：

@@ -112,12 +112,16 @@ uv run python scripts/evaluate_quality_moe.py `
   --output-dir build/quality_moe_smoke/example --skip-judge
 ```
 
-Smoke artifacts are isolated below the selected output directory:
+Every smoke run atomically claims a unique `run-<id>` child below the selected
+output directory. The CLI prints that actual directory and records both the
+requested root and actual run path in its JSON. Concurrent runs therefore
+cannot overwrite each other's evidence. Smoke artifacts inside that directory
+are:
 `quality_assessment.json`, the original contact sheet, and, only when a repair
 passes validation, the best-repair contact sheet. The source video is hashed
-before and after the run and is never opened for writing. Reusing a non-empty
-output directory creates a new run subdirectory instead of overwriting prior
-evidence.
+before and after the run and is never opened for writing. JSON/contact-sheet
+publication uses atomic fail-if-exists semantics; identical evidence may be
+reused, while different existing content is rejected.
 
 Active soft rejection must not be enabled until the documented human
 calibration gate passes (at least 200 stratified candidates, soft-reject

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import cv2
@@ -120,8 +121,8 @@ def test_cli_evaluates_only_explicit_file_and_preserves_source(tmp_path: Path, m
 
     def fake_evaluate(candidate, **kwargs):
         observed.update(candidate)
-        # The CLI must freeze the inherited judge URL before evaluation.
-        assert kwargs["config"].judge["base_url"] == "http://127.0.0.1:11434"
+        # Skip mode freezes an explicit non-network sentinel before evaluation.
+        assert kwargs["config"].judge["base_url"] == "skipped"
         return _fake_assessment(candidate["candidate_id"])
 
     monkeypatch.setattr(cli, "evaluate_candidate", fake_evaluate)
@@ -133,13 +134,16 @@ def test_cli_evaluates_only_explicit_file_and_preserves_source(tmp_path: Path, m
         ]
     )
 
-    assert result.output_dir == (tmp_path / "out").resolve()
+    assert result.output_dir.parent == (tmp_path / "out").resolve()
+    assert result.output_dir.name.startswith("run-")
     assert observed["video_path"] == str(source.resolve())
     assert _sha256(source) == before
     payload = json.loads(result.assessment_path.read_text(encoding="utf-8"))
     assert payload["source"]["sha256_before"] == before
     assert payload["source"]["sha256_after"] == before
     assert payload["judge_execution"]["status"] == "SKIPPED"
+    assert payload["run"]["requested_output_dir"] == str((tmp_path / "out").resolve())
+    assert payload["run"]["actual_output_dir"] == str(result.output_dir)
     assert Path(payload["artifacts"]["original_contact_sheet"]).is_file()
     assert payload["artifacts"]["best_contact_sheet"] is None
 
@@ -200,6 +204,41 @@ def test_skip_judge_never_constructs_external_transport(tmp_path: Path, monkeypa
     ])
 
 
+def test_skip_judge_does_not_resolve_auto_endpoint_or_touch_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from scripts import evaluate_quality_moe as cli
+
+    config = tmp_path / "auto.yaml"
+    config.write_text(yaml.safe_dump({
+        "vlm": {
+            "provider": "ollama", "model": "llava:13b", "base_url": "auto",
+            "manage_lifecycle": True, "launch_mode": "wsl",
+        },
+        "quality_moe": {
+            "judge": {"model_id": "llava:13b", "base_url": "auto", "temperature": 0},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        cli, "OllamaRuntimeManager",
+        lambda: pytest.fail("skip-judge must not discover or manage Ollama"),
+    )
+
+    frozen, _snapshot = cli._load_and_freeze_config(config, skip_judge=True)
+
+    assert frozen.judge["base_url"] == "skipped"
+
+
+def test_default_config_is_repository_absolute_from_unrelated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    from scripts import evaluate_quality_moe as cli
+
+    monkeypatch.chdir(tmp_path)
+    parsed = cli._parser().parse_args(["--video", "movie.mp4", "--output-dir", "out"])
+
+    assert Path(parsed.config).is_absolute()
+    assert Path(parsed.config) == cli.REPOSITORY_ROOT / "configs" / "models.yaml"
+    frozen, _snapshot = cli._load_and_freeze_config(Path(parsed.config), skip_judge=True)
+    assert frozen.judge["base_url"] == "skipped"
+
+
 def test_assessment_json_is_atomically_published_and_existing_run_is_not_overwritten(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
@@ -209,14 +248,6 @@ def test_assessment_json_is_atomically_published_and_existing_run_is_not_overwri
     config = _config(tmp_path / "models.yaml")
     output = tmp_path / "out"
     monkeypatch.setattr(cli, "evaluate_candidate", lambda *_args, **_kwargs: _fake_assessment())
-    replacements: list[tuple[Path, Path]] = []
-    real_replace = cli.os.replace
-
-    def recording_replace(source_path, target_path):
-        replacements.append((Path(source_path), Path(target_path)))
-        return real_replace(source_path, target_path)
-
-    monkeypatch.setattr(cli.os, "replace", recording_replace)
     first = cli.run([
         "--video", str(source), "--duration", "1", "--config", str(config),
         "--output-dir", str(output), "--skip-judge",
@@ -227,9 +258,56 @@ def test_assessment_json_is_atomically_published_and_existing_run_is_not_overwri
         "--output-dir", str(output), "--skip-judge",
     ])
 
-    assert any(target.name == "quality_assessment.json" for _, target in replacements)
     assert first.assessment_path.read_bytes() == first_bytes
+    assert first.output_dir.parent == output
     assert second.output_dir.parent == output
     assert second.output_dir != first.output_dir
     assert second.assessment_path.is_file()
     assert not list(output.rglob("*.tmp"))
+
+
+def test_atomic_json_reuses_identical_content_and_rejects_inconsistent_existing_file(tmp_path: Path):
+    from scripts import evaluate_quality_moe as cli
+
+    target = tmp_path / "quality_assessment.json"
+    cli._atomic_json(target, {"decision": "REVIEW"})
+    original = target.read_bytes()
+    cli._atomic_json(target, {"decision": "REVIEW"})
+    with pytest.raises(FileExistsError, match="different content"):
+        cli._atomic_json(target, {"decision": "REJECT"})
+
+    assert target.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_concurrent_json_publishers_cannot_overwrite_each_other(tmp_path: Path):
+    from scripts import evaluate_quality_moe as cli
+
+    target = tmp_path / "quality_assessment.json"
+
+    def publish(decision: str) -> str:
+        try:
+            cli._atomic_json(target, {"decision": decision})
+            return "published"
+        except FileExistsError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(publish, ("KEEP_AS_IS", "REJECT")))
+
+    assert sorted(outcomes) == ["published", "rejected"]
+    assert json.loads(target.read_text(encoding="utf-8"))["decision"] in {
+        "KEEP_AS_IS", "REJECT",
+    }
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_concurrent_run_directory_claims_are_isolated(tmp_path: Path):
+    from scripts import evaluate_quality_moe as cli
+
+    root = tmp_path / "runs"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claimed = list(pool.map(lambda _index: cli._claim_run_dir(root), range(2)))
+
+    assert len(set(claimed)) == 2
+    assert all(path.is_dir() and path.parent == root for path in claimed)

@@ -10,16 +10,14 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 from typing import Mapping, Sequence
+from uuid import uuid4
 
 import httpx
 import yaml
@@ -32,7 +30,11 @@ from app.quality_moe.config import QualityMoeConfig
 from app.quality_moe.evaluator import evaluate_candidate
 from app.quality_moe.judge import OllamaQualityJudge
 from app.quality_moe.models import EvidenceStatus
-from app.quality_moe.repair import _contact_destination, _save_contact_sheet
+from app.quality_moe.repair import (
+    _contact_destination,
+    _save_contact_sheet,
+    _write_new_file_or_reuse_identical,
+)
 from app.quality_moe.sampling import SampledClip, sample_clip_frames
 from app.services.ollama_runtime import (
     EmbeddingRuntimeConfig,
@@ -41,7 +43,7 @@ from app.services.ollama_runtime import (
 )
 
 
-DEFAULT_CONFIG = Path("configs/models.yaml")
+DEFAULT_CONFIG = REPOSITORY_ROOT / "configs" / "models.yaml"
 DEFAULT_DURATION_SECONDS = 12.0
 
 
@@ -158,7 +160,9 @@ def _sample_exact_interval(video: Path, start: float, end: float, candidate_id: 
     return sampled
 
 
-def _load_and_freeze_config(path: Path) -> tuple[QualityMoeConfig, dict[str, object]]:
+def _load_and_freeze_config(
+    path: Path, *, skip_judge: bool = False,
+) -> tuple[QualityMoeConfig, dict[str, object]]:
     if not path.is_file():
         raise ValueError("config must be an existing regular file")
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -173,6 +177,13 @@ def _load_and_freeze_config(path: Path) -> tuple[QualityMoeConfig, dict[str, obj
     judge = quality.setdefault("judge", {})
     if not isinstance(judge, dict):
         raise ValueError("quality_moe.judge config must be a mapping")
+    if skip_judge:
+        # Skip mode must not consult environment variables, WSL, lifecycle
+        # managers, or endpoint discovery.  The sentinel is frozen and cannot
+        # accidentally reach httpx because no judge object is constructed.
+        judge["base_url"] = "skipped"
+        frozen = QualityMoeConfig.from_mapping(snapshot)
+        return frozen, snapshot
     configured = str(judge.get("base_url", "http://127.0.0.1:11434") or "").strip()
     if configured.lower() == "inherit_vlm":
         vlm = snapshot.get("vlm", {})
@@ -214,36 +225,24 @@ def _validate_paths(video_value: str, output_value: str, config_value: str) -> t
     return video, output, config
 
 
-def _select_output_dir(requested: Path) -> Path:
-    if not requested.exists() or not any(requested.iterdir()):
-        return requested
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-    return requested / f"run-{stamp}-{os.getpid()}"
+def _claim_run_dir(requested: Path) -> Path:
+    """Atomically claim a unique child directory for one immutable CLI run."""
+    requested.mkdir(parents=True, exist_ok=True)
+    if not requested.is_dir():
+        raise ValueError("output directory conflicts with an existing file")
+    for _attempt in range(16):
+        candidate = requested / f"run-{uuid4().hex}"
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError(f"could not claim a unique run directory below: {requested}")
 
 
 def _atomic_json(path: Path, payload: Mapping[str, object]) -> None:
     content = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8")
-    if path.exists():
-        if path.read_bytes() == content:
-            return
-        raise FileExistsError(f"refusing to overwrite inconsistent assessment: {path}")
-    descriptor, temporary_value = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary = Path(temporary_value)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        if path.exists():
-            raise FileExistsError(f"refusing to overwrite assessment created concurrently: {path}")
-        os.replace(temporary, path)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+    _write_new_file_or_reuse_identical(path, content)
 
 
 def _judge_status(assessment: Mapping[str, object], *, skipped: bool) -> dict[str, object]:
@@ -271,13 +270,14 @@ def _judge_status(assessment: Mapping[str, object], *, skipped: bool) -> dict[st
 def run(argv: Sequence[str] | None = None) -> CliRunResult:
     args = _parser().parse_args(argv)
     video, requested_output, config_path = _validate_paths(args.video, args.output_dir, args.config)
-    config, frozen_mapping = _load_and_freeze_config(config_path)
+    config, frozen_mapping = _load_and_freeze_config(
+        config_path, skip_judge=args.skip_judge,
+    )
     media_duration = _probe_duration(video)
     resolved_start, resolved_end, clamped = _resolve_interval(args.start, args.duration, media_duration)
     source_before = _sha256(video)
 
-    output_dir = _select_output_dir(requested_output)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = _claim_run_dir(requested_output)
     candidate_id = f"cli-{source_before[:12]}-{round(resolved_start * 1000)}-{round(resolved_end * 1000)}"
     sampled = _sample_exact_interval(video, resolved_start, resolved_end, candidate_id)
     if sampled.status is not EvidenceStatus.AVAILABLE or not sampled.frames:
@@ -309,6 +309,11 @@ def run(argv: Sequence[str] | None = None) -> CliRunResult:
     best_path = best_matches[0] if best_matches else None
     payload: dict[str, object] = {
         "schema_version": "quality-moe-cli-v1",
+        "run": {
+            "run_id": output_dir.name.removeprefix("run-"),
+            "requested_output_dir": str(requested_output),
+            "actual_output_dir": str(output_dir.resolve()),
+        },
         "source": {
             "path": str(video), "sha256_before": source_before,
             "sha256_after": source_after, "read_only_verified": True,
@@ -350,6 +355,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     judge = result.payload.get("judge_execution", {})
     judge_status = judge.get("status", "UNKNOWN") if isinstance(judge, Mapping) else "UNKNOWN"
     print(f"assessment: {result.assessment_path}")
+    print(f"output_dir: {result.output_dir}")
     print(f"decision: {decision}")
     print(f"judge: {judge_status}")
     return 0
