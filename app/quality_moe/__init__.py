@@ -3,6 +3,7 @@
 from app.quality_moe.config import QualityMoeConfig
 from app.quality_moe.models import (
     EvidenceStatus,
+    EvidencePolarity,
     ExpertEvidence,
     QualityAssessment,
     QualityDecision,
@@ -12,6 +13,7 @@ from app.quality_moe.models import (
 
 __all__ = [
     "EvidenceStatus",
+    "EvidencePolarity",
     "ExpertEvidence",
     "QualityAssessment",
     "QualityDecision",

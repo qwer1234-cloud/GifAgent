@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 
 from app.quality_moe.config import QualityMoeConfig
 from app.quality_moe.models import (
+    EvidencePolarity,
     EvidenceStatus,
     ExpertEvidence,
     QualityAssessment,
@@ -57,6 +58,7 @@ def hard_gate_reasons(clip: Mapping[str, object]) -> tuple[str, ...]:
 def enforce_decision(
     *,
     candidate_id: str,
+    input_hash: str,
     proposed: QualityDecision,
     confidence: float,
     evidence: Sequence[ExpertEvidence],
@@ -70,6 +72,8 @@ def enforce_decision(
     parsed_confidence = _confidence(confidence)
     if not isinstance(candidate_id, str) or not candidate_id:
         raise ValueError("candidate_id must be a non-empty string")
+    if not isinstance(input_hash, str) or not input_hash:
+        raise ValueError("input_hash must be a non-empty string")
     if not isinstance(policy_version, str) or not policy_version:
         raise ValueError("policy_version must be a non-empty string")
     normalized_reasons = tuple(dict.fromkeys(
@@ -94,7 +98,9 @@ def enforce_decision(
             config=config,
             policy_version=policy_version,
         )
-    negative_families = _negative_signal_families(evidence)
+    negative_families = _negative_signal_families(
+        evidence, candidate_id=candidate_id, input_hash=input_hash, config=config
+    )
     recommended = proposed
     if proposed is QualityDecision.REJECT and (
         parsed_confidence < config.soft_reject.min_judge_confidence
@@ -103,7 +109,7 @@ def enforce_decision(
     ):
         recommended = QualityDecision.REVIEW
     if proposed is QualityDecision.KEEP_FOR_REPAIR and not _valid_repair(
-        repair, config, evidence
+        repair, config, evidence, candidate_id=candidate_id, input_hash=input_hash
     ):
         recommended = QualityDecision.REVIEW
     effective = recommended
@@ -149,6 +155,10 @@ def _assessment(
 
 def _negative_signal_families(
     evidence: Sequence[ExpertEvidence],
+    *,
+    candidate_id: str,
+    input_hash: str,
+    config: QualityMoeConfig,
 ) -> tuple[str, ...]:
     families: list[str] = []
     seen_evidence: set[str] = set()
@@ -161,7 +171,12 @@ def _negative_signal_families(
         seen_evidence.add(identity)
         if (
             item.status is EvidenceStatus.AVAILABLE
+            and item.polarity is EvidencePolarity.NEGATIVE
             and item.signal_family in _CANONICAL_SIGNAL_FAMILIES
+            and item.candidate_id == candidate_id
+            and item.evaluation_version == config.evaluation_version
+            and item.config_hash == config.config_hash
+            and item.input_hash == input_hash
             and item.signal_family not in families
         ):
             families.append(item.signal_family)
@@ -181,6 +196,9 @@ def _valid_repair(
     recipe: RepairRecipe | None,
     config: QualityMoeConfig,
     evidence: Sequence[ExpertEvidence],
+    *,
+    candidate_id: str,
+    input_hash: str,
 ) -> bool:
     if recipe is None or not config.repairability.enabled:
         return False
@@ -193,6 +211,8 @@ def _valid_repair(
         return False
     if (
         validation.recipe_hash != recipe.recipe_hash
+        or validation.candidate_id != candidate_id
+        or validation.evaluation_version != config.evaluation_version
         or validation.config_hash != config.config_hash
         or not validation.source_input_hash
         or not validation.proxy_artifact_hash
@@ -202,8 +222,14 @@ def _valid_repair(
         item.identity_hash == validation.repair_delta_evidence_id
         and item.signal_family == "repair_delta"
         and item.status is EvidenceStatus.AVAILABLE
-        and item.input_hash == validation.source_input_hash
+        and item.polarity is EvidencePolarity.POSITIVE
+        and item.candidate_id == candidate_id
+        and item.evaluation_version == config.evaluation_version
         and item.config_hash == validation.config_hash
+        and item.config_hash == config.config_hash
+        and item.input_hash == validation.proxy_artifact_hash
+        and item.parent_input_hash == validation.source_input_hash
+        and validation.source_input_hash == input_hash
         for item in evidence
     )
     return (

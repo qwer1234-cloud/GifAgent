@@ -5,6 +5,7 @@ import pytest
 from app.quality_moe.config import QualityMoeConfig
 from app.quality_moe.models import (
     EvidenceStatus,
+    EvidencePolarity,
     ExpertEvidence,
     QualityAssessment,
     QualityDecision,
@@ -144,13 +145,17 @@ def _evidence(
     signal_family: str,
     *,
     status: EvidenceStatus = EvidenceStatus.AVAILABLE,
+    polarity: EvidencePolarity = EvidencePolarity.NEUTRAL,
     expert_id: str = "expert",
+    candidate_id: str = "c1",
+    evaluation_version: str = "quality-moe-v1",
     input_hash: str = "source-sha",
     config_hash: str = "config-sha",
+    parent_input_hash: str | None = None,
 ) -> ExpertEvidence:
     return ExpertEvidence(
-        candidate_id="c1",
-        evaluation_version="quality-moe-v1",
+        candidate_id=candidate_id,
+        evaluation_version=evaluation_version,
         expert_id=expert_id,
         expert_version="v1",
         signal_family=signal_family,
@@ -158,7 +163,17 @@ def _evidence(
         scores={"technical_integrity": 0.4},
         input_hash=input_hash,
         config_hash=config_hash,
+        parent_input_hash=parent_input_hash,
+        polarity=polarity,
     )
+
+
+def _policy_evidence(
+    config: QualityMoeConfig,
+    signal_family: str,
+    **kwargs,
+) -> ExpertEvidence:
+    return _evidence(signal_family, config_hash=config.config_hash, **kwargs)
 
 
 def _enforce(
@@ -168,9 +183,11 @@ def _enforce(
     evidence: tuple[ExpertEvidence, ...] = (),
     hard_reasons: tuple[str, ...] = (),
     repair: RepairRecipe | None = None,
+    input_hash: str = "source-sha",
 ):
     return enforce_decision(
         candidate_id="c1",
+        input_hash=input_hash,
         proposed=proposed,
         confidence=0.95,
         evidence=evidence,
@@ -199,10 +216,14 @@ def test_hard_gate_cannot_be_overridden_by_keep(field, value):
 
 
 def test_report_only_soft_rejection_is_effectively_review():
+    config = QualityMoeConfig.defaults()
     result = _enforce(
         proposed=QualityDecision.REJECT,
-        evidence=(_evidence("nr_vqa"), _evidence("semantic_video_critic", expert_id="judge")),
-        config=QualityMoeConfig.defaults(),
+        evidence=(
+            _policy_evidence(config, "nr_vqa", polarity=EvidencePolarity.NEGATIVE),
+            _policy_evidence(config, "semantic_video_critic", expert_id="judge", polarity=EvidencePolarity.NEGATIVE),
+        ),
+        config=config,
     )
 
     assert result.recommended_decision is QualityDecision.REJECT
@@ -214,10 +235,10 @@ def test_soft_rejection_counts_only_available_canonical_evidence_families():
     result = _enforce(
         proposed=QualityDecision.REJECT,
         evidence=(
-            _evidence("nr_vqa"),
-            _evidence("nr_vqa"),
-            _evidence("semantic_video_critic", status=EvidenceStatus.UNAVAILABLE),
-            _evidence("unknown_family", expert_id="unknown"),
+            _policy_evidence(config, "nr_vqa", polarity=EvidencePolarity.NEGATIVE),
+            _policy_evidence(config, "nr_vqa", polarity=EvidencePolarity.NEGATIVE),
+            _policy_evidence(config, "semantic_video_critic", status=EvidenceStatus.UNAVAILABLE, polarity=EvidencePolarity.NEGATIVE),
+            _policy_evidence(config, "unknown_family", expert_id="unknown", polarity=EvidencePolarity.NEGATIVE),
         ),
         config=config,
     )
@@ -258,14 +279,17 @@ def test_keep_for_repair_requires_bound_available_validation_evidence():
     unvalidated = RepairRecipe(
         recipe_id="repair-1", quality_gain=0.15, confidence=0.80
     )
-    delta = _evidence(
-        "repair_delta", expert_id="repair-scorer", config_hash=config.config_hash
+    delta = _policy_evidence(
+        config, "repair_delta", expert_id="repair-scorer",
+        input_hash="proxy-sha", parent_input_hash="source-sha",
+        polarity=EvidencePolarity.POSITIVE,
     )
     validated = RepairRecipe(
         recipe_id="repair-2",
         quality_gain=0.15,
         confidence=0.80,
         validation=RepairValidation(
+            candidate_id="c1", evaluation_version="quality-moe-v1",
             source_input_hash="source-sha",
             proxy_artifact_hash="proxy-sha",
             recipe_hash=RepairRecipe(recipe_id="repair-2", quality_gain=0.15, confidence=0.80).recipe_hash,
@@ -290,21 +314,173 @@ def test_keep_for_repair_requires_bound_available_validation_evidence():
 
 def test_repair_validation_requires_matching_delta_source_and_config_hashes():
     config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
-    delta = _evidence(
-        "repair_delta", expert_id="repair-scorer", config_hash=config.config_hash
+    delta = _policy_evidence(
+        config, "repair_delta", expert_id="repair-scorer",
+        input_hash="proxy-sha", parent_input_hash="source-sha",
+        polarity=EvidencePolarity.POSITIVE,
     )
     recipe = RepairRecipe(
         recipe_id="repair-1",
         quality_gain=0.15,
         confidence=0.80,
         validation=RepairValidation(
-            source_input_hash="different-source-sha",
-            proxy_artifact_hash="proxy-sha",
+            candidate_id="c1", evaluation_version="quality-moe-v1",
+            source_input_hash="source-sha",
+            proxy_artifact_hash="different-proxy-sha",
             recipe_hash=RepairRecipe(recipe_id="repair-1", quality_gain=0.15, confidence=0.80).recipe_hash,
             config_hash=config.config_hash,
             repair_delta_evidence_id=delta.identity_hash,
             repair_delta_status=EvidenceStatus.AVAILABLE,
         ),
+    )
+
+    assert _enforce(
+        proposed=QualityDecision.KEEP_FOR_REPAIR,
+        repair=recipe,
+        evidence=(delta,),
+        config=config,
+    ).effective_decision is QualityDecision.REVIEW
+
+
+def test_available_positive_evidence_never_counts_as_negative():
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+
+    result = _enforce(
+        proposed=QualityDecision.REJECT,
+        evidence=(
+            _policy_evidence(config, "nr_vqa", polarity=EvidencePolarity.POSITIVE),
+            _policy_evidence(config, "semantic_video_critic", polarity=EvidencePolarity.POSITIVE),
+        ),
+        config=config,
+    )
+
+    assert result.negative_signal_families == ()
+    assert result.effective_decision is QualityDecision.REVIEW
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("candidate_id", "other-candidate"),
+        ("evaluation_version", "quality-moe-v2"),
+        ("config_hash", "other-config"),
+        ("input_hash", "other-source"),
+    ],
+)
+def test_cross_decision_context_evidence_does_not_count(field, value):
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    matching = _policy_evidence(
+        config, "nr_vqa", polarity=EvidencePolarity.NEGATIVE
+    )
+    foreign_kwargs = {field: value, "polarity": EvidencePolarity.NEGATIVE}
+    if field != "config_hash":
+        foreign_kwargs["config_hash"] = config.config_hash
+    foreign = _evidence("semantic_video_critic", **foreign_kwargs)
+
+    result = _enforce(
+        proposed=QualityDecision.REJECT,
+        evidence=(matching, foreign),
+        config=config,
+    )
+
+    assert result.negative_signal_families == ("nr_vqa",)
+    assert result.effective_decision is QualityDecision.REVIEW
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("candidate_id", "other-candidate"),
+        ("evaluation_version", "quality-moe-v2"),
+        ("config_hash", "other-config"),
+    ],
+)
+def test_repair_delta_context_mismatches_cannot_keep_for_repair(field, value):
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    delta_kwargs = {
+        "expert_id": "repair-scorer",
+        "input_hash": "proxy-sha",
+        "parent_input_hash": "source-sha",
+        "polarity": EvidencePolarity.POSITIVE,
+        "config_hash": config.config_hash,
+        field: value,
+    }
+    delta = _evidence("repair_delta", **delta_kwargs)
+    recipe = RepairRecipe(
+        recipe_id="repair-1", quality_gain=0.15, confidence=0.80,
+        validation=RepairValidation(
+            candidate_id="c1", evaluation_version="quality-moe-v1",
+            source_input_hash="source-sha", proxy_artifact_hash="proxy-sha",
+            recipe_hash=RepairRecipe(recipe_id="repair-1", quality_gain=0.15, confidence=0.80).recipe_hash,
+            config_hash=config.config_hash,
+            repair_delta_evidence_id=delta.identity_hash,
+            repair_delta_status=EvidenceStatus.AVAILABLE,
+        ),
+    )
+
+    assert _enforce(
+        proposed=QualityDecision.KEEP_FOR_REPAIR,
+        repair=recipe,
+        evidence=(delta,),
+        config=config,
+    ).effective_decision is QualityDecision.REVIEW
+
+
+def test_repair_delta_recipe_hash_mismatch_cannot_keep_for_repair():
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    delta = _policy_evidence(
+        config, "repair_delta", expert_id="repair-scorer",
+        input_hash="proxy-sha", parent_input_hash="source-sha",
+        polarity=EvidencePolarity.POSITIVE,
+    )
+    recipe = RepairRecipe(
+        recipe_id="repair-1", quality_gain=0.15, confidence=0.80,
+        validation=RepairValidation(
+            candidate_id="c1", evaluation_version="quality-moe-v1",
+            source_input_hash="source-sha", proxy_artifact_hash="proxy-sha",
+            recipe_hash="different-recipe-hash", config_hash=config.config_hash,
+            repair_delta_evidence_id=delta.identity_hash,
+            repair_delta_status=EvidenceStatus.AVAILABLE,
+        ),
+    )
+
+    assert _enforce(
+        proposed=QualityDecision.KEEP_FOR_REPAIR,
+        repair=recipe,
+        evidence=(delta,),
+        config=config,
+    ).effective_decision is QualityDecision.REVIEW
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("candidate_id", "other-candidate"),
+        ("evaluation_version", "quality-moe-v2"),
+        ("config_hash", "other-config"),
+    ],
+)
+def test_repair_validation_context_mismatch_cannot_keep_for_repair(field, value):
+    config = QualityMoeConfig.from_mapping({"quality_moe": {"report_only": False}})
+    delta = _policy_evidence(
+        config, "repair_delta", expert_id="repair-scorer",
+        input_hash="proxy-sha", parent_input_hash="source-sha",
+        polarity=EvidencePolarity.POSITIVE,
+    )
+    validation_kwargs = {
+        "candidate_id": "c1",
+        "evaluation_version": "quality-moe-v1",
+        "source_input_hash": "source-sha",
+        "proxy_artifact_hash": "proxy-sha",
+        "recipe_hash": RepairRecipe(recipe_id="repair-1", quality_gain=0.15, confidence=0.80).recipe_hash,
+        "config_hash": config.config_hash,
+        "repair_delta_evidence_id": delta.identity_hash,
+        "repair_delta_status": EvidenceStatus.AVAILABLE,
+        field: value,
+    }
+    recipe = RepairRecipe(
+        recipe_id="repair-1", quality_gain=0.15, confidence=0.80,
+        validation=RepairValidation(**validation_kwargs),
     )
 
     assert _enforce(

@@ -18,6 +18,12 @@ class EvidenceStatus(str, Enum):
     INVALID = "INVALID"
 
 
+class EvidencePolarity(str, Enum):
+    POSITIVE = "POSITIVE"
+    NEGATIVE = "NEGATIVE"
+    NEUTRAL = "NEUTRAL"
+
+
 class QualityDecision(str, Enum):
     KEEP_AS_IS = "KEEP_AS_IS"
     KEEP_FOR_REPAIR = "KEEP_FOR_REPAIR"
@@ -72,6 +78,8 @@ class ExpertEvidence:
     summary: str = ""
     input_hash: str = ""
     config_hash: str = ""
+    parent_input_hash: str | None = None
+    polarity: EvidencePolarity = EvidencePolarity.NEUTRAL
     prompt_hash: str | None = None
     latency_ms: int = 0
 
@@ -81,11 +89,16 @@ class ExpertEvidence:
         ):
             if not isinstance(getattr(self, field_name), str):
                 raise ValueError(f"{field_name} must be a string")
+        for field_name in ("parent_input_hash", "prompt_hash"):
+            value = getattr(self, field_name)
+            if value is not None and not isinstance(value, str):
+                raise ValueError(f"{field_name} must be a string or None")
         if self.prompt_hash is not None and not isinstance(self.prompt_hash, str):
             raise ValueError("prompt_hash must be a string or None")
         if isinstance(self.latency_ms, bool) or not isinstance(self.latency_ms, int) or self.latency_ms < 0:
             raise ValueError("latency_ms must be a non-negative integer")
         object.__setattr__(self, "status", EvidenceStatus(self.status))
+        object.__setattr__(self, "polarity", EvidencePolarity(self.polarity))
         object.__setattr__(self, "scores", MappingProxyType({
             str(key): _score(value, field_name=f"scores.{key}")
             for key, value in self.scores.items()
@@ -120,6 +133,8 @@ class ExpertEvidence:
             "summary": self.summary,
             "input_hash": self.input_hash,
             "config_hash": self.config_hash,
+            "parent_input_hash": self.parent_input_hash,
+            "polarity": self.polarity.value,
             "prompt_hash": self.prompt_hash,
             "latency_ms": self.latency_ms,
         }
@@ -127,6 +142,8 @@ class ExpertEvidence:
 
 @dataclass(frozen=True)
 class RepairValidation:
+    candidate_id: str
+    evaluation_version: str
     source_input_hash: str
     proxy_artifact_hash: str
     recipe_hash: str
@@ -136,8 +153,9 @@ class RepairValidation:
 
     def __post_init__(self) -> None:
         for field_name in (
-            "source_input_hash", "proxy_artifact_hash", "recipe_hash",
-            "config_hash", "repair_delta_evidence_id",
+            "candidate_id", "evaluation_version", "source_input_hash",
+            "proxy_artifact_hash", "recipe_hash", "config_hash",
+            "repair_delta_evidence_id",
         ):
             value = getattr(self, field_name)
             if not isinstance(value, str) or not value:
@@ -148,6 +166,8 @@ class RepairValidation:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "candidate_id": self.candidate_id,
+            "evaluation_version": self.evaluation_version,
             "source_input_hash": self.source_input_hash,
             "proxy_artifact_hash": self.proxy_artifact_hash,
             "recipe_hash": self.recipe_hash,
