@@ -17,6 +17,8 @@ from app.quality_moe.models import EvidenceStatus
 
 _MAX_LONGEST_SIDE = 640
 _DEFAULT_SAMPLE_COUNT = 6
+_MIN_SAMPLE_COUNT = 6
+_MAX_SAMPLE_COUNT = 8
 
 
 def _finite_timestamp(value: float, *, name: str) -> float:
@@ -61,6 +63,8 @@ class SampledClip:
         if status is EvidenceStatus.AVAILABLE:
             if not frames or len(timestamps) != len(frames):
                 raise ValueError("available sampled clips need matching frames and timestamps")
+            if not _MIN_SAMPLE_COUNT <= len(frames) <= _MAX_SAMPLE_COUNT:
+                raise ValueError("available sampled clips require six to eight frames")
             if any(timestamp < start_ts or timestamp > end_ts for timestamp in timestamps):
                 raise ValueError("sample timestamp lies outside the candidate interval")
             for frame in frames:
@@ -139,8 +143,12 @@ def sample_clip_frames(
     end_ts = _finite_timestamp(end_ts, name="end_ts")
     if start_ts < 0 or end_ts <= start_ts:
         raise ValueError("candidate interval must satisfy 0 <= start_ts < end_ts")
-    if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count < 1:
-        raise ValueError("sample_count must be a positive integer")
+    if (
+        isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or not _MIN_SAMPLE_COUNT <= sample_count <= _MAX_SAMPLE_COUNT
+    ):
+        raise ValueError("sample_count must be an integer from six to eight")
     if not isinstance(candidate_id, str) or not candidate_id:
         raise ValueError("candidate_id must be a non-empty string")
 
@@ -163,15 +171,34 @@ def sample_clip_frames(
         )
     try:
         frames: list[np.ndarray] = []
+        decoded_timestamps: list[float] = []
+        fps = float(capture.get(cv2.CAP_PROP_FPS))
+        tolerance = max(0.05, 1.0 / fps) if math.isfinite(fps) and fps > 0 else 0.05
         for timestamp in timestamps:
-            capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000.0)
+            if not capture.set(cv2.CAP_PROP_POS_MSEC, timestamp * 1000.0):
+                return _unavailable(
+                    candidate_id=candidate_id, video_path=video_path, start_ts=start_ts,
+                    end_ts=end_ts, code="random_access_unavailable",
+                )
             decoded, frame = capture.read()
             if not decoded or frame is None:
                 return _unavailable(
                     candidate_id=candidate_id, video_path=video_path, start_ts=start_ts,
                     end_ts=end_ts, code="frame_decode_failed",
                 )
+            actual_timestamp = float(capture.get(cv2.CAP_PROP_POS_MSEC)) / 1000.0
+            if not math.isfinite(actual_timestamp) or actual_timestamp < start_ts or actual_timestamp > end_ts:
+                return _unavailable(
+                    candidate_id=candidate_id, video_path=video_path, start_ts=start_ts,
+                    end_ts=end_ts, code="decoded_timestamp_outside_interval",
+                )
+            if abs(actual_timestamp - timestamp) > tolerance:
+                return _unavailable(
+                    candidate_id=candidate_id, video_path=video_path, start_ts=start_ts,
+                    end_ts=end_ts, code="decoded_timestamp_mismatch",
+                )
             frames.append(_resize(frame))
+            decoded_timestamps.append(actual_timestamp)
     finally:
         capture.release()
     return SampledClip(
@@ -179,7 +206,7 @@ def sample_clip_frames(
         video_path=video_path,
         start_ts=start_ts,
         end_ts=end_ts,
-        timestamps=timestamps,
+        timestamps=tuple(decoded_timestamps),
         frames=tuple(frames),
         diagnostics={"code": "sampled", "sample_count": len(frames)},
     )

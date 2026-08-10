@@ -20,6 +20,34 @@ def _luma(frame: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.float64) / 255.0
 
 
+def _sharpness_score(frame: np.ndarray) -> float:
+    """Use native 8-bit variance so the fixed 250 scale is meaningful."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    laplacian_variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+    return _bounded(1.0 - math.exp(-laplacian_variance / 250.0))
+
+
+def _overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: int) -> float:
+    height, width = left.shape[:2]
+    left_x = slice(max(0, -dx), min(width, width - dx))
+    right_x = slice(max(0, dx), min(width, width + dx))
+    left_y = slice(max(0, -dy), min(height, height - dy))
+    right_y = slice(max(0, dy), min(height, height + dy))
+    return float(np.mean(np.abs(
+        left[left_y, left_x].astype(np.float64) - right[right_y, right_x].astype(np.float64)
+    ))) / 255.0
+
+
+def _motion_compensated_difference(left: np.ndarray, right: np.ndarray) -> tuple[float, tuple[int, int]]:
+    """Choose the lowest residual across small global camera translations."""
+    candidates = [
+        (_overlap_difference(left, right, dx, dy), (dx, dy))
+        for dy in range(-2, 3)
+        for dx in range(-2, 3)
+    ]
+    return min(candidates, key=lambda item: item[0])
+
+
 def _unavailable_evidence(
     sampled_clip: SampledClip, *, expert_id: str, signal_family: str, config: QualityMoeConfig
 ) -> ExpertEvidence:
@@ -86,8 +114,8 @@ class TechnicalAestheticExpert(_BaseExpert):
         lumas = np.concatenate([_luma(frame).ravel() for frame in sampled_clip.frames])
         median_luma = float(np.median(lumas))
         exposure_score = _bounded(1.0 - min(1.0, abs(median_luma - 0.5) / 0.5))
-        sharpness_values = [float(cv2.Laplacian(_luma(frame), cv2.CV_64F).var()) for frame in sampled_clip.frames]
-        sharpness_score = _bounded(1.0 - math.exp(-float(np.median(sharpness_values)) / 250.0))
+        sharpness_values = [_sharpness_score(frame) for frame in sampled_clip.frames]
+        sharpness_score = _bounded(float(np.median(sharpness_values)))
         shadow_clip = float(np.mean(lumas <= 1.0 / 255.0))
         highlight_clip = float(np.mean(lumas >= 254.0 / 255.0))
         clipping_penalty = _bounded(shadow_clip + highlight_clip)
@@ -96,12 +124,15 @@ class TechnicalAestheticExpert(_BaseExpert):
         )
         findings: tuple[dict[str, object], ...] = ()
         polarity = EvidencePolarity.NEUTRAL
-        if exposure_score < 0.4:
+        detail_preservation = sharpness_score
+        if exposure_score < 0.4 and shadow_clip > 0.5 and detail_preservation < 0.1:
             findings = ({
                 "code": "underexposed_subject",
                 "severity": "repairable",
                 "metric": "median_luma",
                 "value": median_luma,
+                "shadow_clipping": shadow_clip,
+                "detail_preservation": detail_preservation,
             },)
             polarity = EvidencePolarity.NEGATIVE
         elif clipping_penalty > 0.5:
@@ -134,11 +165,15 @@ class TemporalExpert(_BaseExpert):
     def evaluate(self, sampled_clip: SampledClip) -> ExpertEvidence:
         if sampled_clip.status is not EvidenceStatus.AVAILABLE:
             return self._evidence(sampled_clip, scores={}, summary="No temporal assessment.")
-        normalized = [frame.astype(np.float64) / 255.0 for frame in sampled_clip.frames]
-        differences = [float(np.mean(np.abs(right - left))) for left, right in zip(normalized, normalized[1:])]
+        frames = list(sampled_clip.frames)
+        comparisons = [
+            _motion_compensated_difference(left, right)
+            for left, right in zip(frames, frames[1:])
+        ]
+        differences = [residual for residual, _shift in comparisons]
         max_difference = max(differences, default=0.0)
         mean_difference = float(np.mean(differences)) if differences else 0.0
-        loop_difference = float(np.mean(np.abs(normalized[0] - normalized[-1])))
+        loop_difference, _loop_shift = _motion_compensated_difference(frames[0], frames[-1])
         temporal_coherence = _bounded(1.0 - max_difference)
         loop_score = _bounded(1.0 - loop_difference)
         findings: tuple[dict[str, object], ...] = ()
@@ -150,6 +185,14 @@ class TemporalExpert(_BaseExpert):
                 "max_frame_difference": max_difference,
             },)
             polarity = EvidencePolarity.NEGATIVE
+        elif any(dx or dy for _residual, (dx, dy) in comparisons):
+            findings = ({
+                "code": "camera_motion",
+                "severity": "descriptive",
+                "max_translation_pixels": max(
+                    math.hypot(dx, dy) for _residual, (dx, dy) in comparisons
+                ),
+            },)
         return self._evidence(
             sampled_clip,
             scores={
