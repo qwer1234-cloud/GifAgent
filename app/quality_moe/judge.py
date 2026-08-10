@@ -36,7 +36,10 @@ _SIGNAL_FAMILIES = frozenset({
 })
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REFUSAL = re.compile(
-    r"\b(?:cannot|can't|unable|refuse|decline)\b.{0,100}\b(?:assess|evaluate|review|judge|content|explicit)\b",
+    r"(?:\b(?:i\s+)?(?:cannot|can't|am unable to|refuse|decline)\b.{0,100}\b(?:help|comply|assist|assess|evaluate|review|judge)\b|"
+    r"\bsorry\b.{0,100}\b(?:cannot|can't|unable|refuse|decline|help|comply|assist)\b|"
+    r"(?:抱歉|对不起).{0,30}(?:无法|不能|不便|拒绝).{0,30}(?:协助|帮助|评估|处理|回答|提供)|"
+    r"(?:无法|不能).{0,30}(?:协助|帮助|评估|处理|回答|提供))",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -90,20 +93,21 @@ class JudgeResult:
     config_hash: str
     model_hash: str
     attempts: int
+    attempt_prompt_hashes: tuple[str, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "decision", QualityDecision(self.decision))
         object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))
         if not isinstance(self.attempts, int) or self.attempts < 0:
             raise ValueError("attempts must be a non-negative integer")
+        hashes = tuple(self.attempt_prompt_hashes)
+        if len(hashes) != self.attempts or any(not isinstance(item, str) or not item for item in hashes):
+            raise ValueError("attempt_prompt_hashes must describe every attempt")
+        object.__setattr__(self, "attempt_prompt_hashes", hashes)
 
 
 class _StructuralResponseError(ValueError):
     pass
-
-
-class _InvalidResponseError(_StructuralResponseError):
-    """A prohibited value cannot be repaired by accepting another model answer."""
 
 
 class OllamaQualityJudge:
@@ -141,30 +145,31 @@ class OllamaQualityJudge:
             raise ValueError("request must be a JudgeRequest")
         prompt = _prompt(request, correction=False)
         prompt_hash = _sha256(prompt)
+        attempt_prompt_hashes = (prompt_hash,)
         images = _images(request)
         payload = self._payload(prompt, images)
         response, error = self._send(payload)
         if error is not None:
-            return self._terminal(request, prompt_hash, EvidenceStatus.UNAVAILABLE, "ollama_unavailable", error, 1)
+            return self._terminal(request, prompt_hash, attempt_prompt_hashes, EvidenceStatus.UNAVAILABLE, "ollama_unavailable", error, 1)
         assert response is not None
         if _is_refusal(response):
-            return self._terminal(request, prompt_hash, EvidenceStatus.ABSTAINED, "model_refusal", "The judge declined to assess the contact sheets.", 1)
+            return self._terminal(request, prompt_hash, attempt_prompt_hashes, EvidenceStatus.ABSTAINED, "model_refusal", "The judge declined to assess the contact sheets.", 1)
         try:
-            return self._valid(request, prompt_hash, response, attempts=1)
-        except _InvalidResponseError as error:
-            return self._terminal(request, prompt_hash, EvidenceStatus.INVALID, "invalid_judge_schema", str(error), 1)
+            return self._valid(request, prompt_hash, attempt_prompt_hashes, response, attempts=1)
         except _StructuralResponseError as first_error:
             correction = _prompt(request, correction=True)
+            correction_hash = _sha256(correction)
+            attempt_prompt_hashes = (prompt_hash, correction_hash)
             retry_response, error = self._send(self._payload(correction, images))
             if error is not None:
-                return self._terminal(request, prompt_hash, EvidenceStatus.UNAVAILABLE, "ollama_unavailable", error, 2)
+                return self._terminal(request, correction_hash, attempt_prompt_hashes, EvidenceStatus.UNAVAILABLE, "ollama_unavailable", error, 2)
             assert retry_response is not None
             if _is_refusal(retry_response):
-                return self._terminal(request, prompt_hash, EvidenceStatus.ABSTAINED, "model_refusal", "The judge declined to assess the contact sheets.", 2)
+                return self._terminal(request, correction_hash, attempt_prompt_hashes, EvidenceStatus.ABSTAINED, "model_refusal", "The judge declined to assess the contact sheets.", 2)
             try:
-                return self._valid(request, prompt_hash, retry_response, attempts=2)
+                return self._valid(request, correction_hash, attempt_prompt_hashes, retry_response, attempts=2)
             except _StructuralResponseError:
-                return self._terminal(request, prompt_hash, EvidenceStatus.INVALID, "invalid_judge_schema", str(first_error), 2)
+                return self._terminal(request, correction_hash, attempt_prompt_hashes, EvidenceStatus.INVALID, "invalid_judge_schema", str(first_error), 2)
 
     def _payload(self, prompt: str, images: list[str]) -> dict[str, object]:
         return {
@@ -180,14 +185,20 @@ class OllamaQualityJudge:
             with httpx.Client(transport=self._transport, timeout=self._timeout) as client:
                 response = client.post(f"{self._base_url}/api/generate", json=payload)
                 response.raise_for_status()
-                body = response.json()
-        except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError, ValueError):
+        except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError):
             return None, "Ollama was unavailable while judging contact sheets."
+        try:
+            body = response.json()
+        except ValueError:
+            return "", None
         if not isinstance(body, dict) or not isinstance(body.get("response"), str):
             return "", None
         return body["response"], None
 
-    def _valid(self, request: JudgeRequest, prompt_hash: str, response: str, *, attempts: int) -> JudgeResult:
+    def _valid(
+        self, request: JudgeRequest, prompt_hash: str,
+        attempt_prompt_hashes: tuple[str, ...], response: str, *, attempts: int,
+    ) -> JudgeResult:
         parsed = parse_json_response(response)
         if not parsed.ok or not isinstance(parsed.data, dict):
             raise _StructuralResponseError("response must contain one JSON object")
@@ -210,7 +221,7 @@ class OllamaQualityJudge:
         if selected_recipe_id is not None and (
             not isinstance(selected_recipe_id, str) or selected_recipe_id not in request.allowed_recipe_ids
         ):
-            raise _InvalidResponseError("selected_recipe_id is not an allowed repair recipe")
+            raise _StructuralResponseError("selected_recipe_id is not an allowed repair recipe")
         if decision is QualityDecision.KEEP_FOR_REPAIR and selected_recipe_id is None:
             raise _StructuralResponseError("KEEP_FOR_REPAIR requires an allowed selected_recipe_id")
         if decision is not QualityDecision.KEEP_FOR_REPAIR and selected_recipe_id is not None:
@@ -218,6 +229,11 @@ class OllamaQualityJudge:
         summary = payload["summary"]
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 2000:
             raise _StructuralResponseError("summary must be a bounded non-empty string")
+        if decision is QualityDecision.ABSTAIN:
+            return self._terminal(
+                request, prompt_hash, attempt_prompt_hashes, EvidenceStatus.ABSTAINED,
+                "model_abstain", summary.strip(), attempts,
+            )
         polarity = EvidencePolarity.NEGATIVE if families else EvidencePolarity.NEUTRAL
         evidence = ExpertEvidence(
             candidate_id=request.candidate_id,
@@ -240,10 +256,10 @@ class OllamaQualityJudge:
             polarity=polarity,
             prompt_hash=prompt_hash,
         )
-        return JudgeResult(decision, confidence, dimensions, families, reason_codes, selected_recipe_id, summary.strip(), evidence, prompt_hash, self._config.config_hash, self._model_hash, attempts)
+        return JudgeResult(decision, confidence, dimensions, families, reason_codes, selected_recipe_id, summary.strip(), evidence, prompt_hash, self._config.config_hash, self._model_hash, attempts, attempt_prompt_hashes)
 
     def _terminal(
-        self, request: JudgeRequest, prompt_hash: str, status: EvidenceStatus,
+        self, request: JudgeRequest, prompt_hash: str, attempt_prompt_hashes: tuple[str, ...], status: EvidenceStatus,
         code: str, summary: str, attempts: int,
     ) -> JudgeResult:
         evidence = ExpertEvidence(
@@ -260,7 +276,7 @@ class OllamaQualityJudge:
             polarity=EvidencePolarity.NEUTRAL,
             prompt_hash=prompt_hash,
         )
-        return JudgeResult(QualityDecision.ABSTAIN, 0.0, {}, (), (), None, summary, evidence, prompt_hash, self._config.config_hash, self._model_hash, attempts)
+        return JudgeResult(QualityDecision.ABSTAIN, 0.0, {}, (), (), None, summary, evidence, prompt_hash, self._config.config_hash, self._model_hash, attempts, attempt_prompt_hashes)
 
 
 def _prompt(request: JudgeRequest, *, correction: bool) -> str:

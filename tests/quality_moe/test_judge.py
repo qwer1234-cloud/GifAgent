@@ -34,6 +34,11 @@ class FakeTransport(httpx.BaseTransport):
         response = self._responses.pop(0)
         if isinstance(response, BaseException):
             raise response
+        if isinstance(response, httpx.Response):
+            return httpx.Response(
+                response.status_code, content=response.content,
+                headers=response.headers, request=request,
+            )
         return httpx.Response(200, json=response, request=request)
 
 
@@ -149,15 +154,24 @@ def test_malformed_output_retries_once_with_same_sheets_then_invalid_abstain(
     first, second = (json.loads(item.content) for item in fake_transport.requests)
     assert first["images"] == second["images"]
     assert "correct" in second["prompt"].lower()
+    assert len(result.attempt_prompt_hashes) == 2
+    assert result.attempt_prompt_hashes[0] != result.evidence.prompt_hash
+    assert result.attempt_prompt_hashes[-1] == result.evidence.prompt_hash
 
 
-def test_unknown_recipe_id_is_invalid(fake_transport: FakeTransport, sheets: tuple[Path, Path]) -> None:
+def test_unknown_recipe_id_retries_with_same_sheets_then_invalid(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path],
+) -> None:
+    fake_transport.respond({"response": json.dumps(valid_payload(selected_recipe_id="invented"))})
     fake_transport.respond({"response": json.dumps(valid_payload(selected_recipe_id="invented"))})
 
     result = judge(fake_transport).judge(request(sheets))
 
     assert result.evidence.status is EvidenceStatus.INVALID
     assert result.decision is QualityDecision.ABSTAIN
+    assert len(fake_transport.requests) == 2
+    first, second = (json.loads(item.content) for item in fake_transport.requests)
+    assert first["images"] == second["images"]
 
 
 @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -0.01, 1.01])
@@ -174,6 +188,28 @@ def test_non_finite_or_out_of_range_dimension_is_invalid(
     assert result.decision is QualityDecision.ABSTAIN
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"decision": "INVENTED"},
+        {"negative_signal_families": ["invented_family"]},
+        {"reason_codes": ["Not A Normalized Code"]},
+    ],
+)
+def test_invalid_decision_family_or_reason_retries_once_then_invalid(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path], changes: dict[str, object],
+) -> None:
+    invalid = {"response": json.dumps(valid_payload(**changes))}
+    fake_transport.respond(invalid)
+    fake_transport.respond(invalid)
+
+    result = judge(fake_transport).judge(request(sheets))
+
+    assert result.decision is QualityDecision.ABSTAIN
+    assert result.evidence.status is EvidenceStatus.INVALID
+    assert len(fake_transport.requests) == 2
+
+
 def test_network_failure_is_unavailable_without_retry(
     fake_transport: FakeTransport, sheets: tuple[Path, Path],
 ) -> None:
@@ -185,3 +221,78 @@ def test_network_failure_is_unavailable_without_retry(
     assert result.decision is QualityDecision.ABSTAIN
     assert result.negative_signal_families == ()
     assert len(fake_transport.requests) == 1
+
+
+def test_http_service_error_is_unavailable_without_retry(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path],
+) -> None:
+    fake_transport.respond(httpx.Response(503, content=b"service unavailable"))
+
+    result = judge(fake_transport).judge(request(sheets))
+
+    assert result.decision is QualityDecision.ABSTAIN
+    assert result.evidence.status is EvidenceStatus.UNAVAILABLE
+    assert result.negative_signal_families == ()
+    assert len(fake_transport.requests) == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"response": "I can't help with that."},
+        {"response": "I cannot comply with that request."},
+        {"response": "Sorry, I can't assist with that."},
+        {"response": "抱歉，我无法协助评估此内容。"},
+    ],
+)
+def test_common_content_neutral_refusals_abstain_without_retry(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path], response: dict[str, str],
+) -> None:
+    fake_transport.respond(response)
+
+    result = judge(fake_transport).judge(request(sheets))
+
+    assert result.decision is QualityDecision.ABSTAIN
+    assert result.evidence.status is EvidenceStatus.ABSTAINED
+    assert result.evidence.polarity is EvidencePolarity.NEUTRAL
+    assert result.negative_signal_families == ()
+    assert len(fake_transport.requests) == 1
+
+
+def test_structured_abstain_never_becomes_available_negative_evidence(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path],
+) -> None:
+    fake_transport.respond({"response": json.dumps(valid_payload(
+        decision="ABSTAIN", selected_recipe_id=None,
+    ))})
+
+    result = judge(fake_transport).judge(request(sheets))
+
+    assert result.decision is QualityDecision.ABSTAIN
+    assert result.evidence.status is EvidenceStatus.ABSTAINED
+    assert result.evidence.polarity is EvidencePolarity.NEUTRAL
+    assert result.negative_signal_families == ()
+
+
+@pytest.mark.parametrize(
+    "first_response",
+    [
+        [],
+        httpx.Response(200, content=b"{not-json"),
+    ],
+)
+def test_non_object_or_invalid_envelope_retries_as_structural_failure(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path], first_response: object,
+) -> None:
+    fake_transport.respond(first_response)
+    fake_transport.respond({"response": json.dumps(valid_payload())})
+
+    result = judge(fake_transport).judge(request(sheets))
+
+    assert result.decision is QualityDecision.KEEP_FOR_REPAIR
+    assert result.evidence.status is EvidenceStatus.AVAILABLE
+    assert result.attempts == 2
+    assert len(fake_transport.requests) == 2
+    first, second = (json.loads(item.content) for item in fake_transport.requests)
+    assert first["images"] == second["images"]
+    assert result.evidence.prompt_hash == result.attempt_prompt_hashes[-1]
