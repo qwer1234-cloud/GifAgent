@@ -1,16 +1,21 @@
 """Bounded, pixel-preserving repair search for quality-MoE proxy clips.
 
-The search deliberately works only on sampled proxy pixels.  It never writes a
-rendered media artifact and it uses one immutable recipe for every frame in a
-candidate interval.  A caller may optionally request two contact sheets in a
-dedicated work directory: the original and the one validated best proxy.
+The search certifies only proxies rendered by the same fixed FFmpeg filter used
+for final output.  It uses one immutable recipe for every frame in a candidate
+interval and writes only optional contact sheets to a caller-owned directory.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import os
 from pathlib import Path
-from typing import Callable
+import re
+import shutil
+import subprocess
+import tempfile
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -31,6 +36,7 @@ _MAX_FPS = 120
 _MAX_WIDTH = 8192
 _EPSILON = 1e-6
 _RECIPE_FIELDS = frozenset(RepairRecipe.__dataclass_fields__)
+_PROXY_FPS = 12
 
 
 @dataclass(frozen=True)
@@ -45,24 +51,21 @@ class RepairSearchResult:
     source_temporal: ExpertEvidence
 
 
-FrameTransform = Callable[[np.ndarray, RepairRecipe, int], np.ndarray]
-
-
-def _approved_recipes() -> tuple[RepairRecipe, ...]:
+def approved_recipes() -> tuple[RepairRecipe, ...]:
     """Return the finite, clip-global v1 search grid (never more than twelve)."""
     settings = (
-        {"exposure_ev": 0.25},
-        {"exposure_ev": 0.50},
+        {"exposure_ev": -0.75},
+        {"exposure_ev": -0.35},
+        {"exposure_ev": 0.35},
         {"exposure_ev": 0.75},
-        {"gamma": 0.95},
-        {"gamma": 0.90},
         {"gamma": 0.85},
-        {"contrast": 0.05},
-        {"contrast": -0.05},
-        {"shadows": 0.10},
-        {"highlights": 0.10},
-        {"white_balance": (1.04, 1.00, 0.96)},
-        {"exposure_ev": 0.75, "gamma": 0.95, "shadows": 0.10},
+        {"gamma": 1.15},
+        {"contrast": -0.10},
+        {"contrast": 0.10},
+        {"shadows": 0.15},
+        {"highlights": -0.15},
+        {"white_balance": (1.08, 1.00, 0.92)},
+        {"white_balance": (0.92, 1.00, 1.08)},
     )
     recipes = tuple(
         RepairRecipe(recipe_id=f"photometric-{index + 1:02d}", **values).validate()
@@ -108,23 +111,57 @@ def apply_recipe_to_frame(frame: np.ndarray, recipe: RepairRecipe) -> np.ndarray
     return np.rint(np.clip(pixels, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
-def _proxy_clip(
-    sampled_clip: SampledClip,
-    recipe: RepairRecipe,
-    transform: FrameTransform | None,
-) -> SampledClip:
-    frame_transform = transform or (lambda frame, item, _index: apply_recipe_to_frame(frame, item))
-    frames = tuple(
-        np.ascontiguousarray(frame_transform(frame, recipe, index))
-        for index, frame in enumerate(sampled_clip.frames)
+def _proxy_filter(sampled_clip: SampledClip, recipe: RepairRecipe) -> str:
+    return build_ffmpeg_filter(
+        recipe,
+        fps=_PROXY_FPS,
+        max_width=sampled_clip.frames[0].shape[1],
     )
+
+
+def render_recipe_proxy(sampled_clip: SampledClip, recipe: RepairRecipe) -> SampledClip:
+    """Render a complete proxy sequence through the certified FFmpeg filter."""
+    if not isinstance(sampled_clip, SampledClip) or sampled_clip.status is not EvidenceStatus.AVAILABLE:
+        raise ValueError("rendering requires an available SampledClip")
+    _assert_recipe_is_safe(recipe)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is required to certify repair proxies")
+    filter_graph = _proxy_filter(sampled_clip, recipe)
+    with tempfile.TemporaryDirectory(prefix="gifagent-quality-repair-") as temp_dir:
+        root = Path(temp_dir)
+        source_pattern = root / "source-%06d.png"
+        output_pattern = root / "rendered-%06d.png"
+        for index, frame in enumerate(sampled_clip.frames):
+            source_path = root / f"source-{index:06d}.png"
+            if not cv2.imwrite(str(source_path), frame):
+                raise OSError(f"failed to write isolated source frame {index}")
+        completed = subprocess.run(
+            [
+                ffmpeg, "-v", "error", "-y", "-framerate", str(_PROXY_FPS),
+                "-start_number", "0", "-i", str(source_pattern),
+                "-frames:v", str(len(sampled_clip.frames)), "-vf", filter_graph,
+                str(output_pattern),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(f"ffmpeg repair proxy render failed: {completed.stderr.strip()}")
+        output_paths = tuple(sorted(root.glob("rendered-*.png")))
+        if len(output_paths) != len(sampled_clip.frames):
+            raise RuntimeError("ffmpeg repair proxy rendered an unexpected frame count")
+        frames = tuple(cv2.imread(str(path), cv2.IMREAD_COLOR) for path in output_paths)
+        if any(frame is None for frame in frames):
+            raise RuntimeError("ffmpeg repair proxy produced an unreadable frame")
     return SampledClip(
         candidate_id=sampled_clip.candidate_id,
         video_path=sampled_clip.video_path,
         start_ts=sampled_clip.start_ts,
         end_ts=sampled_clip.end_ts,
         timestamps=sampled_clip.timestamps,
-        frames=frames,
+        frames=tuple(np.ascontiguousarray(frame) for frame in frames),
         semantic_labels=sampled_clip.semantic_labels,
     )
 
@@ -154,6 +191,8 @@ def _validated_recipe(
     config: QualityMoeConfig,
     source_quality: float,
     proxy_quality: float,
+    source_temporal: float,
+    proxy_temporal: float,
     quality_gain: float,
     confidence: float,
 ) -> tuple[RepairRecipe, ExpertEvidence]:
@@ -180,8 +219,14 @@ def _validated_recipe(
             "proxy_quality": proxy_quality,
             "quality_gain": quality_gain,
             "validation_confidence": confidence,
+            "source_temporal_coherence": source_temporal,
+            "proxy_temporal_coherence": proxy_temporal,
         },
-        findings=({"code": "measured_proxy_gain", "recipe_id": measured.recipe_id},),
+        findings=({
+            "code": "measured_proxy_gain",
+            "recipe_id": measured.recipe_id,
+            "ffmpeg_filter": _proxy_filter(sampled_clip, recipe),
+        },),
         summary="Measured quality gain from the source proxy and one rendered repair proxy.",
         input_hash=proxy.input_hash,
         parent_input_hash=sampled_clip.input_hash,
@@ -212,18 +257,59 @@ def _validated_recipe(
     ).validate(), delta
 
 
-def _save_contact_sheet(work_dir: str | Path, name: str, frames: tuple[np.ndarray, ...]) -> None:
+def _contact_destination(
+    work_dir: str | Path,
+    sampled_clip: SampledClip,
+    *,
+    kind: str,
+) -> Path:
     destination = Path(work_dir)
     destination.mkdir(parents=True, exist_ok=True)
     if not destination.is_dir():
         raise ValueError("work_dir must be a directory")
+    candidate = re.sub(r"[^A-Za-z0-9_-]+", "-", sampled_clip.candidate_id).strip("-")
+    name = f"{candidate}-{sampled_clip.input_hash[:12]}-{kind}-contact-sheet.png"
+    target = destination / name
+    if "://" not in sampled_clip.video_path:
+        source = Path(sampled_clip.video_path).resolve(strict=False)
+        if target.resolve(strict=False) == source:
+            raise ValueError("contact sheet destination must not equal source media")
+    return target
+
+
+def _file_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _save_contact_sheet(
+    work_dir: str | Path,
+    sampled_clip: SampledClip,
+    *,
+    kind: str,
+    frames: tuple[np.ndarray, ...],
+) -> None:
+    target = _contact_destination(work_dir, sampled_clip, kind=kind)
     height = min(frame.shape[0] for frame in frames)
     tiles = tuple(
         frame if frame.shape[0] == height else cv2.resize(frame, (round(frame.shape[1] * height / frame.shape[0]), height))
         for frame in frames
     )
-    if not cv2.imwrite(str(destination / name), cv2.hconcat(tiles)):
-        raise OSError(f"failed to write {name}")
+    temporary = target.with_name(f".{target.stem}.{uuid4().hex}.tmp.png")
+    try:
+        if not cv2.imwrite(str(temporary), cv2.hconcat(tiles)):
+            raise OSError(f"failed to write {target.name}")
+        if target.exists():
+            if _file_hash(target) == _file_hash(temporary):
+                return
+            raise FileExistsError(f"contact sheet already exists: {target}")
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def search_repairs(
@@ -231,7 +317,6 @@ def search_repairs(
     config: QualityMoeConfig,
     *,
     work_dir: str | Path | None = None,
-    transform: FrameTransform | None = None,
 ) -> RepairSearchResult:
     """Evaluate at most twelve clip-global recipes and retain only validated repair."""
     if not isinstance(sampled_clip, SampledClip):
@@ -245,17 +330,17 @@ def search_repairs(
     source_cinematic = cinematic.evaluate(sampled_clip)
     source_temporal = temporal.evaluate(sampled_clip)
     if work_dir is not None and sampled_clip.status is EvidenceStatus.AVAILABLE:
-        _save_contact_sheet(work_dir, "original-contact-sheet.png", sampled_clip.frames)
+        _save_contact_sheet(work_dir, sampled_clip, kind="original", frames=sampled_clip.frames)
 
     if not config.repairability.enabled or sampled_clip.status is not EvidenceStatus.AVAILABLE:
         return RepairSearchResult((), None, None, source_technical, source_cinematic, source_temporal)
 
-    candidates = _approved_recipes()[: config.repairability.max_proxy_variants]
+    candidates = approved_recipes()[: config.repairability.max_proxy_variants]
     evaluated: list[RepairRecipe] = []
     best: tuple[RepairRecipe, ExpertEvidence, SampledClip] | None = None
     source_quality = _quality(source_technical, source_cinematic)
     for recipe in candidates:
-        proxy = _proxy_clip(sampled_clip, recipe, transform)
+        proxy = render_recipe_proxy(sampled_clip, recipe)
         proxy_technical = technical.evaluate(proxy)
         proxy_cinematic = cinematic.evaluate(proxy)
         proxy_temporal = temporal.evaluate(proxy)
@@ -289,6 +374,8 @@ def search_repairs(
             config=config,
             source_quality=source_quality,
             proxy_quality=_quality(proxy_technical, proxy_cinematic),
+            source_temporal=source_temporal.scores["temporal_coherence"],
+            proxy_temporal=proxy_temporal.scores["temporal_coherence"],
             quality_gain=gain,
             confidence=confidence,
         )
@@ -296,7 +383,7 @@ def search_repairs(
             best = (validated, delta, proxy)
 
     if best is not None and work_dir is not None:
-        _save_contact_sheet(work_dir, "best-contact-sheet.png", best[2].frames)
+        _save_contact_sheet(work_dir, sampled_clip, kind="best", frames=best[2].frames)
     return RepairSearchResult(tuple(evaluated), best[0] if best else None, best[1] if best else None, source_technical, source_cinematic, source_temporal)
 
 
@@ -310,6 +397,7 @@ def recipe_to_safe_filters(recipe: RepairRecipe) -> tuple[str, ...]:
     brightness = (2.0 ** recipe.exposure_ev - 1.0) / 2.0
     contrast = 1.0 + recipe.contrast
     shadow_point = 0.25 + recipe.shadows * 0.25
+    # A negative value is the approved highlight-compression direction.
     highlight_point = 0.75 + recipe.highlights * 0.25
     blue, green, red = recipe.white_balance
     return (
