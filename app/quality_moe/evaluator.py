@@ -61,20 +61,24 @@ def evaluate_candidate(
     enforcement.
     """
     candidate_id, video_path, start_ts, end_ts = _candidate_fields(candidate)
-    source_hash = _source_hash(video_path)
-    if source_hash is None:
-        unavailable_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": "unavailable", "start_ts": start_ts, "end_ts": end_ts})
-        return _abstained(candidate_id, video_path, "unavailable", start_ts, end_ts, unavailable_input, config, "source_unavailable", "Source media is missing, unreadable, or cannot be fully hashed.")
-    fallback_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": source_hash, "start_ts": start_ts, "end_ts": end_ts})
     hard_reasons = hard_gate_reasons(candidate)
     if hard_reasons:
+        # A deterministic hard gate is authoritative and must not require
+        # media eligibility, sampling, model calls, or filesystem reads.
+        fallback_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": "not_checked", "start_ts": start_ts, "end_ts": end_ts})
         assessment = enforce_decision(
             candidate_id=candidate_id, input_hash=fallback_input, proposed=QualityDecision.KEEP_AS_IS,
             confidence=1.0, evidence=(), hard_reasons=hard_reasons, repair=None, config=config,
         )
         return _annotate(assessment, input_hash=fallback_input, evidence=(), provenance=_provenance(
-            candidate_id, video_path, source_hash, start_ts, end_ts, (), config, (), None, None, _latencies(total=0),
+            candidate_id, video_path, "not_checked", start_ts, end_ts, (), config, (), None, None, _latencies(total=0),
         ))
+
+    source_hash = _source_hash(video_path)
+    if source_hash is None:
+        unavailable_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": "unavailable", "start_ts": start_ts, "end_ts": end_ts})
+        return _abstained(candidate_id, video_path, "unavailable", start_ts, end_ts, unavailable_input, config, "source_unavailable", "Source media is missing, unreadable, or cannot be fully hashed.")
+    fallback_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": source_hash, "start_ts": start_ts, "end_ts": end_ts})
 
     total_started = clock()
     sampler_started = clock()

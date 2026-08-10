@@ -235,6 +235,43 @@ def test_missing_source_cannot_be_bypassed_by_injected_available_sample(tmp_path
     assert assessment.provenance["failure"]["code"] == "source_unavailable"
 
 
+def test_hard_gate_rejects_missing_source_without_touching_sampler_experts_or_judge(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    sampler = _CountingSampler(_sample(video_path=str(tmp_path / "missing.mp4")))
+    expert_calls: list[str] = []
+
+    class CountingExpert(_Expert):
+        def evaluate(self, sample):
+            expert_calls.append(self.expert_id)
+            return super().evaluate(sample)
+
+    assessment = evaluate_candidate(
+        {"candidate_id": "c1", "video_path": str(tmp_path / "missing.mp4"), "start_ts": 1.0, "end_ts": 2.0, "transition_action": "drop"},
+        config=config, work_dir=tmp_path, sampler=sampler,
+        experts=(CountingExpert(config, "nr_vqa", "a"), CountingExpert(config, "cinematic_classifier", "b"), CountingExpert(config, "deterministic_temporal", "c")),
+        judge=object(),
+    )
+
+    assert assessment.decision is QualityDecision.REJECT
+    assert assessment.hard_reasons == ("transition_drop",)
+    assert sampler.calls == 0
+    assert expert_calls == []
+
+
+def test_missing_source_without_hard_gate_is_abstained(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    assessment = evaluate_candidate(
+        {"candidate_id": "c1", "video_path": str(tmp_path / "missing.mp4"), "start_ts": 1.0, "end_ts": 2.0},
+        config=_config(), work_dir=tmp_path,
+    )
+
+    assert assessment.decision is QualityDecision.ABSTAIN
+    assert assessment.hard_reasons == ()
+
+
 def test_sampler_wrong_source_or_bounds_is_abstained_before_experts(tmp_path):
     from app.quality_moe.evaluator import evaluate_candidate
 
