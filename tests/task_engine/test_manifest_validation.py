@@ -1553,6 +1553,34 @@ class TestReadUpstreamManifestWiring:
                 "gif_clip",
             )
 
+    def test_staged_rank_reader_rejects_embedded_ledger_with_all_sidecars(
+        self, tmp_path: Path,
+    ):
+        from scripts import test_video_adaptive as adaptive
+
+        manifest = _valid_quality_rank_manifest()
+        sidecar_manifest = _valid_quality_rank_manifest()
+        ledger_bytes, ledger_ref, upstream_ref = (
+            _external_quality_ledger_fixture(sidecar_manifest)
+        )
+        rank_path = tmp_path / "rank_dedup_manifest.json"
+        rank_path.write_text(json.dumps(manifest), encoding="utf-8")
+        ledger_path = tmp_path / "rank_candidate_ledger.json"
+        ledger_path.write_bytes(ledger_bytes)
+
+        with pytest.raises(ValueError, match="external candidate ledger"):
+            adaptive._read_upstream_manifest(
+                {
+                    "rank_dedup_manifest": [{"path": str(rank_path)}],
+                    "rank_candidate_ledger": [{
+                        **ledger_ref, "path": str(ledger_path),
+                    }],
+                    "synthesize_manifest": [upstream_ref],
+                },
+                "rank_dedup_manifest",
+                "gif_clip",
+            )
+
     def test_read_upstream_manifest_valid(self, tmp_path: Path):
         """_read_upstream_manifest validates and returns data for a valid manifest."""
         import json as _json

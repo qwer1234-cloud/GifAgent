@@ -2678,11 +2678,11 @@ def _read_upstream_manifest(inputs: dict, artifact_kind: str, stage: str) -> dic
                 raise ValueError(f"Input artifact file not found: {ledger_path}")
             with open(ledger_path, "rb") as ledger_file:
                 ledger_bytes = ledger_file.read()
-            lineage_kwargs = {
+            lineage_kwargs.update({
                 "candidate_ledger_bytes": ledger_bytes,
                 "candidate_ledger_ref": ledger_ref,
                 "upstream_artifact_ref": upstream_entries[0],
-            }
+            })
 
     data = validate_manifest_json(
         raw_bytes,
