@@ -36,7 +36,7 @@ _SIGNAL_FAMILIES = frozenset({
 })
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _REFUSAL = re.compile(
-    r"(?:\b(?:i\s+)?(?:cannot|can't|am unable to|refuse|decline)\b.{0,100}\b(?:help|comply|assist|assess|evaluate|review|judge)\b|"
+    r"(?:\b(?:i\s*(?:am|'m)\s+)?(?:cannot|can't|unable(?:\s+to)?|refuse|decline)\b.{0,100}\b(?:help|comply|assist|assess|evaluate|review|judge)\b|"
     r"\bsorry\b.{0,100}\b(?:cannot|can't|unable|refuse|decline|help|comply|assist)\b|"
     r"(?:抱歉|对不起).{0,30}(?:无法|不能|不便|拒绝).{0,30}(?:协助|帮助|评估|处理|回答|提供)|"
     r"(?:无法|不能).{0,30}(?:协助|帮助|评估|处理|回答|提供))",
@@ -152,7 +152,7 @@ class OllamaQualityJudge:
         if error is not None:
             return self._terminal(request, prompt_hash, attempt_prompt_hashes, EvidenceStatus.UNAVAILABLE, "ollama_unavailable", error, 1)
         assert response is not None
-        if _is_refusal(response):
+        if not _is_structured_candidate(response) and _is_refusal(response):
             return self._terminal(request, prompt_hash, attempt_prompt_hashes, EvidenceStatus.ABSTAINED, "model_refusal", "The judge declined to assess the contact sheets.", 1)
         try:
             return self._valid(request, prompt_hash, attempt_prompt_hashes, response, attempts=1)
@@ -164,7 +164,7 @@ class OllamaQualityJudge:
             if error is not None:
                 return self._terminal(request, correction_hash, attempt_prompt_hashes, EvidenceStatus.UNAVAILABLE, "ollama_unavailable", error, 2)
             assert retry_response is not None
-            if _is_refusal(retry_response):
+            if not _is_structured_candidate(retry_response) and _is_refusal(retry_response):
                 return self._terminal(request, correction_hash, attempt_prompt_hashes, EvidenceStatus.ABSTAINED, "model_refusal", "The judge declined to assess the contact sheets.", 2)
             try:
                 return self._valid(request, correction_hash, attempt_prompt_hashes, retry_response, attempts=2)
@@ -314,6 +314,11 @@ def _images(request: JudgeRequest) -> list[str]:
 
 def _is_refusal(response: str) -> bool:
     return bool(_REFUSAL.search(response))
+
+
+def _is_structured_candidate(response: str) -> bool:
+    parsed = parse_json_response(response)
+    return parsed.ok and isinstance(parsed.data, dict)
 
 
 def _score(value: object, field_name: str) -> float:

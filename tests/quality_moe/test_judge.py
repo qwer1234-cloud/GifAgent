@@ -127,6 +127,28 @@ def test_valid_json_sends_both_sheets_with_neutral_prompt_and_traces_hashes(
     assert "do not award or deduct" in payload["prompt"].lower()
 
 
+@pytest.mark.parametrize(
+    "decision,summary",
+    [
+        ("KEEP_FOR_REPAIR", "The repair cannot help recover clipped highlights."),
+        ("REVIEW", "The proxy is unable to assist with temporal continuity."),
+    ],
+)
+def test_valid_structured_decision_is_not_mistaken_for_text_refusal(
+    fake_transport: FakeTransport, sheets: tuple[Path, Path], decision: str, summary: str,
+) -> None:
+    selected_recipe_id = "repair-1" if decision == "KEEP_FOR_REPAIR" else None
+    fake_transport.respond({"response": json.dumps(valid_payload(
+        decision=decision, selected_recipe_id=selected_recipe_id, summary=summary,
+    ))})
+
+    result = judge(fake_transport).judge(request(sheets))
+
+    assert result.decision is QualityDecision(decision)
+    assert result.evidence.status is EvidenceStatus.AVAILABLE
+    assert len(fake_transport.requests) == 1
+
+
 def test_refusal_becomes_abstain_without_negative_vote(
     fake_transport: FakeTransport, sheets: tuple[Path, Path],
 ) -> None:
@@ -242,6 +264,9 @@ def test_http_service_error_is_unavailable_without_retry(
         {"response": "I can't help with that."},
         {"response": "I cannot comply with that request."},
         {"response": "Sorry, I can't assist with that."},
+        {"response": "I'm unable to assist with that."},
+        {"response": "I am unable to help with that."},
+        {"response": "Unable to comply with that request."},
         {"response": "抱歉，我无法协助评估此内容。"},
     ],
 )
