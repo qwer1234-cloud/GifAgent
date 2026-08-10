@@ -29,8 +29,9 @@ def sampled_clip(
     )
 
 
-def _checkerboard(*, height: int = 90, width: int = 160) -> np.ndarray:
-    cells = (np.indices((height, width)).sum(axis=0) % 2 * 255).astype(np.uint8)
+def _checkerboard(*, height: int = 90, width: int = 160, cell_size: int = 1) -> np.ndarray:
+    grid = np.indices((height, width)) // cell_size
+    cells = (grid.sum(axis=0) % 2 * 255).astype(np.uint8)
     return np.repeat(cells[:, :, None], 3, axis=2)
 
 
@@ -66,6 +67,7 @@ def test_single_flash_frame_is_temporal_negative_signal():
 
     assert evidence.scores["temporal_coherence"] < 0.7
     assert evidence.signal_family == "deterministic_temporal"
+    assert evidence.polarity.value == "NEGATIVE"
 
 
 def test_one_pixel_checkerboard_translation_is_motion_compensated_not_negative():
@@ -76,6 +78,25 @@ def test_one_pixel_checkerboard_translation_is_motion_compensated_not_negative()
 
     assert evidence.polarity.value == "NEUTRAL"
     assert evidence.scores["temporal_coherence"] > 0.95
+
+
+def test_three_pixel_checkerboard_translation_is_motion_compensated_not_negative():
+    frame = _checkerboard(cell_size=4)
+    frames = tuple(np.roll(frame, index * 3, axis=1) for index in range(6))
+
+    evidence = TemporalExpert().evaluate(sampled_clip(frames))
+
+    assert evidence.polarity.value == "NEUTRAL"
+    assert evidence.scores["temporal_coherence"] > 0.95
+
+
+def test_static_uniform_frames_do_not_emit_camera_motion():
+    frames = tuple(np.full((90, 160, 3), 80, np.uint8) for _ in range(6))
+
+    evidence = TemporalExpert().evaluate(sampled_clip(frames))
+
+    assert evidence.polarity.value == "NEUTRAL"
+    assert not any(finding["code"] == "camera_motion" for finding in evidence.findings)
 
 
 def test_high_contrast_checkerboard_has_high_8bit_sharpness_without_blur_polarity():

@@ -38,14 +38,29 @@ def _overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: int) -
     ))) / 255.0
 
 
+def _motion_search_limit(frame: np.ndarray) -> int:
+    height, width = frame.shape[:2]
+    return min(16, max(4, round(min(height, width) * 0.05)), min(height, width) - 1)
+
+
 def _motion_compensated_difference(left: np.ndarray, right: np.ndarray) -> tuple[float, tuple[int, int]]:
-    """Choose the lowest residual across small global camera translations."""
+    """Use overlap residuals across a bounded, frame-scale translation search."""
+    left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
+    right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+    max_shift = _motion_search_limit(left_gray)
     candidates = [
-        (_overlap_difference(left, right, dx, dy), (dx, dy))
-        for dy in range(-2, 3)
-        for dx in range(-2, 3)
+        (_overlap_difference(left_gray, right_gray, dx, dy), (dx, dy))
+        for dy in range(-max_shift, max_shift + 1)
+        for dx in range(-max_shift, max_shift + 1)
     ]
-    return min(candidates, key=lambda item: item[0])
+    best_residual = min(residual for residual, _shift in candidates)
+    near_best = [
+        item for item in candidates if item[0] <= best_residual + 1.0 / 255.0
+    ]
+    return min(
+        near_best,
+        key=lambda item: (math.hypot(*item[1]), abs(item[1][1]), abs(item[1][0]), item[1]),
+    )
 
 
 def _unavailable_evidence(
