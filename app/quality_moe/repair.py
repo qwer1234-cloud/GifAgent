@@ -8,6 +8,7 @@ interval and writes only optional contact sheets to a caller-owned directory.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import hashlib
 import math
 import os
@@ -16,6 +17,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -50,10 +53,36 @@ class RepairSearchResult:
     source_technical: ExpertEvidence
     source_cinematic: ExpertEvidence
     source_temporal: ExpertEvidence
+    render_failures: tuple["RepairRenderFailure", ...] = ()
+
+    @property
+    def unavailable_recipes(self) -> tuple["RepairRenderFailure", ...]:
+        """Compatibility name for recipes unavailable due to render failure."""
+        return self.render_failures
+
+
+@dataclass(frozen=True)
+class RepairRenderFailure:
+    recipe_id: str
+    error_code: str
+    summary: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.recipe_id, str) or not self.recipe_id:
+            raise ValueError("recipe_id must be a non-empty string")
+        if not isinstance(self.error_code, str) or not self.error_code:
+            raise ValueError("error_code must be a non-empty string")
+        if not isinstance(self.summary, str) or not self.summary:
+            raise ValueError("summary must be a non-empty string")
 
 
 class RepairProxyRenderError(RuntimeError):
     """A proxy could not be rendered, so it cannot support certification."""
+
+    def __init__(self, error_code: str, summary: str) -> None:
+        super().__init__(summary)
+        self.error_code = error_code
+        self.summary = summary
 
 
 def approved_recipes() -> tuple[RepairRecipe, ...]:
@@ -143,7 +172,7 @@ def render_recipe_proxy(
         raise ValueError(f"timeout_seconds must be finite and in [0.1, {_RENDER_TIMEOUT_SECONDS}]")
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
-        raise RepairProxyRenderError("ffmpeg is required to certify repair proxies")
+        raise RepairProxyRenderError("ffmpeg_unavailable", "FFmpeg is unavailable for repair proxy rendering.")
     filter_graph = _proxy_filter(sampled_clip, recipe)
     with tempfile.TemporaryDirectory(prefix="gifagent-quality-repair-") as temp_dir:
         root = Path(temp_dir)
@@ -152,7 +181,7 @@ def render_recipe_proxy(
         for index, frame in enumerate(sampled_clip.frames):
             source_path = root / f"source-{index:06d}.png"
             if not cv2.imwrite(str(source_path), frame):
-                raise OSError(f"failed to write isolated source frame {index}")
+                raise RepairProxyRenderError("source_frame_write_failed", "Could not write isolated repair proxy input.")
         try:
             completed = subprocess.run(
                 [
@@ -168,16 +197,20 @@ def render_recipe_proxy(
             )
         except subprocess.TimeoutExpired as exc:
             raise RepairProxyRenderError(
-                f"ffmpeg repair proxy render timed out after {timeout_seconds} seconds"
+                "timeout", "FFmpeg repair proxy render timed out."
+            ) from exc
+        except OSError as exc:
+            raise RepairProxyRenderError(
+                "ffmpeg_launch_failed", "FFmpeg repair proxy renderer could not start."
             ) from exc
         if completed.returncode != 0:
-            raise RepairProxyRenderError(f"ffmpeg repair proxy render failed: {completed.stderr.strip()}")
+            raise RepairProxyRenderError("ffmpeg_failed", "FFmpeg repair proxy render failed.")
         output_paths = tuple(sorted(root.glob("rendered-*.png")))
         if len(output_paths) != len(sampled_clip.frames):
-            raise RepairProxyRenderError("ffmpeg repair proxy rendered an unexpected frame count")
+            raise RepairProxyRenderError("unexpected_frame_count", "FFmpeg repair proxy returned an unexpected frame count.")
         frames = tuple(cv2.imread(str(path), cv2.IMREAD_COLOR) for path in output_paths)
         if any(frame is None for frame in frames):
-            raise RepairProxyRenderError("ffmpeg repair proxy produced an unreadable frame")
+            raise RepairProxyRenderError("unreadable_frame", "FFmpeg repair proxy produced unreadable output.")
     return SampledClip(
         candidate_id=sampled_clip.candidate_id,
         video_path=sampled_clip.video_path,
@@ -324,52 +357,103 @@ def _file_hash(path: Path) -> str:
 
 def _stable_file_hash(path: Path) -> str:
     """Hash an existing competing file only after two stable observations."""
-    for _attempt in range(8):
+    observed = False
+    for _attempt in range(20):
         try:
             before = path.stat()
+            observed = True
             digest = _file_hash(path)
             after = path.stat()
         except FileNotFoundError:
+            time.sleep(0.005)
             continue
         if before.st_size == after.st_size and before.st_mtime_ns == after.st_mtime_ns:
             return digest
+        time.sleep(0.005)
+    if not observed:
+        raise FileNotFoundError(path)
     raise FileExistsError(f"contact sheet target is not in a stable state: {path}")
 
 
-def _write_new_file_or_reuse_identical(target: Path, content: bytes) -> None:
-    """Create exactly once; an existing file is only accepted when byte-identical."""
-    content_hash = hashlib.sha256(content).hexdigest()
-    for _attempt in range(3):
+def _write_complete_temp_file(target: Path, content: bytes) -> Path:
+    temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    try:
+        written = 0
+        while written < len(content):
+            count = os.write(descriptor, content[written:])
+            if count <= 0:
+                raise OSError("could not complete contact sheet temporary write")
+            written += count
+        os.fsync(descriptor)
+    except BaseException:
+        os.close(descriptor)
         try:
-            descriptor = os.open(
-                target,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
-                0o600,
-            )
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    else:
+        os.close(descriptor)
+        return temporary
+
+
+def _link_is_unsupported(error: OSError) -> bool:
+    return error.errno in {errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV} or getattr(error, "winerror", None) in {1, 50}
+
+
+def _publish_via_locked_replace(temporary: Path, target: Path, content_hash: str) -> None:
+    """Fallback for filesystems without hard links; all writers coordinate here."""
+    lock = target.with_name(f".{target.name}.publish.lock")
+    deadline = time.monotonic() + 1.0
+    descriptor: int | None = None
+    while descriptor is None:
+        try:
+            descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
         except FileExistsError:
-            try:
-                existing_hash = _stable_file_hash(target)
-            except FileNotFoundError:
-                continue
-            if existing_hash == content_hash:
-                return
-            raise FileExistsError(f"contact sheet already exists with different content: {target}")
+            if time.monotonic() >= deadline:
+                raise FileExistsError(f"contact sheet publication lock timed out: {target}")
+            time.sleep(0.01)
+    try:
         try:
-            written = 0
-            while written < len(content):
-                written += os.write(descriptor, content[written:])
-            os.fsync(descriptor)
-        except BaseException:
-            os.close(descriptor)
-            try:
-                target.unlink()
-            except FileNotFoundError:
-                pass
-            raise
-        else:
-            os.close(descriptor)
+            existing_hash = _stable_file_hash(target)
+        except FileNotFoundError:
+            os.replace(temporary, target)
             return
-    raise FileExistsError(f"contact sheet target disappeared while checking: {target}")
+        if existing_hash == content_hash:
+            return
+        raise FileExistsError(f"contact sheet already exists with different content: {target}")
+    finally:
+        os.close(descriptor)
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _write_new_file_or_reuse_identical(target: Path, content: bytes) -> None:
+    """Publish a complete file with atomic fail-if-exists semantics."""
+    content_hash = hashlib.sha256(content).hexdigest()
+    temporary = _write_complete_temp_file(target, content)
+    try:
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if _stable_file_hash(target) != content_hash:
+                raise FileExistsError(f"contact sheet already exists with different content: {target}")
+        except OSError as error:
+            if not _link_is_unsupported(error):
+                raise
+            _publish_via_locked_replace(temporary, target, content_hash)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _save_contact_sheet(
@@ -421,13 +505,14 @@ def search_repairs(
 
     candidates = approved_recipes()[: config.repairability.max_proxy_variants]
     evaluated: list[RepairRecipe] = []
+    render_failures: list[RepairRenderFailure] = []
     best: tuple[RepairRecipe, ExpertEvidence, SampledClip] | None = None
     source_quality = _quality(source_technical, source_cinematic)
     for recipe in candidates:
         try:
             proxy = render_recipe_proxy(sampled_clip, recipe)
-        except RepairProxyRenderError:
-            evaluated.append(recipe)
+        except RepairProxyRenderError as error:
+            render_failures.append(RepairRenderFailure(recipe.recipe_id, error.error_code, error.summary))
             continue
         proxy_technical = technical.evaluate(proxy)
         proxy_cinematic = cinematic.evaluate(proxy)
@@ -475,7 +560,10 @@ def search_repairs(
             work_dir, sampled_clip, kind="best", frames=best[2].frames,
             config=config, recipe=best[0], proxy=best[2],
         )
-    return RepairSearchResult(tuple(evaluated), best[0] if best else None, best[1] if best else None, source_technical, source_cinematic, source_temporal)
+    return RepairSearchResult(
+        tuple(evaluated), best[0] if best else None, best[1] if best else None,
+        source_technical, source_cinematic, source_temporal, tuple(render_failures),
+    )
 
 
 def _format(value: float) -> str:

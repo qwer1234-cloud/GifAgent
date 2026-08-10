@@ -206,6 +206,86 @@ def test_contact_sheet_atomic_create_allows_one_concurrent_winner_without_overwr
     )
 
 
+def test_contact_sheet_target_is_never_visible_as_a_partial_file_during_slow_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    import app.quality_moe.repair as repair
+
+    target = tmp_path / "observed-contact-sheet.png"
+    monkeypatch.setattr(repair, "_contact_destination", lambda *_args, **_kwargs: target)
+    original_write = repair.os.write
+    write_started = threading.Event()
+    release_write = threading.Event()
+    writes = 0
+
+    def slow_write(descriptor: int, content: bytes) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            half = max(1, len(content) // 2)
+            result = original_write(descriptor, content[:half])
+            write_started.set()
+            assert release_write.wait(timeout=2.0)
+            return result
+        return original_write(descriptor, content)
+
+    monkeypatch.setattr(repair.os, "write", slow_write)
+    errors: list[BaseException] = []
+    worker = threading.Thread(
+        target=lambda: _threaded_contact_write(repair, tmp_path, gradient_sample(), errors),
+    )
+    worker.start()
+    assert write_started.wait(timeout=2.0)
+    observed: list[bytes] = []
+    for _ in range(25):
+        if target.is_file():
+            observed.append(target.read_bytes())
+    release_write.set()
+    worker.join()
+
+    assert not errors
+    assert observed == []
+    assert cv2.imread(str(target), cv2.IMREAD_COLOR) is not None
+
+
+def _threaded_contact_write(
+    repair: object, work_dir: Path, sample: SampledClip, errors: list[BaseException],
+) -> None:
+    try:
+        repair._save_contact_sheet(work_dir, sample, kind="original", frames=sample.frames)
+    except BaseException as exc:
+        errors.append(exc)
+
+
+def test_identical_concurrent_contact_sheets_are_idempotent_successes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    import app.quality_moe.repair as repair
+
+    target = tmp_path / "same-contact-sheet.png"
+    monkeypatch.setattr(repair, "_contact_destination", lambda *_args, **_kwargs: target)
+    sample = gradient_sample()
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def write() -> None:
+        try:
+            barrier.wait()
+            repair._save_contact_sheet(tmp_path, sample, kind="original", frames=sample.frames)
+        except BaseException as exc:
+            errors.append(exc)
+
+    workers = [threading.Thread(target=write) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+
+    assert target.is_file()
+    assert errors == []
+    assert cv2.imread(str(target), cv2.IMREAD_COLOR) is not None
+
+
 def test_best_contact_name_includes_config_recipe_and_proxy_hashes(tmp_path: Path):
     from app.quality_moe.repair import _contact_destination
 
@@ -239,6 +319,28 @@ def test_ffmpeg_timeout_is_bounded_and_cannot_certify_recipe(
         repair.render_recipe_proxy(dark_sample(), RepairRecipe(recipe_id="timeout"), timeout_seconds=1.0)
 
     assert called["timeout"] == 1.0
+
+
+def test_all_render_timeouts_are_structured_failures_not_evaluated_recipes(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.quality_moe.repair as repair
+
+    monkeypatch.setattr(
+        repair,
+        "render_recipe_proxy",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            repair.RepairProxyRenderError("timeout", "FFmpeg proxy render timed out.")
+        ),
+    )
+    result = repair.search_repairs(dark_sample(), QualityMoeConfig.defaults())
+
+    assert result.evaluated_recipes == ()
+    assert len(result.render_failures) == 12
+    assert result.unavailable_recipes == result.render_failures
+    assert {failure.error_code for failure in result.render_failures} == {"timeout"}
+    assert result.best_recipe is None
+    assert result.repair_delta is None
 
 
 def test_ffmpeg_filter_is_bounded_and_has_identical_palette_and_gif_prefix():
