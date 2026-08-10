@@ -54,6 +54,7 @@ class RepairSearchResult:
     source_cinematic: ExpertEvidence
     source_temporal: ExpertEvidence
     render_failures: tuple["RepairRenderFailure", ...] = ()
+    best_proxy: SampledClip | None = None
 
     @property
     def unavailable_recipes(self) -> tuple["RepairRenderFailure", ...]:
@@ -563,6 +564,7 @@ def search_repairs(
     return RepairSearchResult(
         tuple(evaluated), best[0] if best else None, best[1] if best else None,
         source_technical, source_cinematic, source_temporal, tuple(render_failures),
+        best[2] if best else None,
     )
 
 

@@ -298,6 +298,9 @@ class QualityAssessment:
     repair: RepairRecipe | None = None
     reason_codes: tuple[str, ...] = ()
     summary: str = ""
+    input_hash: str = ""
+    evidence: tuple[ExpertEvidence, ...] = ()
+    provenance: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -322,9 +325,22 @@ class QualityAssessment:
         )))
         if not isinstance(self.summary, str):
             raise ValueError("summary must be a string")
+        if not isinstance(self.input_hash, str):
+            raise ValueError("input_hash must be a string")
+        if not all(isinstance(item, ExpertEvidence) for item in self.evidence):
+            raise ValueError("evidence must contain ExpertEvidence values")
+        if not isinstance(self.provenance, Mapping):
+            raise ValueError("provenance must be a mapping")
+        object.__setattr__(self, "evidence", tuple(self.evidence))
+        object.__setattr__(self, "provenance", _json_value(self.provenance, field_name="provenance"))
+
+    @property
+    def decision(self) -> QualityDecision:
+        """Compatibility alias for the recorded recommendation."""
+        return self.recommended_decision
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "candidate_id": self.candidate_id,
             "evaluation_version": self.evaluation_version,
             "config_hash": self.config_hash,
@@ -338,3 +354,14 @@ class QualityAssessment:
             "reason_codes": list(self.reason_codes),
             "summary": self.summary,
         }
+        # Preserve the original lightweight value-object serialization for
+        # callers which construct policy-only assessments, while evaluated
+        # candidates always carry the append-only provenance block.
+        if self.input_hash or self.evidence or self.provenance:
+            payload.update({
+                "decision": self.decision.value,
+                "input_hash": self.input_hash,
+                "evidence": [item.to_dict() for item in self.evidence],
+                "provenance": _as_json(self.provenance),
+            })
+        return payload
