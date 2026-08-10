@@ -105,6 +105,21 @@ def test_three_pixel_checkerboard_translation_is_motion_compensated_not_negative
     assert evidence.scores["temporal_coherence"] > 0.95
 
 
+def test_360p_three_pixel_random_translation_is_motion_compensated_not_discontinuous():
+    rng = np.random.default_rng(20260811)
+    frame = rng.choice(np.array([0, 255], dtype=np.uint8), size=(360, 640, 3))
+    frames = tuple(np.roll(frame, index * 3, axis=1) for index in range(6))
+
+    evidence = TemporalExpert().evaluate(sampled_clip(frames))
+
+    assert evidence.polarity.value == "NEUTRAL"
+    assert evidence.scores["temporal_coherence"] > 0.95
+    assert not any(
+        finding["code"] == "luminance_flash_or_discontinuity"
+        for finding in evidence.findings
+    )
+
+
 def test_static_uniform_frames_do_not_emit_camera_motion():
     frames = tuple(np.full((90, 160, 3), 80, np.uint8) for _ in range(6))
 
@@ -117,7 +132,7 @@ def test_static_uniform_frames_do_not_emit_camera_motion():
 def test_temporal_expert_processes_360p_clip_within_two_seconds():
     base = np.tile(np.arange(640, dtype=np.uint8), (360, 1))
     frame = np.repeat(base[:, :, None], 3, axis=2)
-    clip = sampled_clip((frame,) * 6)
+    clip = sampled_clip(tuple(np.roll(frame, index * 3, axis=1) for index in range(6)))
 
     started = time.perf_counter()
     evidence = TemporalExpert().evaluate(clip)

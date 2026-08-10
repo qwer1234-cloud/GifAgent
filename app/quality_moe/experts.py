@@ -28,6 +28,8 @@ def _sharpness_score(frame: np.ndarray) -> float:
 
 
 _MAX_MOTION_ESTIMATION_SIDE = 160
+# Sampled frames are capped at 640px, so thumbnail quantization is at most 4px.
+_MAX_MOTION_REFINEMENT_RADIUS = 4
 
 
 def _overlap_bounds(
@@ -41,7 +43,9 @@ def _overlap_bounds(
     )
 
 
-def _thumbnail_overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: int) -> float:
+def _grayscale_overlap_difference(
+    left: np.ndarray, right: np.ndarray, dx: int, dy: int
+) -> float:
     height, width = left.shape[:2]
     left_y, left_x, right_y, right_x = _overlap_bounds(width, height, dx, dy)
     return cv2.mean(cv2.absdiff(left[left_y, left_x], right[right_y, right_x]))[0] / 255.0
@@ -54,8 +58,7 @@ def _bgr_overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: in
     return sum(channel_means) / (len(channel_means) * 255.0)
 
 
-def _motion_thumbnail(frame: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+def _motion_thumbnail(gray: np.ndarray) -> np.ndarray:
     height, width = gray.shape[:2]
     longest_side = max(height, width)
     if longest_side <= _MAX_MOTION_ESTIMATION_SIDE:
@@ -68,23 +71,45 @@ def _motion_thumbnail(frame: np.ndarray) -> np.ndarray:
     )
 
 
+def _least_motion_near_best(
+    candidates: list[tuple[float, tuple[int, int]]],
+) -> tuple[float, tuple[int, int]]:
+    best_residual = min(residual for residual, _shift in candidates)
+    near_best = [
+        item for item in candidates if item[0] <= best_residual + 1.0 / 255.0
+    ]
+    return min(
+        near_best,
+        key=lambda item: (
+            math.hypot(*item[1]),
+            abs(item[1][1]),
+            abs(item[1][0]),
+            item[1],
+        ),
+    )
+
+
 def _motion_search_limit(frame: np.ndarray) -> int:
     height, width = frame.shape[:2]
     return min(16, max(4, round(min(height, width) * 0.05)), min(height, width) - 1)
 
 
-def _motion_compensated_difference(left: np.ndarray, right: np.ndarray) -> tuple[float, tuple[int, int]]:
-    """Estimate on a <=160px thumbnail, then score one BGR-aligned residual."""
+def _motion_compensated_difference(
+    left: np.ndarray, right: np.ndarray
+) -> tuple[float, tuple[int, int]]:
+    """Estimate coarsely, refine a bounded full-size window, then score BGR once."""
     full_height, full_width = left.shape[:2]
-    left_gray = _motion_thumbnail(left)
-    right_gray = _motion_thumbnail(right)
-    thumbnail_height, thumbnail_width = left_gray.shape[:2]
+    left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
+    right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
+    left_thumbnail = _motion_thumbnail(left_gray)
+    right_thumbnail = _motion_thumbnail(right_gray)
+    thumbnail_height, thumbnail_width = left_thumbnail.shape[:2]
     max_shift = _motion_search_limit(left)
     max_dx = min(thumbnail_width - 1, max(1, math.ceil(max_shift * thumbnail_width / full_width)))
     max_dy = min(thumbnail_height - 1, max(1, math.ceil(max_shift * thumbnail_height / full_height)))
-    candidates = [
+    coarse_candidates = [
         (
-            _thumbnail_overlap_difference(left_gray, right_gray, dx, dy),
+            _grayscale_overlap_difference(left_thumbnail, right_thumbnail, dx, dy),
             (
                 round(dx * full_width / thumbnail_width),
                 round(dy * full_height / thumbnail_height),
@@ -93,14 +118,29 @@ def _motion_compensated_difference(left: np.ndarray, right: np.ndarray) -> tuple
         for dy in range(-max_dy, max_dy + 1)
         for dx in range(-max_dx, max_dx + 1)
     ]
-    best_residual = min(residual for residual, _shift in candidates)
-    near_best = [
-        item for item in candidates if item[0] <= best_residual + 1.0 / 255.0
-    ]
-    _estimate_residual, shift = min(
-        near_best,
-        key=lambda item: (math.hypot(*item[1]), abs(item[1][1]), abs(item[1][0]), item[1]),
+    _coarse_residual, (coarse_dx, coarse_dy) = _least_motion_near_best(coarse_candidates)
+    refine_radius_x = min(
+        _MAX_MOTION_REFINEMENT_RADIUS,
+        max_shift,
+        math.ceil(full_width / thumbnail_width),
     )
+    refine_radius_y = min(
+        _MAX_MOTION_REFINEMENT_RADIUS,
+        max_shift,
+        math.ceil(full_height / thumbnail_height),
+    )
+    refined_candidates = [
+        (_grayscale_overlap_difference(left_gray, right_gray, dx, dy), (dx, dy))
+        for dy in range(
+            max(-max_shift, coarse_dy - refine_radius_y),
+            min(max_shift, coarse_dy + refine_radius_y) + 1,
+        )
+        for dx in range(
+            max(-max_shift, coarse_dx - refine_radius_x),
+            min(max_shift, coarse_dx + refine_radius_x) + 1,
+        )
+    ]
+    _refined_residual, shift = _least_motion_near_best(refined_candidates)
     return _bgr_overlap_difference(left, right, *shift), shift
 
 
