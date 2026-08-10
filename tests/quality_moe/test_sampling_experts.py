@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import cv2
 import numpy as np
@@ -70,6 +71,20 @@ def test_single_flash_frame_is_temporal_negative_signal():
     assert evidence.polarity.value == "NEGATIVE"
 
 
+def test_equal_luma_chroma_flash_is_temporal_negative_signal():
+    frames = [np.full((90, 160, 3), (0, 0, 255), np.uint8) for _ in range(6)]
+    frames[3] = np.full((90, 160, 3), (0, 130, 0), np.uint8)
+    assert np.array_equal(
+        cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY),
+        cv2.cvtColor(frames[3], cv2.COLOR_BGR2GRAY),
+    )
+
+    evidence = TemporalExpert().evaluate(sampled_clip(tuple(frames)))
+
+    assert evidence.polarity.value == "NEGATIVE"
+    assert evidence.scores["temporal_coherence"] < 0.7
+
+
 def test_one_pixel_checkerboard_translation_is_motion_compensated_not_negative():
     frame = _checkerboard()
     frames = tuple(np.roll(frame, index, axis=1) for index in range(6))
@@ -97,6 +112,19 @@ def test_static_uniform_frames_do_not_emit_camera_motion():
 
     assert evidence.polarity.value == "NEUTRAL"
     assert not any(finding["code"] == "camera_motion" for finding in evidence.findings)
+
+
+def test_temporal_expert_processes_360p_clip_within_two_seconds():
+    base = np.tile(np.arange(640, dtype=np.uint8), (360, 1))
+    frame = np.repeat(base[:, :, None], 3, axis=2)
+    clip = sampled_clip((frame,) * 6)
+
+    started = time.perf_counter()
+    evidence = TemporalExpert().evaluate(clip)
+    elapsed = time.perf_counter() - started
+
+    assert evidence.polarity.value == "NEUTRAL"
+    assert elapsed < 2.0
 
 
 def test_high_contrast_checkerboard_has_high_8bit_sharpness_without_blur_polarity():

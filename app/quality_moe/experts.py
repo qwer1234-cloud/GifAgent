@@ -27,15 +27,45 @@ def _sharpness_score(frame: np.ndarray) -> float:
     return _bounded(1.0 - math.exp(-laplacian_variance / 250.0))
 
 
-def _overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: int) -> float:
+_MAX_MOTION_ESTIMATION_SIDE = 160
+
+
+def _overlap_bounds(
+    width: int, height: int, dx: int, dy: int
+) -> tuple[slice, slice, slice, slice]:
+    return (
+        slice(max(0, -dy), min(height, height - dy)),
+        slice(max(0, -dx), min(width, width - dx)),
+        slice(max(0, dy), min(height, height + dy)),
+        slice(max(0, dx), min(width, width + dx)),
+    )
+
+
+def _thumbnail_overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: int) -> float:
     height, width = left.shape[:2]
-    left_x = slice(max(0, -dx), min(width, width - dx))
-    right_x = slice(max(0, dx), min(width, width + dx))
-    left_y = slice(max(0, -dy), min(height, height - dy))
-    right_y = slice(max(0, dy), min(height, height + dy))
-    return float(np.mean(np.abs(
-        left[left_y, left_x].astype(np.float64) - right[right_y, right_x].astype(np.float64)
-    ))) / 255.0
+    left_y, left_x, right_y, right_x = _overlap_bounds(width, height, dx, dy)
+    return cv2.mean(cv2.absdiff(left[left_y, left_x], right[right_y, right_x]))[0] / 255.0
+
+
+def _bgr_overlap_difference(left: np.ndarray, right: np.ndarray, dx: int, dy: int) -> float:
+    height, width = left.shape[:2]
+    left_y, left_x, right_y, right_x = _overlap_bounds(width, height, dx, dy)
+    channel_means = cv2.mean(cv2.absdiff(left[left_y, left_x], right[right_y, right_x]))[:3]
+    return sum(channel_means) / (len(channel_means) * 255.0)
+
+
+def _motion_thumbnail(frame: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape[:2]
+    longest_side = max(height, width)
+    if longest_side <= _MAX_MOTION_ESTIMATION_SIDE:
+        return gray
+    scale = _MAX_MOTION_ESTIMATION_SIDE / longest_side
+    return cv2.resize(
+        gray,
+        (max(1, round(width * scale)), max(1, round(height * scale))),
+        interpolation=cv2.INTER_AREA,
+    )
 
 
 def _motion_search_limit(frame: np.ndarray) -> int:
@@ -44,23 +74,34 @@ def _motion_search_limit(frame: np.ndarray) -> int:
 
 
 def _motion_compensated_difference(left: np.ndarray, right: np.ndarray) -> tuple[float, tuple[int, int]]:
-    """Use overlap residuals across a bounded, frame-scale translation search."""
-    left_gray = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
-    right_gray = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
-    max_shift = _motion_search_limit(left_gray)
+    """Estimate on a <=160px thumbnail, then score one BGR-aligned residual."""
+    full_height, full_width = left.shape[:2]
+    left_gray = _motion_thumbnail(left)
+    right_gray = _motion_thumbnail(right)
+    thumbnail_height, thumbnail_width = left_gray.shape[:2]
+    max_shift = _motion_search_limit(left)
+    max_dx = min(thumbnail_width - 1, max(1, math.ceil(max_shift * thumbnail_width / full_width)))
+    max_dy = min(thumbnail_height - 1, max(1, math.ceil(max_shift * thumbnail_height / full_height)))
     candidates = [
-        (_overlap_difference(left_gray, right_gray, dx, dy), (dx, dy))
-        for dy in range(-max_shift, max_shift + 1)
-        for dx in range(-max_shift, max_shift + 1)
+        (
+            _thumbnail_overlap_difference(left_gray, right_gray, dx, dy),
+            (
+                round(dx * full_width / thumbnail_width),
+                round(dy * full_height / thumbnail_height),
+            ),
+        )
+        for dy in range(-max_dy, max_dy + 1)
+        for dx in range(-max_dx, max_dx + 1)
     ]
     best_residual = min(residual for residual, _shift in candidates)
     near_best = [
         item for item in candidates if item[0] <= best_residual + 1.0 / 255.0
     ]
-    return min(
+    _estimate_residual, shift = min(
         near_best,
         key=lambda item: (math.hypot(*item[1]), abs(item[1][1]), abs(item[1][0]), item[1]),
     )
+    return _bgr_overlap_difference(left, right, *shift), shift
 
 
 def _unavailable_evidence(
