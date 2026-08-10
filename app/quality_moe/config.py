@@ -64,62 +64,86 @@ def freeze_quality_runtime_config(
     *,
     ready_resolver=None,
 ) -> dict[str, Any]:
-    """Resolve quality/VLM sentinel URLs once for immutable job storage."""
+    """Resolve VLM and quality endpoint states once for immutable storage."""
     snapshot = json.loads(json.dumps(dict(config_data)))
     quality = snapshot.get("quality_moe")
     judge = quality.get("judge") if isinstance(quality, dict) else None
-    if not isinstance(judge, dict):
-        return snapshot
-    judge_base = str(judge.get("base_url", "") or "").strip()
     vlm = snapshot.get("vlm")
-    vlm = vlm if isinstance(vlm, dict) else {}
-    vlm_base = str(vlm.get("base_url", "") or "").strip()
-    sentinel = judge_base.lower() in {"inherit_vlm", "auto"}
-    vlm_auto = vlm_base.lower() == "auto"
+    if not isinstance(judge, dict) and not isinstance(vlm, dict):
+        return snapshot
 
     from app.services.ollama_runtime import (
         EmbeddingRuntimeConfig,
         normalize_base_url,
     )
 
-    if not sentinel and not vlm_auto:
-        if judge_base:
-            judge["base_url"] = normalize_base_url(judge_base)
-        return snapshot
-
     embedding = snapshot.get("embedding")
     embedding = embedding if isinstance(embedding, dict) else {}
-    runtime_config = EmbeddingRuntimeConfig(
-        base_url=(
-            str(embedding.get("base_url", "auto") or "auto")
-            if vlm_auto
-            else vlm_base
-        ),
-        manage_lifecycle=bool(
-            embedding.get("manage_lifecycle", vlm.get("manage_lifecycle", False))
-        ),
-        launch_mode=str(
-            embedding.get("launch_mode", vlm.get("launch_mode", "wsl")) or "wsl"
-        ).lower(),
-        wsl_distro=str(embedding.get("wsl_distro", "Ubuntu-20.04")),
-        startup_timeout_s=float(embedding.get("startup_timeout_s", 120.0)),
-        request_timeout_s=float(embedding.get("request_timeout_s", 60.0)),
-        retry_attempts=int(embedding.get("retry_attempts", 3)),
-        retry_backoff_s=float(embedding.get("retry_backoff_s", 2.0)),
-        keep_alive=str(embedding.get("keep_alive", "30m")),
-        embedding_model=str(
-            embedding.get("text_model", "nomic-embed-text:latest")
-        ),
-        embedding_dim=int(embedding.get("embedding_dim", 768)),
-    )
     resolver = ready_resolver or _ensure_quality_runtime_ready
-    state = resolver(runtime_config)
-    resolved_base = normalize_base_url(str(state.base_url))
-    if not resolved_base.startswith(("http://", "https://")):
-        raise ValueError("resolved quality judge base_url must be absolute")
-    judge["base_url"] = resolved_base
-    if isinstance(snapshot.get("vlm"), dict):
-        snapshot["vlm"]["base_url"] = resolved_base
+
+    def runtime_config(primary: Mapping[str, Any]) -> EmbeddingRuntimeConfig:
+        return EmbeddingRuntimeConfig(
+            base_url="auto",
+            manage_lifecycle=bool(primary.get(
+                "manage_lifecycle",
+                embedding.get("manage_lifecycle", False),
+            )),
+            launch_mode=str(primary.get(
+                "launch_mode", embedding.get("launch_mode", "wsl") or "wsl"
+            )).lower(),
+            wsl_distro=str(primary.get(
+                "wsl_distro", embedding.get("wsl_distro", "Ubuntu-20.04")
+            )),
+            startup_timeout_s=float(primary.get(
+                "startup_timeout_s", embedding.get("startup_timeout_s", 120.0)
+            )),
+            request_timeout_s=float(primary.get(
+                "timeout_seconds", embedding.get("request_timeout_s", 60.0)
+            )),
+            retry_attempts=int(primary.get(
+                "retry_attempts", embedding.get("retry_attempts", 3)
+            )),
+            retry_backoff_s=float(primary.get(
+                "retry_backoff_s", embedding.get("retry_backoff_s", 2.0)
+            )),
+            keep_alive=str(embedding.get("keep_alive", "30m")),
+            embedding_model=str(
+                embedding.get("text_model", "nomic-embed-text:latest")
+            ),
+            embedding_dim=int(embedding.get("embedding_dim", 768)),
+        )
+
+    def resolve_auto(primary: Mapping[str, Any], *, name: str) -> str:
+        state = resolver(runtime_config(primary))
+        resolved = normalize_base_url(str(state.base_url))
+        if not resolved.startswith(("http://", "https://")):
+            raise ValueError(f"resolved {name} base_url must be absolute")
+        return resolved
+
+    vlm_mapping = vlm if isinstance(vlm, dict) else {}
+    configured_vlm = str(vlm_mapping.get("base_url", "") or "").strip()
+    resolved_vlm = ""
+    if configured_vlm.lower() == "auto":
+        resolved_vlm = resolve_auto(vlm_mapping, name="VLM")
+        vlm_mapping["base_url"] = resolved_vlm
+    elif configured_vlm:
+        resolved_vlm = normalize_base_url(configured_vlm)
+        vlm_mapping["base_url"] = resolved_vlm
+
+    if not isinstance(judge, dict):
+        return snapshot
+    configured_judge = str(judge.get("base_url", "") or "").strip()
+    judge_state = configured_judge.lower()
+    if judge_state == "inherit_vlm":
+        if not resolved_vlm:
+            resolved_vlm = resolve_auto(vlm_mapping, name="VLM")
+            if isinstance(vlm, dict):
+                vlm["base_url"] = resolved_vlm
+        judge["base_url"] = resolved_vlm
+    elif judge_state == "auto":
+        judge["base_url"] = resolve_auto(judge, name="quality judge")
+    elif configured_judge:
+        judge["base_url"] = normalize_base_url(configured_judge)
     return snapshot
 
 

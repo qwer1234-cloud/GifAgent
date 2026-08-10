@@ -185,7 +185,7 @@ STAGE_ARTIFACT_KINDS: dict[StageName, tuple[str, ...]] = {
     "vlm": ("vlm_manifest",),
     "refine": ("refine_manifest",),
     "synthesize": ("synthesize_manifest",),
-    "rank_dedup": ("rank_dedup_manifest",),
+    "rank_dedup": ("rank_dedup_manifest", "rank_candidate_ledger"),
     "gif_clip": ("gif_file", "gif_clip_manifest"),
     "materialize": ("result", "materialize_manifest", "pbf_file"),
 }
@@ -204,6 +204,13 @@ STAGE_INPUT_KINDS: dict[StageName, tuple[str, ...]] = {
     "materialize": ("gif_file", "gif_clip_manifest"),
 }
 
+# Quality-enabled rank manifests bind these sidecars into their immutable
+# lineage.  They are optional here solely so legacy schema-v1 rank manifests
+# remain readable; schema-v2 validation still requires and verifies them.
+STAGE_OPTIONAL_INPUT_KINDS: dict[StageName, tuple[str, ...]] = {
+    "gif_clip": ("rank_candidate_ledger", "synthesize_manifest"),
+}
+
 # Maps input key names to the stage_name that produces them.
 _INPUT_PRODUCER: dict[str, StageName] = {
     "discover_manifest": "discover",
@@ -213,6 +220,7 @@ _INPUT_PRODUCER: dict[str, StageName] = {
     "refine_manifest": "refine",
     "synthesize_manifest": "synthesize",
     "rank_dedup_manifest": "rank_dedup",
+    "rank_candidate_ledger": "rank_dedup",
     "gif_file": "gif_clip",
     "gif_clip_manifest": "gif_clip",
 }
@@ -291,7 +299,9 @@ def resolve_stage_inputs(
     If any artifact fails validation, a ``FileNotFoundError`` or
     ``ValueError`` is raised.
     """
-    kinds = STAGE_INPUT_KINDS.get(stage_name, ())
+    required_kinds = STAGE_INPUT_KINDS.get(stage_name, ())
+    optional_kinds = STAGE_OPTIONAL_INPUT_KINDS.get(stage_name, ())
+    kinds = required_kinds + optional_kinds
     if not kinds:
         return {}
 
@@ -310,11 +320,12 @@ def resolve_stage_inputs(
         )
         for ref in refs:
             validate_artifact_strict(ref)
-        if not refs:
+        if not refs and kind in required_kinds:
             raise FileNotFoundError(
                 f"No artifact of kind {kind!r} found for video {video_id!r}"
             )
-        result[kind] = tuple(refs)
+        if refs:
+            result[kind] = tuple(refs)
     return result
 
 
@@ -423,6 +434,88 @@ class MaterializeInputs:
 _GIF_CLIP_TERMINAL = ("succeeded", "failed", "cancelled", "needs_attention")
 
 
+def _latest_succeeded_artifact_ref(
+    conn: sqlite3.Connection,
+    video_id: str,
+    *,
+    stage_name: str,
+    artifact_kind: str,
+) -> ArtifactRef:
+    row = conn.execute(
+        """SELECT a.* FROM task_artifacts a
+           JOIN task_stages s ON a.stage_id=s.stage_id
+           WHERE a.video_id=? AND a.stage_name=? AND a.artifact_kind=?
+             AND s.status='succeeded'
+           ORDER BY a.created_at DESC LIMIT 1""",
+        (video_id, stage_name, artifact_kind),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"Missing succeeded {artifact_kind} for video {video_id!r}"
+        )
+    ref = ArtifactRef(
+        artifact_id=row["artifact_id"],
+        job_id=row["job_id"],
+        video_id=row["video_id"],
+        stage_name=row["stage_name"],
+        clip_id=row["clip_id"],
+        path=row["path"],
+        sha256=row["sha256"],
+        size_bytes=row["size_bytes"],
+        provenance_json=row["provenance_json"],
+        stage_id=row["stage_id"] or "",
+        artifact_kind=row["artifact_kind"],
+    )
+    validate_artifact_strict(ref)
+    return ref
+
+
+def validate_rank_manifest_with_db_lineage(
+    conn: sqlite3.Connection,
+    video_id: str,
+    raw_bytes: bytes,
+) -> dict:
+    """Validate rank output against separately registered immutable inputs."""
+    rank_ref = _latest_succeeded_artifact_ref(
+        conn,
+        video_id,
+        stage_name="rank_dedup",
+        artifact_kind="rank_dedup_manifest",
+    )
+    if hashlib.sha256(raw_bytes).hexdigest() != rank_ref.sha256:
+        raise ValueError("rank_dedup_manifest SHA-256 mismatch")
+    try:
+        preview = json.loads(raw_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        preview = None
+    if not isinstance(preview, dict) or preview.get("schema_version") != 2 or (
+        "quality_moe" not in preview
+    ):
+        return validate_manifest_json(
+            raw_bytes, "rank_dedup_manifest", expected_stage="rank_dedup"
+        )
+    ledger_ref = _latest_succeeded_artifact_ref(
+        conn,
+        video_id,
+        stage_name="rank_dedup",
+        artifact_kind="rank_candidate_ledger",
+    )
+    upstream_ref = _latest_succeeded_artifact_ref(
+        conn,
+        video_id,
+        stage_name="synthesize",
+        artifact_kind="synthesize_manifest",
+    )
+    return validate_manifest_json(
+        raw_bytes,
+        "rank_dedup_manifest",
+        expected_stage="rank_dedup",
+        candidate_ledger_bytes=Path(ledger_ref.path).read_bytes(),
+        candidate_ledger_ref=ledger_ref.__dict__,
+        upstream_artifact_ref=upstream_ref.__dict__,
+    )
+
+
 def _assert_zero_clip_proven(conn: sqlite3.Connection, video_id: str) -> None:
     """P1-1 (fifth-review §5): prove a zero-clip materialize came from a
     real rank_dedup manifest that declared ``clip_count=0``.
@@ -471,9 +564,7 @@ def _assert_zero_clip_proven(conn: sqlite3.Connection, video_id: str) -> None:
     # Validate the manifest JSON schema and stage.
     manifest_path = Path(ref.path)
     raw = manifest_path.read_bytes()
-    manifest = validate_manifest_json(
-        raw, "rank_dedup_manifest", expected_stage="rank_dedup",
-    )
+    manifest = validate_rank_manifest_with_db_lineage(conn, video_id, raw)
 
     declared = manifest.get("clip_count")
     clips = manifest.get("clips", [])
@@ -1228,7 +1319,148 @@ def _validate_quality_assessment(value: object, *, context: str) -> None:
         raise ValueError(f"{context} selected_recipe_id is only valid for KEEP_FOR_REPAIR")
 
 
-def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
+def _candidate_ledger_digest(candidates: list[dict]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            candidates,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_assessed_candidates(value: object, *, context: str) -> list[dict]:
+    if not isinstance(value, list):
+        raise ValueError(f"{context} must be an array")
+    candidate_ids: list[str] = []
+    for index, candidate in enumerate(value):
+        item_context = f"{context}[{index}]"
+        if not isinstance(candidate, dict):
+            raise ValueError(f"{item_context} must be an object")
+        candidate_id = candidate.get("candidate_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            raise ValueError(f"{item_context} candidate_id must be non-empty")
+        hard_context = candidate.get("hard_gate_context")
+        if not isinstance(hard_context, dict) or (
+            set(hard_context) - _QUALITY_HARD_GATE_INPUT_FIELDS
+        ):
+            raise ValueError(f"{item_context} hard_gate_context is invalid")
+        context_hash = hashlib.sha256(
+            json.dumps(
+                hard_context,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        if candidate.get("hard_gate_context_hash") != context_hash:
+            raise ValueError(
+                f"{item_context} hard_gate_context_hash does not match context"
+            )
+        candidate_ids.append(candidate_id)
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise ValueError(f"{context} has duplicate candidate_id values")
+    return value
+
+
+def _artifact_lineage_projection(value: object, *, context: str) -> dict:
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    fields = (
+        "artifact_id", "stage_id", "artifact_kind", "sha256", "size_bytes",
+    )
+    for field in fields:
+        _require_v2_field(value, field, context=context)
+    for field in ("artifact_id", "stage_id", "artifact_kind"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise ValueError(f"{context} {field} must be non-empty")
+    _quality_hash(value["sha256"], "sha256", context=context)
+    if (
+        isinstance(value["size_bytes"], bool)
+        or not isinstance(value["size_bytes"], int)
+        or value["size_bytes"] < 0
+    ):
+        raise ValueError(f"{context} size_bytes must be non-negative")
+    return {field: value[field] for field in fields}
+
+
+def _validate_quality_candidate_ledger(
+    summary: dict,
+    *,
+    candidate_ledger_bytes: bytes | None,
+    candidate_ledger_ref: dict | None,
+    upstream_artifact_ref: dict | None,
+) -> list[dict]:
+    context = "rank_dedup_manifest quality_moe candidate ledger"
+    embedded = _validate_assessed_candidates(
+        summary.get("assessed_candidates"), context=f"{context} candidates"
+    )
+    if summary.get("assessed_candidates_digest") != _candidate_ledger_digest(embedded):
+        raise ValueError(f"{context} digest does not match candidates")
+    metadata = summary.get("candidate_ledger")
+    if not isinstance(metadata, dict) or metadata.get("mode") not in {
+        "embedded", "external",
+    }:
+        raise ValueError(f"{context} mode must be embedded or external")
+    if metadata["mode"] == "embedded":
+        return embedded
+
+    if (
+        candidate_ledger_bytes is None
+        or candidate_ledger_ref is None
+        or upstream_artifact_ref is None
+    ):
+        raise ValueError(f"{context} external lineage inputs are required")
+    ledger_projection = _artifact_lineage_projection(
+        candidate_ledger_ref, context=f"{context} artifact"
+    )
+    metadata_projection = _artifact_lineage_projection(
+        metadata, context=f"{context} metadata"
+    )
+    if metadata_projection != ledger_projection:
+        raise ValueError(f"{context} metadata does not match DB artifact")
+    if hashlib.sha256(candidate_ledger_bytes).hexdigest() != ledger_projection["sha256"]:
+        raise ValueError(f"{context} SHA-256 mismatch")
+    if len(candidate_ledger_bytes) != ledger_projection["size_bytes"]:
+        raise ValueError(f"{context} size mismatch")
+    try:
+        ledger = json.loads(candidate_ledger_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{context} JSON is invalid") from exc
+    if not isinstance(ledger, dict) or ledger.get("schema_version") != 1:
+        raise ValueError(f"{context} schema_version must be 1")
+    if ledger.get("stage") != "rank_input":
+        raise ValueError(f"{context} stage must be rank_input")
+    candidates = _validate_assessed_candidates(
+        ledger.get("assessed_candidates"), context=f"{context} sidecar candidates"
+    )
+    if ledger.get("assessed_candidates_digest") != _candidate_ledger_digest(candidates):
+        raise ValueError(f"{context} sidecar digest does not match candidates")
+    if candidates != embedded:
+        raise ValueError(f"{context} sidecar candidates do not match manifest")
+    upstream_projection = _artifact_lineage_projection(
+        upstream_artifact_ref, context=f"{context} upstream DB artifact"
+    )
+    if upstream_projection["artifact_kind"] != "synthesize_manifest":
+        raise ValueError(f"{context} upstream artifact kind is invalid")
+    if _artifact_lineage_projection(
+        ledger.get("upstream_artifact"), context=f"{context} sidecar upstream"
+    ) != upstream_projection:
+        raise ValueError(f"{context} sidecar upstream lineage does not match DB")
+    if _artifact_lineage_projection(
+        metadata.get("upstream_artifact"), context=f"{context} metadata upstream"
+    ) != upstream_projection:
+        raise ValueError(f"{context} manifest upstream lineage does not match DB")
+    return candidates
+
+
+def _validate_quality_summary(
+    value: object,
+    *,
+    clips: list[dict],
+    authoritative_candidates: list[dict] | None = None,
+) -> None:
     context = "rank_dedup_manifest quality_moe"
     if not isinstance(value, dict):
         raise ValueError(f"{context} must be an object")
@@ -1237,6 +1469,7 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
         "policy_snapshot",
         "input_count", "assessed_count", "effective_count",
         "human_review_count", "decision_counts", "top_assessments", "assessments",
+        "assessed_candidates", "assessed_candidates_digest", "candidate_ledger",
     ):
         _require_v2_field(value, field, context=context)
     for field in ("enabled", "report_only"):
@@ -1282,6 +1515,15 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
         raise ValueError(f"{context} assessed_count must equal len(assessments)")
     if value["enabled"] and value["input_count"] != value["assessed_count"]:
         raise ValueError(f"{context} input_count must equal assessed_count when enabled")
+    ledger_candidates = authoritative_candidates
+    if ledger_candidates is None:
+        ledger_candidates = _validate_assessed_candidates(
+            value["assessed_candidates"], context=f"{context} assessed_candidates"
+        )
+    assessment_ids = [item.get("candidate_id") for item in assessments]
+    ledger_ids = [item["candidate_id"] for item in ledger_candidates]
+    if assessment_ids != ledger_ids:
+        raise ValueError(f"{context} assessments do not map one-to-one to candidate ledger")
     if not isinstance(value["decision_counts"], dict):
         raise ValueError(f"{context} decision_counts must be an object")
     if any(decision not in _QUALITY_DECISIONS for decision in value["decision_counts"]):
@@ -1327,6 +1569,9 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
             config_hash=value["config_hash"],
         )
         clips_by_id = {clip["clip_id"]: clip for clip in clips}
+        ledger_by_id = {
+            candidate["candidate_id"]: candidate for candidate in ledger_candidates
+        }
         for index, assessment in enumerate(assessments):
             evidence = tuple(
                 ExpertEvidence(
@@ -1357,7 +1602,16 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
                 )
             clip = clips_by_id.get(assessment["candidate_id"])
             serialized_hard_reasons = tuple(assessment.get("hard_reasons", []))
-            hard_gate_context = assessment["hard_gate_context"]
+            ledger_candidate = ledger_by_id[assessment["candidate_id"]]
+            hard_gate_context = ledger_candidate["hard_gate_context"]
+            if (
+                assessment["hard_gate_context"] != hard_gate_context
+                or assessment["hard_gate_context_hash"]
+                != ledger_candidate["hard_gate_context_hash"]
+            ):
+                raise ValueError(
+                    f"{context} assessments[{index}] does not match candidate ledger"
+                )
             if clip is not None:
                 clip_context = {
                     field: clip[field]
@@ -1577,6 +1831,10 @@ def validate_manifest_json(
     artifact_kind: str,
     expected_stage: StageName | None = None,
     expected_clip_id: str | None = None,
+    *,
+    candidate_ledger_bytes: bytes | None = None,
+    candidate_ledger_ref: dict | None = None,
+    upstream_artifact_ref: dict | None = None,
 ) -> dict:
     """Validate a manifest JSON artifact and return the parsed dict.
 
@@ -1673,6 +1931,12 @@ def validate_manifest_json(
                     "must match action_guard action_analysis_version"
                 )
             if "quality_moe" in data:
+                authoritative_candidates = _validate_quality_candidate_ledger(
+                    data["quality_moe"],
+                    candidate_ledger_bytes=candidate_ledger_bytes,
+                    candidate_ledger_ref=candidate_ledger_ref,
+                    upstream_artifact_ref=upstream_artifact_ref,
+                )
                 if data["quality_moe"].get("enabled") is True:
                     for index, clip in enumerate(clips):
                         assessment = _require_v2_field(
@@ -1684,7 +1948,11 @@ def validate_manifest_json(
                             assessment,
                             context=f"rank_dedup_manifest clips[{index}] quality_assessment",
                         )
-                _validate_quality_summary(data["quality_moe"], clips=clips)
+                _validate_quality_summary(
+                    data["quality_moe"],
+                    clips=clips,
+                    authoritative_candidates=authoritative_candidates,
+                )
 
     if (
         artifact_kind == "gif_clip_manifest"

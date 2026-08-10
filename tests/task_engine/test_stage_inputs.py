@@ -115,6 +115,60 @@ class TestVlmInputDependencies:
 
         conn.close()
 
+
+    def test_legacy_gif_input_resolution_keeps_quality_ledger_optional(
+        self, tmp_path: Path,
+    ):
+        """Schema-v1 rank artifacts remain consumable without quality sidecars."""
+        import hashlib
+        from app.task_engine.schema import connect_task_db
+        from app.task_engine.artifacts import resolve_stage_inputs
+
+        conn = connect_task_db(tmp_path / "task.db")
+        now = "2026-07-18T00:00:00.000+00:00"
+        conn.execute(
+            "INSERT INTO task_jobs (job_id, directory, directory_key, config_json, status, created_at, updated_at) "
+            "VALUES ('j1', '/tmp/d', '/tmp/d', '{}', 'running', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO task_videos (video_id, job_id, path, fingerprint, status, created_at, updated_at) "
+            "VALUES ('v1', 'j1', '/tmp/v.mp4', 'fp', 'running', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO task_stages (stage_id, video_id, stage_name, clip_id, input_key, status, created_at, updated_at) "
+            "VALUES ('rank-1', 'v1', 'rank_dedup', NULL, 'key', 'succeeded', ?, ?)",
+            (now, now),
+        )
+        rank_path = tmp_path / "rank_dedup_manifest.json"
+        rank_path.write_text(json.dumps({
+            "schema_version": 1,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{"clip_id": "clip-1"}],
+        }), encoding="utf-8")
+        conn.execute(
+            """INSERT INTO task_artifacts
+               (artifact_id, job_id, video_id, stage_name, clip_id, path, sha256,
+                size_bytes, provenance_json, created_at, stage_id, artifact_kind)
+               VALUES ('rank-art', 'j1', 'v1', 'rank_dedup', NULL, ?, ?, ?, '{}',
+                       ?, 'rank-1', 'rank_dedup_manifest')""",
+            (
+                str(rank_path),
+                hashlib.sha256(rank_path.read_bytes()).hexdigest(),
+                rank_path.stat().st_size,
+                now,
+            ),
+        )
+        conn.commit()
+
+        resolved = resolve_stage_inputs(
+            conn, "v1", "gif_clip", clip_id="clip-1"
+        )
+
+        assert set(resolved) == {"rank_dedup_manifest"}
+
     def test_vlm_fails_when_sample_frames_missing(self, tmp_path: Path):
         """VLM resolution fails when sample_frames artifacts don't exist."""
         from app.task_engine.schema import connect_task_db

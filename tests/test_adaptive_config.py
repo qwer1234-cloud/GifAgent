@@ -306,7 +306,11 @@ def test_quality_runtime_snapshot_resolves_auto_before_judge_http_boundary():
 
     def resolve_auto(runtime, _snapshot):
         seen.append(runtime.base_url)
-        return "http://resolved-once.example:11434"
+        return (
+            "http://resolved-vlm.example:11434"
+            if len(seen) == 1
+            else "http://resolved-quality.example:11434"
+        )
 
     frozen = adaptive._resolve_quality_runtime_snapshot(
         {
@@ -322,7 +326,60 @@ def test_quality_runtime_snapshot_resolves_auto_before_judge_http_boundary():
         auto_resolver=resolve_auto,
     )
 
-    assert seen == ["auto"]
+    assert seen == ["auto", "auto"]
+    assert frozen["vlm"]["base_url"] == "http://resolved-vlm.example:11434"
     assert frozen["quality_moe"]["judge"]["base_url"] == (
-        "http://resolved-once.example:11434"
+        "http://resolved-quality.example:11434"
+    )
+
+
+def test_explicit_quality_endpoint_is_not_overwritten_by_vlm_auto_resolution():
+    from types import SimpleNamespace
+    from app.quality_moe.config import freeze_quality_runtime_config
+
+    seen = []
+
+    def ready(runtime_config):
+        seen.append(runtime_config.base_url)
+        return SimpleNamespace(base_url="http://resolved-vlm.example:11434")
+
+    frozen = freeze_quality_runtime_config({
+        "vlm": {"base_url": "auto", "model": "llava:13b"},
+        "quality_moe": {"judge": {
+            "base_url": "https://explicit-quality.example:443/",
+            "model_id": "llava:13b",
+        }},
+    }, ready_resolver=ready)
+
+    assert seen == ["auto"]
+    assert frozen["vlm"]["base_url"] == "http://resolved-vlm.example:11434"
+    assert frozen["quality_moe"]["judge"]["base_url"] == (
+        "https://explicit-quality.example:443"
+    )
+
+
+def test_quality_auto_uses_independent_resolver_not_explicit_vlm_endpoint():
+    from types import SimpleNamespace
+    from app.quality_moe.config import freeze_quality_runtime_config
+
+    seen = []
+
+    def ready(runtime_config):
+        seen.append(runtime_config.base_url)
+        return SimpleNamespace(base_url="http://quality-auto.example:11434")
+
+    frozen = freeze_quality_runtime_config({
+        "vlm": {
+            "base_url": "http://explicit-vlm.example:11434/",
+            "model": "llava:13b",
+        },
+        "quality_moe": {"judge": {
+            "base_url": "auto", "model_id": "llava:13b",
+        }},
+    }, ready_resolver=ready)
+
+    assert seen == ["auto"]
+    assert frozen["vlm"]["base_url"] == "http://explicit-vlm.example:11434"
+    assert frozen["quality_moe"]["judge"]["base_url"] == (
+        "http://quality-auto.example:11434"
     )

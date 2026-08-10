@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -6,6 +7,40 @@ import pytest
 
 from app.services.gif_windows import build_export_window
 from scripts import test_video_adaptive
+
+
+def _synthesize_artifact_ref(path: str) -> dict:
+    candidate = Path(path)
+    raw = candidate.read_bytes() if candidate.is_file() else b"standalone-fixture"
+    return {
+        "artifact_id": "standalone-synthesize",
+        "stage_id": "standalone-synthesize-stage",
+        "artifact_kind": "synthesize_manifest",
+        "path": path,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size_bytes": len(raw),
+    }
+
+
+def _validate_standalone_rank(work_dir: Path) -> dict:
+    from app.task_engine.artifacts import validate_manifest_json
+
+    manifest_path = work_dir / "rank_dedup_manifest.json"
+    raw = manifest_path.read_bytes()
+    preview = json.loads(raw)
+    ledger_path = work_dir / "rank_candidate_ledger_manifest.json"
+    return validate_manifest_json(
+        raw,
+        "rank_dedup_manifest",
+        candidate_ledger_bytes=ledger_path.read_bytes(),
+        candidate_ledger_ref={
+            **preview["quality_moe"]["candidate_ledger"],
+            "path": str(ledger_path),
+        },
+        upstream_artifact_ref=preview["quality_moe"]["candidate_ledger"][
+            "upstream_artifact"
+        ],
+    )
 
 
 def test_single_frame_window_is_centered_and_capped():
@@ -260,7 +295,7 @@ def test_direct_and_staged_action_splits_match_before_ranking(
         str(staged_export),
         str(staged_work),
         cfg,
-        {"synthesize_manifest": [{"path": str(synth_path)}]},
+        {"synthesize_manifest": [_synthesize_artifact_ref(str(synth_path))]},
         {
             "vlm": {
                 "provider": "ollama",
@@ -315,14 +350,12 @@ def test_empty_staged_rank_derives_canonical_action_hash(
         str(tmp_path / "exports"),
         str(tmp_path),
         cfg,
-        {"synthesize_manifest": [{"path": "ignored"}]},
+        {"synthesize_manifest": [_synthesize_artifact_ref("ignored")]},
         None,
     )
 
     manifest_path = tmp_path / "rank_dedup_manifest.json"
-    manifest = validate_manifest_json(
-        manifest_path.read_bytes(), "rank_dedup_manifest"
-    )
+    manifest = _validate_standalone_rank(tmp_path)
     assert manifest["action_guard"]["action_config_hash"] == (
         freeze_action_config(cfg)[1]
     )
@@ -418,13 +451,10 @@ def test_nonempty_legacy_staged_rank_uses_normalized_disabled_action_config(
         str(tmp_path / "exports"),
         str(tmp_path),
         cfg,
-        {"synthesize_manifest": [{"path": "ignored"}]},
+        {"synthesize_manifest": [_synthesize_artifact_ref("ignored")]},
         None,
     )
-    manifest = validate_manifest_json(
-        (tmp_path / "rank_dedup_manifest.json").read_bytes(),
-        "rank_dedup_manifest",
-    )
+    manifest = _validate_standalone_rank(tmp_path)
     assert manifest["clips"][0]["action_boundary_mode"] == "disabled"
     assert manifest["clips"][0]["action_analysis_version"] == 1
     assert manifest["action_guard"]["action_analysis_version"] == 1

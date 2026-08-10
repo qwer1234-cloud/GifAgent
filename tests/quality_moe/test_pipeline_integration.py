@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.quality_moe.evaluator import QualityBatchResult
@@ -106,6 +107,16 @@ def _valid_repair_assessment(candidate_id: str, config_hash: str) -> dict:
     return payload
 
 
+def _synthesize_lineage_ref() -> dict:
+    return {
+        "artifact_id": "synth-artifact",
+        "stage_id": "synth-stage",
+        "artifact_kind": "synthesize_manifest",
+        "sha256": "a" * 64,
+        "size_bytes": 123,
+    }
+
+
 def test_zero_clip_staged_rank_manifest_records_quality_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(
         adaptive,
@@ -119,31 +130,97 @@ def test_zero_clip_staged_rank_manifest_records_quality_summary(tmp_path, monkey
         str(tmp_path / "exports"),
         str(tmp_path),
         cfg,
-        {},
+        {"synthesize_manifest": [_synthesize_lineage_ref()]},
         config_data={"adaptive": {}},
     )
 
     manifest_path = result["_artifacts"][0]["path"]
     manifest = json.loads(open(manifest_path, encoding="utf-8").read())
-    assert manifest["quality_moe"] == {
-        "enabled": True,
-        "report_only": True,
-        "evaluation_version": "quality-moe-v1",
-        "config_hash": cfg["quality_moe_config_hash"],
-        "policy_snapshot": {
-            "report_only": True,
-            "min_judge_confidence": 0.8,
-            "min_independent_negative_families": 2,
-            "policy_version": "quality-moe-policy-v1",
-        },
-        "input_count": 0,
-        "assessed_count": 0,
-        "effective_count": 0,
-        "human_review_count": 0,
-        "decision_counts": {},
-        "top_assessments": [],
-        "assessments": [],
+    summary = manifest["quality_moe"]
+    assert summary["input_count"] == summary["assessed_count"] == 0
+    assert summary["effective_count"] == summary["human_review_count"] == 0
+    assert summary["assessments"] == summary["assessed_candidates"] == []
+    assert summary["candidate_ledger"]["mode"] == "external"
+
+
+def test_staged_rank_writes_external_candidate_ledger_bound_to_input_artifact(
+    tmp_path,
+):
+    synth_path = tmp_path / "synthesize_manifest.json"
+    synth_path.write_text(json.dumps({
+        "schema_version": 1,
+        "stage": "synthesize",
+        "clips": [],
+    }), encoding="utf-8")
+    synth_raw = synth_path.read_bytes()
+    synth_ref = {
+        "artifact_id": "synth-artifact",
+        "stage_id": "synth-stage",
+        "artifact_kind": "synthesize_manifest",
+        "path": str(synth_path),
+        "sha256": hashlib.sha256(synth_raw).hexdigest(),
+        "size_bytes": len(synth_raw),
     }
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": True}})
+
+    result = adaptive._stage_rank_dedup(
+        "source.mp4", str(tmp_path / "exports"), str(tmp_path), cfg,
+        {"synthesize_manifest": [synth_ref]},
+        {"_stage_id": "rank-stage"},
+    )
+
+    artifacts = {item["artifact_kind"]: item for item in result["_artifacts"]}
+    assert set(artifacts) == {"rank_dedup_manifest", "rank_candidate_ledger"}
+    manifest = json.loads(open(
+        artifacts["rank_dedup_manifest"]["path"], encoding="utf-8"
+    ).read())
+    ledger = json.loads(open(
+        artifacts["rank_candidate_ledger"]["path"], encoding="utf-8"
+    ).read())
+    assert manifest["quality_moe"]["candidate_ledger"]["mode"] == "external"
+    assert ledger["upstream_artifact"] == {
+        key: synth_ref[key]
+        for key in (
+            "artifact_id", "stage_id", "artifact_kind", "sha256", "size_bytes",
+        )
+    }
+    assert ledger["assessed_candidates"] == []
+
+
+def test_direct_quality_summary_keeps_independent_assessed_candidate_ledger(
+    tmp_path, monkeypatch,
+):
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": True}})
+    candidate = {
+        "candidate_id": "clip-1",
+        "clip_id": "clip-1",
+        "start_ts": 1.0,
+        "end_ts": 2.0,
+        "transition_action": "keep",
+    }
+    assessment = _assessment(
+        "clip-1", cfg["quality_moe_config_hash"], QualityDecision.KEEP_AS_IS
+    )
+    monkeypatch.setattr(
+        adaptive,
+        "evaluate_candidates",
+        lambda *_a, **_k: QualityBatchResult(
+            (assessment,), ({**candidate},), (),
+        ),
+    )
+
+    _routed, summary = adaptive._evaluate_quality_pipeline_candidates(
+        [candidate], video_path="source.mp4", cfg=cfg, work_dir=tmp_path,
+    )
+
+    assert summary["candidate_ledger"] == {"mode": "embedded"}
+    assert summary["assessed_candidates"] == [{
+        "candidate_id": "clip-1",
+        "hard_gate_context": {"transition_action": "keep"},
+        "hard_gate_context_hash": hashlib.sha256(
+            b'{"transition_action":"keep"}'
+        ).hexdigest(),
+    }]
 
 
 def test_report_only_quality_evaluation_preserves_candidate_order(tmp_path, monkeypatch):
@@ -511,7 +588,8 @@ def test_staged_rank_writes_valid_report_only_assessments_after_dedup(
     })
 
     result = adaptive._stage_rank_dedup(
-        "source.mp4", str(tmp_path / "exports"), str(tmp_path), cfg, {},
+        "source.mp4", str(tmp_path / "exports"), str(tmp_path), cfg,
+        {"synthesize_manifest": [_synthesize_lineage_ref()]},
         config_data={"quality_moe": {"report_only": True}},
     )
     manifest = json.loads(open(result["_artifacts"][0]["path"], encoding="utf-8").read())
@@ -519,10 +597,22 @@ def test_staged_rank_writes_valid_report_only_assessments_after_dedup(
     assert [clip["gif_worthiness"] for clip in seen] == [0.9, 0.7]
     assert [clip["gif_worthiness"] for clip in manifest["clips"]] == [0.9, 0.7]
     assert manifest["quality_moe"]["assessed_count"] == 2
+    artifacts = {item["artifact_kind"]: item for item in result["_artifacts"]}
+    ledger_ref = {
+        **manifest["quality_moe"]["candidate_ledger"],
+        "path": artifacts["rank_candidate_ledger"]["path"],
+    }
     from app.task_engine.artifacts import validate_manifest_json
-    validate_manifest_json(
-        json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+    validated = validate_manifest_json(
+        Path(artifacts["rank_dedup_manifest"]["path"]).read_bytes(),
+        "rank_dedup_manifest",
+        candidate_ledger_bytes=Path(
+            artifacts["rank_candidate_ledger"]["path"]
+        ).read_bytes(),
+        candidate_ledger_ref=ledger_ref,
+        upstream_artifact_ref=_synthesize_lineage_ref(),
     )
+    assert validated["quality_moe"]["assessed_count"] == 2
 
 
 def test_direct_config_uses_one_loaded_snapshot_not_global_get(monkeypatch):

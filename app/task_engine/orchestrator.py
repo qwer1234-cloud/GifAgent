@@ -358,12 +358,12 @@ def _ensure_gif_clip_stages(
         ) from exc
 
     # Validate manifest structure.
-    from app.task_engine.artifacts import validate_manifest_json
+    from app.task_engine.artifacts import validate_rank_manifest_with_db_lineage
 
-    validate_manifest_json(
-        json.dumps(manifest).encode("utf-8"),
-        "rank_dedup_manifest",
-        expected_stage="rank_dedup",
+    validate_rank_manifest_with_db_lineage(
+        repo.conn,
+        video_id,
+        manifest_path.read_bytes(),
     )
 
     clips = manifest.get("clips", [])

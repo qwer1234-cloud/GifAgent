@@ -682,6 +682,7 @@ def _quality_moe_summary(
     input_count: int,
     effective_count: int,
     human_review_count: int,
+    assessed_candidates: list[dict] | None = None,
 ) -> dict:
     quality_config = _quality_config_from_pipeline_cfg(cfg)
     quality = quality_config.to_dict()
@@ -689,6 +690,7 @@ def _quality_moe_summary(
     for assessment in assessments:
         decision = str(assessment["effective_decision"])
         decision_counts[decision] = decision_counts.get(decision, 0) + 1
+    candidate_ledger = json.loads(json.dumps(assessed_candidates or []))
     return {
         "enabled": bool(quality["enabled"]),
         "report_only": bool(quality["report_only"]),
@@ -716,6 +718,9 @@ def _quality_moe_summary(
             for assessment in assessments[:10]
         ],
         "assessments": assessments,
+        "assessed_candidates": candidate_ledger,
+        "assessed_candidates_digest": _quality_evidence_hash(candidate_ledger),
+        "candidate_ledger": {"mode": "embedded"},
     }
 
 
@@ -742,6 +747,19 @@ def _quality_hard_gate_context(candidate: dict | None) -> dict:
         for field in _QUALITY_HARD_GATE_INPUT_FIELDS
         if field in candidate
     }
+
+
+def _quality_candidate_ledger(candidates: list[dict]) -> list[dict]:
+    return [
+        {
+            "candidate_id": str(candidate["candidate_id"]),
+            "hard_gate_context": _quality_hard_gate_context(candidate),
+            "hard_gate_context_hash": _quality_evidence_hash(
+                _quality_hard_gate_context(candidate)
+            ),
+        }
+        for candidate in candidates
+    ]
 
 
 def _enrich_quality_assessment(
@@ -832,8 +850,10 @@ def _evaluate_quality_pipeline_candidates(
     if not quality_config.enabled:
         return normalized, _quality_moe_summary(
             cfg, [], input_count=len(normalized), effective_count=len(normalized),
-            human_review_count=0,
+            human_review_count=0, assessed_candidates=[],
         )
+
+    assessed_candidates = _quality_candidate_ledger(normalized)
 
     judge = (
         OllamaQualityJudge(quality_config, httpx.HTTPTransport())
@@ -873,6 +893,7 @@ def _evaluate_quality_pipeline_candidates(
         input_count=len(normalized),
         effective_count=len(routed),
         human_review_count=len(batch.human_review_clips),
+        assessed_candidates=assessed_candidates,
     )
     return routed, summary
 
@@ -2545,6 +2566,18 @@ def _read_upstream_manifest(inputs: dict, artifact_kind: str, stage: str) -> dic
 
     if not raw_bytes:
         raise ValueError(f"Empty manifest file: {path}")
+    recorded_sha = ref.get("sha256")
+    if isinstance(recorded_sha, str) and recorded_sha:
+        actual_sha = hashlib.sha256(raw_bytes).hexdigest()
+        if actual_sha != recorded_sha:
+            raise ValueError(f"{artifact_kind} SHA-256 mismatch")
+    recorded_size = ref.get("size_bytes")
+    if (
+        isinstance(recorded_size, int)
+        and not isinstance(recorded_size, bool)
+        and len(raw_bytes) != recorded_size
+    ):
+        raise ValueError(f"{artifact_kind} size mismatch")
 
     # Determine the expected producer stage from the artifact kind.
     _EXPECTED_PRODUCER: dict[str, str] = {
@@ -2560,11 +2593,29 @@ def _read_upstream_manifest(inputs: dict, artifact_kind: str, stage: str) -> dic
     expected_clip_id = ref.get("clip_id") or None
 
     # P1-2: Call shared validator with expected stage, clip_id.
+    lineage_kwargs = {}
+    if artifact_kind == "rank_dedup_manifest":
+        ledger_entries = inputs.get("rank_candidate_ledger", [])
+        upstream_entries = inputs.get("synthesize_manifest", [])
+        if ledger_entries and upstream_entries:
+            ledger_ref = ledger_entries[0]
+            ledger_path = ledger_ref.get("path", "")
+            if not ledger_path or not os.path.exists(ledger_path):
+                raise ValueError(f"Input artifact file not found: {ledger_path}")
+            with open(ledger_path, "rb") as ledger_file:
+                ledger_bytes = ledger_file.read()
+            lineage_kwargs = {
+                "candidate_ledger_bytes": ledger_bytes,
+                "candidate_ledger_ref": ledger_ref,
+                "upstream_artifact_ref": upstream_entries[0],
+            }
+
     data = validate_manifest_json(
         raw_bytes,
         artifact_kind=artifact_kind,
         expected_stage=expected_producer,
         expected_clip_id=expected_clip_id,
+        **lineage_kwargs,
     )
 
     # P1-2: For gif_clip_manifest, additionally verify SHA
@@ -3364,6 +3415,63 @@ def _synthesize_clips_with_llm(clips: list[dict], cfg: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
+_ARTIFACT_LINEAGE_FIELDS = (
+    "artifact_id", "stage_id", "artifact_kind", "sha256", "size_bytes",
+)
+
+
+def _rank_source_artifact_lineage(inputs: dict) -> dict:
+    entries = inputs.get("synthesize_manifest", [])
+    if not entries or not isinstance(entries[0], dict):
+        raise ValueError("rank_dedup requires immutable synthesize artifact lineage")
+    ref = entries[0]
+    lineage = {field: ref.get(field) for field in _ARTIFACT_LINEAGE_FIELDS}
+    if (
+        lineage["artifact_kind"] != "synthesize_manifest"
+        or any(not isinstance(lineage[field], str) or not lineage[field]
+               for field in ("artifact_id", "stage_id", "sha256"))
+        or not isinstance(lineage["size_bytes"], int)
+        or lineage["size_bytes"] < 0
+    ):
+        raise ValueError("rank_dedup synthesize artifact lineage is incomplete")
+    return lineage
+
+
+def _write_rank_candidate_ledger(
+    work_dir: str,
+    quality_moe: dict,
+    *,
+    source_artifact: dict,
+    stage_id: str,
+) -> tuple[str, dict]:
+    ledger = {
+        "schema_version": 1,
+        "stage": "rank_input",
+        "upstream_artifact": source_artifact,
+        "assessed_candidates": quality_moe["assessed_candidates"],
+        "assessed_candidates_digest": quality_moe[
+            "assessed_candidates_digest"
+        ],
+    }
+    ledger_path = os.path.abspath(
+        _save_manifest(work_dir, "rank_candidate_ledger", ledger)
+    )
+    with open(ledger_path, "rb") as ledger_file:
+        raw = ledger_file.read()
+    ledger_ref = {
+        "artifact_id": _hash_artifact_id(
+            "rank_candidate_ledger", ledger_path, stage_id=stage_id
+        ),
+        "stage_id": stage_id,
+        "artifact_kind": "rank_candidate_ledger",
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "size_bytes": len(raw),
+        "upstream_artifact": source_artifact,
+    }
+    quality_moe["candidate_ledger"] = {"mode": "external", **ledger_ref}
+    return ledger_path, ledger_ref
+
+
 def _stage_rank_dedup(
     video_path: str,
     export_dir: str,
@@ -3378,6 +3486,10 @@ def _stage_rank_dedup(
     deduplication or fan-out.  ``gif_clip`` only exports these clean windows.
     """
     synth_manifest = _read_upstream_manifest(inputs, "synthesize_manifest", "rank_dedup")
+    source_artifact = _rank_source_artifact_lineage(inputs)
+    rank_stage_id = str(
+        (config_data or {}).get("_stage_id") or "standalone-rank-stage"
+    )
     clips = synth_manifest.get("clips", [])
     scored_frames = synth_manifest.get("scored_frames", [])
 
@@ -3434,6 +3546,12 @@ def _stage_rank_dedup(
             effective_count=0,
             human_review_count=0,
         )
+        ledger_path, _ledger_ref = _write_rank_candidate_ledger(
+            work_dir,
+            quality_moe,
+            source_artifact=source_artifact,
+            stage_id=rank_stage_id,
+        )
         manifest = {
             "schema_version": 2,
             "stage": "rank_dedup",
@@ -3448,7 +3566,10 @@ def _stage_rank_dedup(
         return {
             "output_key": "rank_dedup",
             "clip_count": 0,
-            "_artifacts": [_make_artifact(manifest_path, "rank_dedup_manifest")],
+            "_artifacts": [
+                _make_artifact(manifest_path, "rank_dedup_manifest"),
+                _make_artifact(ledger_path, "rank_candidate_ledger"),
+            ],
         }
 
     probe = subprocess.run(
@@ -3700,6 +3821,12 @@ def _stage_rank_dedup(
         cfg=cfg,
         work_dir=work_dir,
     )
+    ledger_path, _ledger_ref = _write_rank_candidate_ledger(
+        work_dir,
+        quality_moe,
+        source_artifact=source_artifact,
+        stage_id=rank_stage_id,
+    )
 
     print(f"  Final: {len(deduped_clips)} deduped clips")
 
@@ -3718,7 +3845,10 @@ def _stage_rank_dedup(
     return {
         "output_key": "rank_dedup",
         "clip_count": len(deduped_clips),
-        "_artifacts": [_make_artifact(manifest_path, "rank_dedup_manifest")],
+        "_artifacts": [
+            _make_artifact(manifest_path, "rank_dedup_manifest"),
+            _make_artifact(ledger_path, "rank_candidate_ledger"),
+        ],
     }
 
 

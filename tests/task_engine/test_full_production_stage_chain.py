@@ -299,10 +299,27 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
         "action_fallback_mode": "fixed_window",
         "action_config_hash": "a" * 64,
     }
-    inputs = {"synthesize_manifest": [{"path": str(synth_path)}]}
+    synth_raw = synth_path.read_bytes()
+    inputs = {"synthesize_manifest": [{
+        "artifact_id": "standalone-synthesize",
+        "stage_id": "standalone-synthesize-stage",
+        "artifact_kind": "synthesize_manifest",
+        "path": str(synth_path),
+        "sha256": hashlib.sha256(synth_raw).hexdigest(),
+        "size_bytes": len(synth_raw),
+    }]}
     _stage_rank_dedup(str(video_path), str(export_dir), str(work_dir), cfg, inputs, {})
     rank_path = work_dir / "rank_dedup_manifest.json"
     rank = json.loads(rank_path.read_text(encoding="utf-8"))
+    ledger_path = work_dir / "rank_candidate_ledger_manifest.json"
+    gif_inputs = {
+        "rank_dedup_manifest": [{"path": str(rank_path)}],
+        "rank_candidate_ledger": [{
+            **rank["quality_moe"]["candidate_ledger"],
+            "path": str(ledger_path),
+        }],
+        "synthesize_manifest": inputs["synthesize_manifest"],
+    }
 
     assert rank["schema_version"] == 2
     assert rank["transition_guard"]["split"] >= 1
@@ -316,7 +333,7 @@ def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
         assert not (clip["start_ts"] < 3.0 < clip["end_ts"])
         _stage_gif_clip(
             str(video_path), str(work_dir), str(export_dir), str(work_dir), cfg,
-            clip["clip_id"], {"rank_dedup_manifest": [{"path": str(rank_path)}]},
+            clip["clip_id"], gif_inputs,
         )
 
     gif_manifests = list(work_dir.glob("gif_clip_*_manifest.json"))

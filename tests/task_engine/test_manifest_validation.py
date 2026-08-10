@@ -42,6 +42,17 @@ def _hard_gate_context_hash(context: dict) -> str:
     ).hexdigest()
 
 
+def _assessed_candidates_digest(candidates: list[dict]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            candidates,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _valid_quality_rank_manifest() -> dict:
     hard_gate_context = {"transition_action": "keep"}
     evidence = []
@@ -94,6 +105,11 @@ def _valid_quality_rank_manifest() -> dict:
     assessment["evidence_hashes"] = [
         _quality_evidence_hash(item) for item in assessment["evidence"]
     ]
+    assessed_candidates = [{
+        "candidate_id": "clip-1",
+        "hard_gate_context": deepcopy(hard_gate_context),
+        "hard_gate_context_hash": _hard_gate_context_hash(hard_gate_context),
+    }]
     return {
         "schema_version": 2,
         "stage": "rank_dedup",
@@ -141,6 +157,11 @@ def _valid_quality_rank_manifest() -> dict:
                 "confidence": 0.92,
             }],
             "assessments": [deepcopy(assessment)],
+            "assessed_candidates": assessed_candidates,
+            "assessed_candidates_digest": _assessed_candidates_digest(
+                assessed_candidates
+            ),
+            "candidate_ledger": {"mode": "embedded"},
         },
     }
 
@@ -710,6 +731,15 @@ class TestManifestValidation:
                     "confidence": 0.92,
                 }],
                 "assessments": [deepcopy(assessment)],
+                "assessed_candidates": deepcopy(
+                    _valid_quality_rank_manifest()["quality_moe"][
+                        "assessed_candidates"
+                    ]
+                ),
+                "assessed_candidates_digest": _valid_quality_rank_manifest()[
+                    "quality_moe"
+                ]["assessed_candidates_digest"],
+                "candidate_ledger": {"mode": "embedded"},
             },
         }
 
@@ -759,6 +789,9 @@ class TestManifestValidation:
                 "decision_counts": {},
                 "top_assessments": [],
                 "assessments": [],
+                "assessed_candidates": [],
+                "assessed_candidates_digest": _assessed_candidates_digest([]),
+                "candidate_ledger": {"mode": "embedded"},
             },
         }
 
@@ -834,6 +867,16 @@ class TestManifestValidation:
             "effective_decision": "KEEP_AS_IS",
             "confidence": 0.92,
         })
+        second_candidate = deepcopy(
+            manifest["quality_moe"]["assessed_candidates"][0]
+        )
+        second_candidate["candidate_id"] = "clip-2"
+        manifest["quality_moe"]["assessed_candidates"].append(second_candidate)
+        manifest["quality_moe"]["assessed_candidates_digest"] = (
+            _assessed_candidates_digest(
+                manifest["quality_moe"]["assessed_candidates"]
+            )
+        )
 
         with pytest.raises(ValueError, match="report_only"):
             validate_manifest_json(
@@ -928,6 +971,186 @@ class TestManifestValidation:
         with pytest.raises(ValueError, match="hard-gate context"):
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_rejects_assessment_context_forged_against_candidate_ledger(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        forged_context = {"transition_action": "drop"}
+        assessment.update({
+            "recommended_decision": "REJECT",
+            "effective_decision": "REJECT",
+            "decision": "REJECT",
+            "confidence": 1.0,
+            "hard_reasons": ["transition_drop"],
+            "hard_gate_context": forged_context,
+            "hard_gate_context_hash": _hard_gate_context_hash(forged_context),
+        })
+        manifest["quality_moe"]["report_only"] = False
+        manifest["quality_moe"]["policy_snapshot"]["report_only"] = False
+        manifest["quality_moe"]["effective_count"] = 0
+        manifest["quality_moe"]["decision_counts"] = {"REJECT": 1}
+        manifest["quality_moe"]["top_assessments"] = [{
+            "candidate_id": "clip-1",
+            "effective_decision": "REJECT",
+            "confidence": 1.0,
+        }]
+        manifest["clips"] = []
+        manifest["clip_count"] = 0
+
+        with pytest.raises(ValueError, match="candidate ledger"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_staged_rank_rejects_synchronized_ledger_forgery_against_db_sha(
+        self, tmp_path: Path,
+    ):
+        from scripts import test_video_adaptive as adaptive
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        forged_context = {"transition_action": "drop"}
+        assessment.update({
+            "recommended_decision": "REJECT",
+            "effective_decision": "REJECT",
+            "decision": "REJECT",
+            "confidence": 1.0,
+            "hard_reasons": ["transition_drop"],
+            "hard_gate_context": forged_context,
+            "hard_gate_context_hash": _hard_gate_context_hash(forged_context),
+        })
+        forged_candidates = [{
+            "candidate_id": "clip-1",
+            "hard_gate_context": forged_context,
+            "hard_gate_context_hash": _hard_gate_context_hash(forged_context),
+        }]
+        quality = manifest["quality_moe"]
+        quality.update({
+            "report_only": False,
+            "effective_count": 0,
+            "decision_counts": {"REJECT": 1},
+            "top_assessments": [{
+                "candidate_id": "clip-1",
+                "effective_decision": "REJECT",
+                "confidence": 1.0,
+            }],
+            "assessed_candidates": forged_candidates,
+            "assessed_candidates_digest": _assessed_candidates_digest(
+                forged_candidates
+            ),
+        })
+        quality["policy_snapshot"]["report_only"] = False
+        manifest["clips"] = []
+        manifest["clip_count"] = 0
+
+        source_path = tmp_path / "synthesize_manifest.json"
+        source_path.write_text(json.dumps({
+            "schema_version": 1,
+            "stage": "synthesize",
+            "clips": [],
+        }), encoding="utf-8")
+        source_raw = source_path.read_bytes()
+        source_ref = {
+            "artifact_id": "source-artifact",
+            "stage_id": "synthesize-stage",
+            "artifact_kind": "synthesize_manifest",
+            "path": str(source_path),
+            "sha256": hashlib.sha256(source_raw).hexdigest(),
+            "size_bytes": len(source_raw),
+        }
+        authentic_candidates = [{
+            "candidate_id": "clip-1",
+            "hard_gate_context": {"transition_action": "keep"},
+            "hard_gate_context_hash": _hard_gate_context_hash(
+                {"transition_action": "keep"}
+            ),
+        }]
+        authentic_ledger = {
+            "schema_version": 1,
+            "stage": "rank_input",
+            "upstream_artifact": {
+                key: source_ref[key]
+                for key in (
+                    "artifact_id", "stage_id", "artifact_kind", "sha256",
+                    "size_bytes",
+                )
+            },
+            "assessed_candidates": authentic_candidates,
+            "assessed_candidates_digest": _assessed_candidates_digest(
+                authentic_candidates
+            ),
+        }
+        authentic_raw = json.dumps(
+            authentic_ledger, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+        forged_ledger = deepcopy(authentic_ledger)
+        forged_ledger["assessed_candidates"] = forged_candidates
+        forged_ledger["assessed_candidates_digest"] = (
+            _assessed_candidates_digest(forged_candidates)
+        )
+        ledger_path = tmp_path / "rank_candidate_ledger.json"
+        ledger_path.write_text(
+            json.dumps(forged_ledger, ensure_ascii=False), encoding="utf-8"
+        )
+        ledger_ref = {
+            "artifact_id": "ledger-artifact",
+            "stage_id": "rank-stage",
+            "artifact_kind": "rank_candidate_ledger",
+            "path": str(ledger_path),
+            "sha256": hashlib.sha256(authentic_raw).hexdigest(),
+            "size_bytes": len(authentic_raw),
+        }
+        quality["candidate_ledger"] = {
+            "mode": "external",
+            **{
+                key: ledger_ref[key]
+                for key in (
+                    "artifact_id", "stage_id", "artifact_kind", "sha256",
+                    "size_bytes",
+                )
+            },
+            "upstream_artifact": authentic_ledger["upstream_artifact"],
+        }
+        rank_path = tmp_path / "rank_dedup_manifest.json"
+        rank_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            adaptive._read_upstream_manifest(
+                {
+                    "rank_dedup_manifest": [{"path": str(rank_path)}],
+                    "rank_candidate_ledger": [ledger_ref],
+                    "synthesize_manifest": [source_ref],
+                },
+                "rank_dedup_manifest",
+                "gif_clip",
+            )
+
+    def test_staged_rank_rejects_manifest_content_changed_after_db_hash(
+        self, tmp_path: Path,
+    ):
+        from scripts import test_video_adaptive as adaptive
+
+        manifest = _valid_quality_rank_manifest()
+        rank_path = tmp_path / "rank_dedup_manifest.json"
+        rank_path.write_text(json.dumps(manifest), encoding="utf-8")
+        authentic_raw = rank_path.read_bytes()
+        manifest["attacker_note"] = "content changed after registration"
+        rank_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="rank_dedup_manifest SHA-256 mismatch"):
+            adaptive._read_upstream_manifest(
+                {"rank_dedup_manifest": [{
+                    "path": str(rank_path),
+                    "sha256": hashlib.sha256(authentic_raw).hexdigest(),
+                    "size_bytes": len(authentic_raw),
+                }]},
+                "rank_dedup_manifest",
+                "gif_clip",
             )
 
     def test_rank_manifest_rejects_zero_evidence_keep_that_bypasses_coverage(self):
