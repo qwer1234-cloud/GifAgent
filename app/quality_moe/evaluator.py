@@ -11,7 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 import hashlib
 import json
+import os
 from pathlib import Path
+import time
 from typing import Callable, Mapping, Protocol, Sequence
 
 import cv2
@@ -19,7 +21,7 @@ import numpy as np
 
 from app.quality_moe.config import QualityMoeConfig
 from app.quality_moe.experts import CinematicExpert, TechnicalAestheticExpert, TemporalExpert
-from app.quality_moe.judge import JudgeRequest, JudgeResult
+from app.quality_moe.judge import JudgeRequest, JudgeResult, _prompt
 from app.quality_moe.models import EvidencePolarity, EvidenceStatus, ExpertEvidence, QualityAssessment, QualityDecision
 from app.quality_moe.policy import enforce_decision, hard_gate_reasons
 from app.quality_moe.repair import RepairSearchResult, search_repairs
@@ -50,6 +52,7 @@ def evaluate_candidate(
     experts: Sequence[_Expert] | None = None,
     judge: _Judge | Callable[[JudgeRequest], JudgeResult] | None = None,
     repair_search: Callable[..., RepairSearchResult] = search_repairs,
+    clock: Callable[[], int] = time.monotonic_ns,
 ) -> QualityAssessment:
     """Evaluate one exact source interval without permitting a model bypass.
 
@@ -67,15 +70,23 @@ def evaluate_candidate(
             confidence=1.0, evidence=(), hard_reasons=hard_reasons, repair=None, config=config,
         )
         return _annotate(assessment, input_hash=fallback_input, evidence=(), provenance=_provenance(
-            candidate_id, video_path, source_hash, start_ts, end_ts, (), config, (), None, None,
+            candidate_id, video_path, source_hash, start_ts, end_ts, (), config, (), None, None, _latencies(total=0),
         ))
 
+    total_started = clock()
+    sampler_started = clock()
     try:
         sampled = sampler(video_path, start_ts, end_ts, candidate_id)
     except Exception as error:  # A bad candidate is data, never a batch failure.
-        return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, "sampling_exception", str(error))
-    if not isinstance(sampled, SampledClip) or sampled.candidate_id != candidate_id:
-        return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, "sampling_invalid", "Sampler returned an invalid candidate sample.")
+        return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, "sampling_exception", str(error), _latencies(sampler=_elapsed_ms(sampler_started, clock), total=_elapsed_ms(total_started, clock)))
+    sampler_latency = _elapsed_ms(sampler_started, clock)
+    current_source_hash = _file_hash(video_path)
+    if current_source_hash != source_hash:
+        current_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": current_source_hash, "start_ts": start_ts, "end_ts": end_ts})
+        return _abstained(candidate_id, video_path, current_source_hash, start_ts, end_ts, current_input, config, "source_hash_changed", "Source media changed while sampling.", _latencies(sampler=sampler_latency, total=_elapsed_ms(total_started, clock)))
+    sampling_failure = _validate_sampled(sampled, candidate_id, video_path, start_ts, end_ts, source_hash, candidate)
+    if sampling_failure is not None:
+        return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, sampling_failure, "Sampler output did not prove the requested source interval.", _latencies(sampler=sampler_latency, total=_elapsed_ms(total_started, clock)))
 
     input_hash = sampled.input_hash
     expert_set = tuple(experts) if experts is not None else (
@@ -83,15 +94,24 @@ def evaluate_candidate(
     )
     if len(expert_set) != 3:
         raise ValueError("exactly three low-cost experts are required")
-    collected = _collect_evidence(expert_set, sampled, config)
+    collected, expert_latency = _collect_evidence(expert_set, sampled, config, clock)
     evidence = _contextualize(collected, sampled, config)
+    coverage_failure = _coverage_failure(evidence)
+    if coverage_failure is not None:
+        return _review(
+            candidate_id, video_path, source_hash, start_ts, end_ts, sampled, config, evidence,
+            coverage_failure, _latencies(sampler=sampler_latency, experts=expert_latency, total=_elapsed_ms(total_started, clock)),
+        )
     repair_result: RepairSearchResult | None = None
+    repair_latency = 0
     if _needs_repair(evidence):
+        repair_started = clock()
         try:
             repair_result = repair_search(sampled, config, work_dir=work_dir)
         except Exception as error:
             repair_result = None
             evidence = _sorted_evidence((*evidence, _unavailable(sampled, config, "repair_search", "repair_search_exception", str(error))))
+        repair_latency = _elapsed_ms(repair_started, clock)
         if repair_result is not None:
             if repair_result.repair_delta is not None:
                 evidence = _contextualize((*evidence, repair_result.repair_delta), sampled, config)
@@ -102,18 +122,32 @@ def evaluate_candidate(
     proposed, confidence = QualityDecision.KEEP_AS_IS, _expert_confidence(evidence)
     repair = repair_result.best_recipe if repair_result else None
     best_proxy = repair_result.best_proxy if repair_result else None
+    latency = _latencies(sampler=sampler_latency, experts=expert_latency, repair=repair_latency)
     if _needs_repair(evidence):
         if best_proxy is not None and repair is not None and judge is not None:
-            try:
-                request = _judge_request(work_dir, sampled, best_proxy, evidence, repair.recipe_id)
-                judge_result = _call_judge(judge, request)
-                if not isinstance(judge_result, JudgeResult):
-                    raise ValueError("Judge returned an invalid result.")
-                evidence = _contextualize((*evidence, judge_result.evidence), sampled, config)
-                proposed, confidence = judge_result.decision, judge_result.confidence
-            except Exception as error:
-                evidence = _sorted_evidence((*evidence, _unavailable(sampled, config, "semantic_video_critic", "judge_unavailable", str(error))))
-                proposed, confidence = QualityDecision.ABSTAIN, 0.0
+            repair_failure = _validate_repair_context(repair_result, sampled, config)
+            if repair_failure is not None:
+                evidence = _sorted_evidence((*evidence, _invalid(sampled, config, "repair_delta", repair_failure)))
+                proposed, confidence = QualityDecision.REVIEW, _expert_confidence(evidence)
+            else:
+                judge_started = clock()
+                try:
+                    request = _judge_request(work_dir, sampled, best_proxy, evidence, repair.recipe_id)
+                    candidate_result = _call_judge(judge, request)
+                    judge_latency = _elapsed_ms(judge_started, clock)
+                    latency["judge"] = judge_latency
+                    judge_failure = _validate_judge_result(candidate_result, request, sampled, config, repair_result)
+                    if judge_failure is not None:
+                        evidence = _sorted_evidence((*evidence, _invalid(sampled, config, "semantic_video_critic", judge_failure)))
+                        proposed, confidence = QualityDecision.REVIEW, _expert_confidence(evidence)
+                    else:
+                        judge_result = replace(candidate_result, evidence=replace(candidate_result.evidence, latency_ms=judge_latency))
+                        evidence = _contextualize((*evidence, judge_result.evidence), sampled, config)
+                        proposed, confidence = judge_result.decision, judge_result.confidence
+                except Exception as error:
+                    latency["judge"] = _elapsed_ms(judge_started, clock)
+                    evidence = _sorted_evidence((*evidence, _unavailable(sampled, config, "semantic_video_critic", "judge_unavailable", str(error))))
+                    proposed, confidence = QualityDecision.ABSTAIN, 0.0
         else:
             proposed, confidence = QualityDecision.REVIEW, _expert_confidence(evidence)
 
@@ -124,7 +158,8 @@ def evaluate_candidate(
     )
     reason_codes = judge_result.reason_codes if judge_result else ()
     summary = judge_result.summary if judge_result else "Deterministic expert evidence was evaluated under frozen quality policy."
-    provenance = _provenance(candidate_id, video_path, source_hash, start_ts, end_ts, sampled.timestamps, config, evidence, repair_result, judge_result)
+    latency["total"] = _elapsed_ms(total_started, clock)
+    provenance = _provenance(candidate_id, video_path, source_hash, start_ts, end_ts, sampled.timestamps, config, evidence, repair_result, judge_result, latency)
     return _annotate(assessment, input_hash=input_hash, evidence=evidence, provenance=provenance, reason_codes=reason_codes, summary=summary)
 
 
@@ -171,17 +206,97 @@ def _candidate_fields(candidate: Mapping[str, object]) -> tuple[str, str, float,
     return candidate_id, video_path, start, end
 
 
-def _collect_evidence(experts: Sequence[_Expert], sampled: SampledClip, config: QualityMoeConfig) -> tuple[ExpertEvidence, ...]:
+def _validate_sampled(sampled: object, candidate_id: str, video_path: str, start_ts: float, end_ts: float, source_hash: str, candidate: Mapping[str, object]) -> str | None:
+    if not isinstance(sampled, SampledClip):
+        return "sampling_invalid"
+    if sampled.status is not EvidenceStatus.AVAILABLE or not sampled.frames:
+        return "sampling_unavailable"
+    if sampled.candidate_id != candidate_id or _normal_path(sampled.video_path) != _normal_path(video_path):
+        return "sampling_context_mismatch"
+    if abs(sampled.start_ts - start_ts) > 1e-6 or abs(sampled.end_ts - end_ts) > 1e-6:
+        return "sampling_context_mismatch"
+    if any(timestamp < start_ts - 1e-6 or timestamp > end_ts + 1e-6 for timestamp in sampled.timestamps):
+        return "sampling_context_mismatch"
+    declared_hash = candidate.get("source_file_sha256")
+    if declared_hash is not None and (not isinstance(declared_hash, str) or declared_hash != source_hash):
+        return "source_hash_mismatch"
+    declared_input_hash = candidate.get("input_hash")
+    if declared_input_hash is not None and (not isinstance(declared_input_hash, str) or declared_input_hash != sampled.input_hash):
+        return "input_hash_mismatch"
+    return None
+
+
+def _normal_path(value: str) -> str:
+    return os.path.normcase(os.path.normpath(str(Path(value).resolve(strict=False))))
+
+
+def _coverage_failure(evidence: Sequence[ExpertEvidence]) -> str | None:
+    expected = {"nr_vqa", "deterministic_temporal", "cinematic_classifier"}
+    available = [item for item in evidence if item.status is EvidenceStatus.AVAILABLE]
+    families = [item.signal_family for item in available]
+    return None if len(available) == 3 and set(families) == expected and len(set(families)) == 3 else "expert_coverage_invalid"
+
+
+def _validate_repair_context(result: RepairSearchResult | None, sampled: SampledClip, config: QualityMoeConfig) -> str | None:
+    if result is None or result.best_recipe is None or result.best_proxy is None or result.repair_delta is None:
+        return "repair_proxy_missing"
+    recipe, proxy, delta, validation = result.best_recipe, result.best_proxy, result.repair_delta, result.best_recipe.validation
+    if validation is None or validation.candidate_id != sampled.candidate_id or validation.evaluation_version != config.evaluation_version or validation.config_hash != config.config_hash:
+        return "repair_validation_context_mismatch"
+    if validation.source_input_hash != sampled.input_hash or validation.proxy_artifact_hash != proxy.input_hash or validation.recipe_hash != recipe.recipe_hash:
+        return "repair_validation_hash_mismatch"
+    if delta.identity_hash != validation.repair_delta_evidence_id or delta.input_hash != proxy.input_hash or delta.parent_input_hash != sampled.input_hash or not _matches_context(delta, sampled, config):
+        return "repair_delta_context_mismatch"
+    return None
+
+
+def _validate_judge_result(result: object, request: JudgeRequest, sampled: SampledClip, config: QualityMoeConfig, repair_result: RepairSearchResult) -> str | None:
+    if not isinstance(result, JudgeResult):
+        return "judge_result_invalid"
+    if result.config_hash != config.config_hash or result.evidence.config_hash != config.config_hash or result.evidence.candidate_id != sampled.candidate_id or result.evidence.evaluation_version != config.evaluation_version or result.evidence.input_hash != sampled.input_hash:
+        return "judge_context_mismatch"
+    expected_attempts = (_sha256_text(_prompt(request, correction=False)),)
+    if result.attempts == 2:
+        expected_attempts += (_sha256_text(_prompt(request, correction=True)),)
+    if result.evidence.prompt_hash != result.prompt_hash or result.attempt_prompt_hashes != expected_attempts or result.prompt_hash != expected_attempts[-1]:
+        return "judge_prompt_context_mismatch"
+    model_id = config.judge.get("model_id")
+    if isinstance(model_id, str) and model_id and result.model_hash != hashlib.sha256(model_id.encode("utf-8")).hexdigest():
+        return "judge_model_context_mismatch"
+    if result.decision is QualityDecision.KEEP_FOR_REPAIR and result.selected_recipe_id != repair_result.best_recipe.recipe_id:
+        return "judge_recipe_mismatch"
+    if result.selected_recipe_id is not None and result.selected_recipe_id not in request.allowed_recipe_ids:
+        return "judge_recipe_mismatch"
+    return None
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _latencies(**values: int) -> dict[str, int]:
+    result = {"sampler": 0, "experts": 0, "repair": 0, "judge": 0, "total": 0}
+    result.update({name: max(0, int(value)) for name, value in values.items()})
+    return result
+
+
+def _elapsed_ms(started: int, clock: Callable[[], int]) -> int:
+    return max(0, (clock() - started) // 1_000_000)
+
+
+def _collect_evidence(experts: Sequence[_Expert], sampled: SampledClip, config: QualityMoeConfig, clock: Callable[[], int]) -> tuple[tuple[ExpertEvidence, ...], int]:
     def run(expert: _Expert) -> ExpertEvidence:
+        started = clock()
         try:
             item = expert.evaluate(sampled)
             if not isinstance(item, ExpertEvidence):
                 raise ValueError("expert returned invalid evidence")
-            return item
+            return replace(item, latency_ms=_elapsed_ms(started, clock))
         except Exception as error:
-            return _unavailable(sampled, config, getattr(expert, "signal_family", "unknown"), "expert_exception", str(error), expert_id=getattr(expert, "expert_id", "unknown"))
+            return replace(_unavailable(sampled, config, getattr(expert, "signal_family", "unknown"), "expert_exception", str(error), expert_id=getattr(expert, "expert_id", "unknown")), latency_ms=_elapsed_ms(started, clock))
+    started = clock()
     with ThreadPoolExecutor(max_workers=3) as pool:
-        return tuple(pool.map(run, experts))
+        return tuple(pool.map(run, experts)), _elapsed_ms(started, clock)
 
 
 def _needs_repair(evidence: Sequence[ExpertEvidence]) -> bool:
@@ -249,6 +364,10 @@ def _unavailable(sampled: SampledClip, config: QualityMoeConfig, family: str, co
     return ExpertEvidence(sampled.candidate_id, config.evaluation_version, expert_id or family, "evaluator-v1", family, EvidenceStatus.UNAVAILABLE, findings=({"code": code},), summary=summary[:2000], input_hash=sampled.input_hash, config_hash=config.config_hash)
 
 
+def _invalid(sampled: SampledClip, config: QualityMoeConfig, family: str, code: str) -> ExpertEvidence:
+    return ExpertEvidence(sampled.candidate_id, config.evaluation_version, family, "evaluator-v1", family, EvidenceStatus.INVALID, findings=({"code": code},), summary="Component output did not match the frozen evaluation context.", input_hash=sampled.input_hash, config_hash=config.config_hash)
+
+
 def _sorted_evidence(evidence: Sequence[ExpertEvidence]) -> tuple[ExpertEvidence, ...]:
     return tuple(sorted(evidence, key=lambda item: (item.signal_family, item.expert_id)))
 
@@ -273,11 +392,12 @@ def _hash_json(value: Mapping[str, object]) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def _provenance(candidate_id: str, video_path: str, source_hash: str, start_ts: float, end_ts: float, timestamps: Sequence[float], config: QualityMoeConfig, evidence: Sequence[ExpertEvidence], repair: RepairSearchResult | None, judge: JudgeResult | None) -> dict[str, object]:
+def _provenance(candidate_id: str, video_path: str, source_hash: str, start_ts: float, end_ts: float, timestamps: Sequence[float], config: QualityMoeConfig, evidence: Sequence[ExpertEvidence], repair: RepairSearchResult | None, judge: JudgeResult | None, latency: Mapping[str, int]) -> dict[str, object]:
     payload: dict[str, object] = {
         "candidate_id": candidate_id, "source_video": video_path, "source_file_sha256": source_hash,
         "boundaries": {"start_ts": start_ts, "end_ts": end_ts}, "frame_timestamps": list(timestamps),
         "evaluation_version": config.evaluation_version, "config_hash": config.config_hash,
+        "latency_ms": dict(latency),
         "evidence": [item.to_dict() for item in _sorted_evidence(evidence)],
         "repair": {
             "recipe": repair.best_recipe.to_dict() if repair and repair.best_recipe else None,
@@ -289,7 +409,7 @@ def _provenance(candidate_id: str, video_path: str, source_hash: str, start_ts: 
         },
         "judge": {"model_hash": judge.model_hash, "prompt_hash": judge.prompt_hash, "attempt_prompt_hashes": list(judge.attempt_prompt_hashes), "attempts": judge.attempts} if judge else None,
     }
-    payload["evaluation_hash"] = _hash_json(payload)
+    payload["evaluation_hash"] = _hash_json(_without_dynamic_values(payload))
     return payload
 
 
@@ -297,9 +417,25 @@ def _annotate(assessment: QualityAssessment, *, input_hash: str, evidence: Seque
     return replace(assessment, input_hash=input_hash, evidence=_sorted_evidence(evidence), provenance=provenance, reason_codes=tuple(reason_codes), summary=summary)
 
 
-def _abstained(candidate_id: str, video_path: str, source_hash: str, start_ts: float, end_ts: float, input_hash: str, config: QualityMoeConfig, code: str, summary: str) -> QualityAssessment:
-    assessment = enforce_decision(candidate_id=candidate_id, input_hash=input_hash, proposed=QualityDecision.ABSTAIN, confidence=0.0, evidence=(), hard_reasons=(), repair=None, config=config)
-    provenance = _provenance(candidate_id, video_path, source_hash, start_ts, end_ts, (), config, (), None, None)
+def _review(candidate_id: str, video_path: str, source_hash: str, start_ts: float, end_ts: float, sampled: SampledClip, config: QualityMoeConfig, evidence: Sequence[ExpertEvidence], code: str, latency: Mapping[str, int]) -> QualityAssessment:
+    assessment = enforce_decision(candidate_id=candidate_id, input_hash=sampled.input_hash, proposed=QualityDecision.REVIEW, confidence=_expert_confidence(evidence), evidence=tuple(item for item in evidence if _matches_context(item, sampled, config)), hard_reasons=(), repair=None, config=config)
+    provenance = _provenance(candidate_id, video_path, source_hash, start_ts, end_ts, sampled.timestamps, config, evidence, None, None, latency)
     provenance["failure"] = {"code": code}
-    provenance["evaluation_hash"] = _hash_json(provenance)
+    provenance["evaluation_hash"] = _hash_json(_without_dynamic_values(provenance))
+    return _annotate(assessment, input_hash=sampled.input_hash, evidence=evidence, provenance=provenance, summary="Complementary quality evidence was incomplete and needs human review.")
+
+
+def _abstained(candidate_id: str, video_path: str, source_hash: str, start_ts: float, end_ts: float, input_hash: str, config: QualityMoeConfig, code: str, summary: str, latency: Mapping[str, int] | None = None) -> QualityAssessment:
+    assessment = enforce_decision(candidate_id=candidate_id, input_hash=input_hash, proposed=QualityDecision.ABSTAIN, confidence=0.0, evidence=(), hard_reasons=(), repair=None, config=config)
+    provenance = _provenance(candidate_id, video_path, source_hash, start_ts, end_ts, (), config, (), None, None, latency or _latencies(total=0))
+    provenance["failure"] = {"code": code}
+    provenance["evaluation_hash"] = _hash_json(_without_dynamic_values(provenance))
     return _annotate(assessment, input_hash=input_hash, evidence=(), provenance=provenance, summary=summary)
+
+
+def _without_dynamic_values(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _without_dynamic_values(item) for key, item in value.items() if key not in {"latency_ms", "evaluation_hash"}}
+    if isinstance(value, (tuple, list)):
+        return [_without_dynamic_values(item) for item in value]
+    return value

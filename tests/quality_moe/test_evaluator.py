@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import hashlib
 from pathlib import Path
 
 import cv2
@@ -22,9 +23,9 @@ def _config(*, report_only: bool = False) -> QualityMoeConfig:
     return QualityMoeConfig.from_mapping({"quality_moe": {"report_only": report_only}})
 
 
-def _sample(candidate_id: str = "c1") -> SampledClip:
+def _sample(candidate_id: str = "c1", video_path: str = "unused.mp4") -> SampledClip:
     frames = tuple(np.full((18, 24, 3), value, dtype=np.uint8) for value in range(20, 80, 10))
-    return SampledClip(candidate_id, "unused.mp4", 1.0, 2.0, tuple(1.0 + i / 5 for i in range(6)), frames)
+    return SampledClip(candidate_id, video_path, 1.0, 2.0, tuple(1.0 + i / 5 for i in range(6)), frames)
 
 
 @dataclass
@@ -73,17 +74,34 @@ class _Judge:
         assert Path(request.original_contact_sheet).is_file()
         assert Path(request.best_proxy_contact_sheet).is_file()
         assert request.original_contact_sheet != request.best_proxy_contact_sheet
-        return self.result
+        from app.quality_moe.judge import _prompt
+
+        first = hashlib.sha256(_prompt(request, correction=False).encode("utf-8")).hexdigest()
+        hashes = (first,) if self.result.attempts == 1 else (first, hashlib.sha256(_prompt(request, correction=True).encode("utf-8")).hexdigest())
+        evidence = replace(self.result.evidence, prompt_hash=hashes[-1])
+        return replace(self.result, evidence=evidence, prompt_hash=hashes[-1], attempt_prompt_hashes=hashes)
 
 
 def _repair(sample: SampledClip, config: QualityMoeConfig, *, work_dir=None) -> RepairSearchResult:
-    from app.quality_moe.models import RepairRecipe
+    from app.quality_moe.models import RepairRecipe, RepairValidation
 
     proxy = SampledClip(sample.candidate_id, sample.video_path, sample.start_ts, sample.end_ts,
                         sample.timestamps, tuple(np.clip(frame + 10, 0, 255).astype(np.uint8) for frame in sample.frames))
-    recipe = RepairRecipe(recipe_id="proxy")
+    delta = ExpertEvidence(
+        candidate_id=sample.candidate_id, evaluation_version=config.evaluation_version,
+        expert_id="repair-delta", expert_version="test-v1", signal_family="repair_delta",
+        status=EvidenceStatus.AVAILABLE, scores={"quality_gain": 0.2}, input_hash=proxy.input_hash,
+        parent_input_hash=sample.input_hash, config_hash=config.config_hash, polarity=EvidencePolarity.POSITIVE,
+    )
+    recipe = RepairRecipe(recipe_id="proxy", quality_gain=0.2, confidence=0.9)
+    recipe = replace(recipe, validation=RepairValidation(
+        candidate_id=sample.candidate_id, evaluation_version=config.evaluation_version,
+        source_input_hash=sample.input_hash, proxy_artifact_hash=proxy.input_hash,
+        recipe_hash=recipe.recipe_hash, config_hash=config.config_hash,
+        repair_delta_evidence_id=delta.identity_hash, repair_delta_status=EvidenceStatus.AVAILABLE,
+    ))
     source = _Expert(config, "nr_vqa", "repair-source").evaluate(sample)
-    return RepairSearchResult((), recipe, None, source, source, source, best_proxy=proxy)
+    return RepairSearchResult((), recipe, delta, source, source, source, best_proxy=proxy)
 
 
 def _no_proxy_repair(sample: SampledClip, config: QualityMoeConfig, *, work_dir=None) -> RepairSearchResult:
@@ -101,9 +119,10 @@ def test_report_only_keeps_rejected_candidate_but_records_recommendation(tmp_pat
     from app.quality_moe.evaluator import evaluate_candidates
 
     config = _config(report_only=True)
-    sample = _sample()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
     batch = evaluate_candidates(
-        [_candidate(tmp_path)], config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
+        [candidate], config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
         experts=(_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal")),
         repair_search=_repair, judge=_Judge(_judge_result(config, sample, QualityDecision.REJECT)),
     )
@@ -117,9 +136,10 @@ def test_active_routing_keeps_only_effective_keep_and_sends_review_to_humans(tmp
     from app.quality_moe.evaluator import evaluate_candidates
 
     config = _config(report_only=False)
-    sample = _sample()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
     batch = evaluate_candidates(
-        [_candidate(tmp_path)], config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
+        [candidate], config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
         experts=(_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal")),
         repair_search=_no_proxy_repair,
     )
@@ -146,23 +166,27 @@ def test_hard_gate_short_circuits_sampling_and_judge(tmp_path):
 def test_judge_unavailable_is_structured_abstention(tmp_path):
     from app.quality_moe.evaluator import evaluate_candidate
 
-    config, sample = _config(), _sample()
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
     unavailable = _judge_result(config, sample, QualityDecision.ABSTAIN)
+    unavailable = replace(unavailable, evidence=replace(unavailable.evidence, status=EvidenceStatus.UNAVAILABLE))
     assessment = evaluate_candidate(
-        _candidate(tmp_path), config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
+        candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
         experts=(_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal")),
         repair_search=_repair, judge=_Judge(unavailable),
     )
 
     assert assessment.decision is QualityDecision.ABSTAIN
-    assert assessment.evidence[-1].status is EvidenceStatus.ABSTAINED
+    assert assessment.evidence[-1].status is EvidenceStatus.UNAVAILABLE
 
 
 def test_evidence_sorting_and_provenance_hashes_are_stable(tmp_path):
     from app.quality_moe.evaluator import evaluate_candidate
 
-    config, sample = _config(), _sample()
+    config = _config()
     candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
     experts = (_Expert(config, "nr_vqa", "z"), _Expert(config, "cinematic_classifier", "a"), _Expert(config, "deterministic_temporal", "m"))
     first = evaluate_candidate(candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), experts=experts)
     second = evaluate_candidate(candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), experts=tuple(reversed(experts)))
@@ -177,9 +201,10 @@ def test_one_bad_candidate_does_not_stop_the_batch(tmp_path):
     from app.quality_moe.evaluator import evaluate_candidates
 
     config = _config(report_only=True)
-    sample = _sample("good")
+    good = _candidate(tmp_path, "good")
+    sample = _sample("good", str(good["video_path"]))
     batch = evaluate_candidates(
-        [{"candidate_id": "bad", "video_path": str(tmp_path / "missing.mp4"), "start_ts": 1.0, "end_ts": 2.0}, _candidate(tmp_path, "good")],
+        [{"candidate_id": "bad", "video_path": str(tmp_path / "missing.mp4"), "start_ts": 1.0, "end_ts": 2.0}, good],
         config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
         experts=(_Expert(config, "nr_vqa", "technical"), _Expert(config, "cinematic_classifier", "cinematic"), _Expert(config, "deterministic_temporal", "temporal")),
     )
@@ -187,3 +212,105 @@ def test_one_bad_candidate_does_not_stop_the_batch(tmp_path):
     assert len(batch.assessments) == 2
     assert batch.assessments[0].decision is QualityDecision.ABSTAIN
     assert batch.assessments[1].candidate_id == "good"
+
+
+def test_default_sampler_unavailable_cannot_keep_and_routes_to_manual_review(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    assessment = evaluate_candidate(_candidate(tmp_path), config=_config(), work_dir=tmp_path)
+
+    assert assessment.decision is QualityDecision.ABSTAIN
+    assert assessment.effective_decision is QualityDecision.ABSTAIN
+    assert assessment.provenance["failure"]["code"] == "sampling_unavailable"
+
+
+def test_sampler_wrong_source_or_bounds_is_abstained_before_experts(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    candidate = _candidate(tmp_path)
+    wrong = _sample(video_path=str(tmp_path / "other.mp4"))
+    assessment = evaluate_candidate(candidate, config=_config(), work_dir=tmp_path, sampler=_CountingSampler(wrong))
+
+    assert assessment.decision is QualityDecision.ABSTAIN
+    assert assessment.provenance["failure"]["code"] == "sampling_context_mismatch"
+
+
+def test_sampler_wrong_bounds_is_abstained_before_experts(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    candidate = _candidate(tmp_path)
+    base = _sample(video_path=str(candidate["video_path"]))
+    wrong = SampledClip(base.candidate_id, base.video_path, 1.1, 2.1, tuple(1.1 + i / 5 for i in range(6)), base.frames)
+    assessment = evaluate_candidate(candidate, config=_config(), work_dir=tmp_path, sampler=_CountingSampler(wrong))
+
+    assert assessment.decision is QualityDecision.ABSTAIN
+    assert assessment.provenance["failure"]["code"] == "sampling_context_mismatch"
+
+
+def test_missing_or_duplicate_complementary_expert_families_route_to_review(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+    assessment = evaluate_candidate(
+        candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
+        experts=(_Expert(config, "nr_vqa", "one"), _Expert(config, "nr_vqa", "two"), _Expert(config, "deterministic_temporal", "three")),
+    )
+
+    assert assessment.decision is QualityDecision.REVIEW
+    assert assessment.effective_decision is QualityDecision.REVIEW
+    assert "expert_coverage_invalid" in assessment.provenance["failure"]["code"]
+
+
+def test_stale_judge_context_is_invalid_and_its_rejection_is_not_adopted(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+    stale = _judge_result(config, sample, QualityDecision.REJECT)
+    stale_evidence = replace(stale.evidence, candidate_id="stale")
+    stale = replace(stale, evidence=stale_evidence)
+    assessment = evaluate_candidate(
+        candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample),
+        experts=(_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal")),
+        repair_search=_repair, judge=_Judge(stale),
+    )
+
+    assert assessment.decision is QualityDecision.REVIEW
+    assert any(item.status is EvidenceStatus.INVALID for item in assessment.evidence)
+
+
+def test_stage_latencies_are_recorded_but_do_not_change_evaluation_hash(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+    ticks = iter(range(0, 100_000_000, 2_000_000))
+    first = evaluate_candidate(candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), clock=lambda: next(ticks))
+    ticks = iter(range(100_000_000, 200_000_000, 3_000_000))
+    second = evaluate_candidate(candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), clock=lambda: next(ticks))
+
+    assert first.provenance["latency_ms"]["sampler"] > 0
+    assert set(first.provenance["latency_ms"]) == {"sampler", "experts", "repair", "judge", "total"}
+    assert first.provenance["evaluation_hash"] == second.provenance["evaluation_hash"]
+
+
+def test_repair_and_judge_stage_latencies_are_nonzero(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config()
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+    ticks = iter(range(0, 200_000_000, 2_000_000))
+    assessment = evaluate_candidate(
+        candidate, config=config, work_dir=tmp_path, sampler=_CountingSampler(sample), clock=lambda: next(ticks),
+        experts=(_Expert(config, "nr_vqa", "technical", negative=True), _Expert(config, "cinematic_classifier", "cinematic", negative=True), _Expert(config, "deterministic_temporal", "temporal")),
+        repair_search=_repair, judge=_Judge(_judge_result(config, sample, QualityDecision.REJECT)),
+    )
+
+    assert assessment.provenance["latency_ms"]["repair"] > 0
+    assert assessment.provenance["latency_ms"]["judge"] > 0
+    assert assessment.provenance["judge"]["model_hash"] == "model-hash"
