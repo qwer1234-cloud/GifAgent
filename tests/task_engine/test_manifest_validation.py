@@ -11,11 +11,157 @@ wires through to the shared validator.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+
+
+def _quality_evidence_hash(evidence: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            evidence,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _valid_quality_rank_manifest() -> dict:
+    assessment = {
+        "candidate_id": "clip-1",
+        "evaluation_version": "quality-moe-v1",
+        "config_hash": "b" * 64,
+        "policy_version": "quality-moe-policy-v1",
+        "recommended_decision": "KEEP_AS_IS",
+        "effective_decision": "KEEP_AS_IS",
+        "decision": "KEEP_AS_IS",
+        "confidence": 0.92,
+        "negative_signal_families": [],
+        "hard_reasons": [],
+        "repair": None,
+        "reason_codes": [],
+        "summary": "clean",
+        "input_hash": "c" * 64,
+        "evidence": [{
+            "candidate_id": "clip-1",
+            "evaluation_version": "quality-moe-v1",
+            "expert_id": "technical",
+            "expert_version": "v1",
+            "signal_family": "nr_vqa",
+            "status": "AVAILABLE",
+            "scores": {"technical_integrity": 0.81},
+            "findings": [],
+            "summary": "clean",
+            "input_hash": "c" * 64,
+            "config_hash": "b" * 64,
+            "parent_input_hash": None,
+            "polarity": "POSITIVE",
+            "prompt_hash": None,
+            "latency_ms": 1,
+        }],
+        "provenance": {"source_file_sha256": "d" * 64},
+        "evidence_hashes": [],
+        "selected_recipe_id": None,
+        "current_quality": 0.81,
+        "recoverable_quality": 0.81,
+    }
+    assessment["evidence_hashes"] = [
+        _quality_evidence_hash(assessment["evidence"][0])
+    ]
+    return {
+        "schema_version": 2,
+        "stage": "rank_dedup",
+        "clip_count": 1,
+        "clips": [{
+            "clip_id": "clip-1",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+            "quality_assessment": deepcopy(assessment),
+        }],
+        "action_guard": {
+            "action_config_hash": "a" * 64,
+            "action_analysis_version": 1,
+            "input": 1,
+            "output": 1,
+            "cv_ms": 0.0,
+            "vlm_ms": 0.0,
+            "total_ms": 0.0,
+        },
+        "quality_moe": {
+            "enabled": True,
+            "report_only": True,
+            "evaluation_version": "quality-moe-v1",
+            "config_hash": "b" * 64,
+            "input_count": 1,
+            "assessed_count": 1,
+            "effective_count": 1,
+            "human_review_count": 0,
+            "decision_counts": {"KEEP_AS_IS": 1},
+            "top_assessments": [{
+                "candidate_id": "clip-1",
+                "effective_decision": "KEEP_AS_IS",
+                "confidence": 0.92,
+            }],
+            "assessments": [deepcopy(assessment)],
+        },
+    }
+
+
+def _valid_quality_repair_rank_manifest() -> dict:
+    from app.quality_moe.models import EvidenceStatus, RepairRecipe, RepairValidation
+
+    manifest = _valid_quality_rank_manifest()
+    assessment = manifest["quality_moe"]["assessments"][0]
+    delta = deepcopy(assessment["evidence"][0])
+    delta.update({
+        "signal_family": "repair_delta",
+        "input_hash": "2" * 64,
+        "parent_input_hash": assessment["input_hash"],
+    })
+    delta_hash = _quality_evidence_hash(delta)
+    base = RepairRecipe(
+        recipe_id="repair-1", exposure_ev=0.25,
+        quality_gain=0.2, confidence=0.9,
+    )
+    recipe = RepairRecipe(
+        recipe_id="repair-1", exposure_ev=0.25,
+        quality_gain=0.2, confidence=0.9,
+        validation=RepairValidation(
+            candidate_id="clip-1",
+            evaluation_version="quality-moe-v1",
+            source_input_hash=assessment["input_hash"],
+            proxy_artifact_hash=delta["input_hash"],
+            recipe_hash=base.recipe_hash,
+            config_hash=assessment["config_hash"],
+            repair_delta_evidence_id=delta_hash,
+            repair_delta_status=EvidenceStatus.AVAILABLE,
+        ),
+    )
+    assessment.update({
+        "recommended_decision": "KEEP_FOR_REPAIR",
+        "effective_decision": "KEEP_FOR_REPAIR",
+        "decision": "KEEP_FOR_REPAIR",
+        "repair": recipe.to_dict(),
+        "evidence": [delta],
+        "evidence_hashes": [delta_hash],
+        "selected_recipe_id": "repair-1",
+    })
+    manifest["clips"][0]["quality_assessment"] = deepcopy(assessment)
+    manifest["quality_moe"]["decision_counts"] = {"KEEP_FOR_REPAIR": 1}
+    manifest["quality_moe"]["top_assessments"][0]["effective_decision"] = (
+        "KEEP_FOR_REPAIR"
+    )
+    return manifest
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +627,317 @@ class TestManifestValidation:
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"),
                 "gif_clip_manifest",
+            )
+
+    def test_rank_manifest_accepts_quality_evidence_and_rejects_unknown_decision(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        assessment = {
+            "candidate_id": "clip-1",
+            "evaluation_version": "quality-moe-v1",
+            "config_hash": "b" * 64,
+            "policy_version": "quality-moe-policy-v1",
+            "recommended_decision": "KEEP_AS_IS",
+            "effective_decision": "KEEP_AS_IS",
+            "decision": "KEEP_AS_IS",
+            "confidence": 0.92,
+            "negative_signal_families": [],
+            "hard_reasons": [],
+            "repair": None,
+            "reason_codes": [],
+            "summary": "clean",
+            "input_hash": "c" * 64,
+            "evidence": [{
+                "candidate_id": "clip-1",
+                "evaluation_version": "quality-moe-v1",
+                "expert_id": "technical",
+                "expert_version": "v1",
+                "signal_family": "nr_vqa",
+                "status": "AVAILABLE",
+                "scores": {"technical_integrity": 0.81},
+                "findings": [],
+                "summary": "clean",
+                "input_hash": "c" * 64,
+                "config_hash": "b" * 64,
+                "parent_input_hash": None,
+                "polarity": "POSITIVE",
+                "prompt_hash": None,
+                "latency_ms": 1,
+            }],
+            "provenance": {"source_file_sha256": "d" * 64},
+        }
+        assessment["evidence_hashes"] = [
+            _quality_evidence_hash(assessment["evidence"][0])
+        ]
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{
+                "clip_id": "clip-1",
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+                "action_boundary_mode": "cv",
+                "action_boundary_confidence": 0.8,
+                "action_vlm_verified": False,
+                "action_analysis_version": 1,
+                "guarded_export_window": True,
+                "quality_assessment": assessment,
+            }],
+            "action_guard": {
+                "action_config_hash": "a" * 64,
+                "action_analysis_version": 1,
+                "input": 1,
+                "output": 1,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+            },
+            "quality_moe": {
+                "enabled": True,
+                "report_only": True,
+                "evaluation_version": "quality-moe-v1",
+                "config_hash": "b" * 64,
+                "input_count": 1,
+                "assessed_count": 1,
+                "effective_count": 1,
+                "human_review_count": 0,
+                "decision_counts": {"KEEP_AS_IS": 1},
+                "top_assessments": [{
+                    "candidate_id": "clip-1",
+                    "effective_decision": "KEEP_AS_IS",
+                    "confidence": 0.92,
+                }],
+                "assessments": [deepcopy(assessment)],
+            },
+        }
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+        )
+        assert validated["clips"][0]["quality_assessment"]["confidence"] == 0.92
+
+        manifest["clips"][0]["quality_assessment"]["effective_decision"] = "MAYBE"
+        with pytest.raises(ValueError, match="effective_decision"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_zero_clip_rank_manifest_keeps_zero_count_quality_summary(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = {
+            "schema_version": 2,
+            "stage": "rank_dedup",
+            "clip_count": 0,
+            "clips": [],
+            "action_guard": {
+                "action_config_hash": "a" * 64,
+                "action_analysis_version": 1,
+                "input": 0,
+                "output": 0,
+                "cv_ms": 0.0,
+                "vlm_ms": 0.0,
+                "total_ms": 0.0,
+            },
+            "quality_moe": {
+                "enabled": True,
+                "report_only": True,
+                "evaluation_version": "quality-moe-v1",
+                "config_hash": "b" * 64,
+                "input_count": 0,
+                "assessed_count": 0,
+                "effective_count": 0,
+                "human_review_count": 0,
+                "decision_counts": {},
+                "top_assessments": [],
+                "assessments": [],
+            },
+        }
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+        )
+        assert validated["quality_moe"]["assessed_count"] == 0
+
+    @pytest.mark.parametrize(
+        ("mutation", "match"),
+        [
+            (lambda manifest: manifest["clips"][0]["quality_assessment"].__setitem__("confidence", 1.1), "confidence"),
+            (lambda manifest: manifest["clips"][0]["quality_assessment"]["evidence"][0]["scores"].__setitem__("technical_integrity", -0.1), "technical_integrity"),
+            (lambda manifest: manifest["clips"][0]["quality_assessment"].__setitem__("config_hash", "not-a-hash"), "config_hash"),
+            (lambda manifest: manifest["clips"][0]["quality_assessment"]["evidence"][0].__setitem__("status", "MISSING"), "status"),
+        ],
+    )
+    def test_rank_manifest_strictly_validates_quality_evidence(self, mutation, match):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        mutation(manifest)
+
+        with pytest.raises(ValueError, match=match):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_rejects_evidence_hash_not_bound_to_evidence(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        manifest["quality_moe"]["assessments"][0]["evidence_hashes"] = ["e" * 64]
+        manifest["clips"][0]["quality_assessment"] = deepcopy(
+            manifest["quality_moe"]["assessments"][0]
+        )
+
+        with pytest.raises(ValueError, match="evidence_hashes do not match"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_rejects_top_summary_not_bound_to_assessments(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        manifest["quality_moe"]["top_assessments"][0]["confidence"] = 0.1
+
+        with pytest.raises(ValueError, match="top_assessments do not match"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_report_only_rank_manifest_cannot_drop_or_reorder_assessed_clips(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        manifest["quality_moe"]["input_count"] = 2
+        manifest["quality_moe"]["assessed_count"] = 2
+        second = {
+            **deepcopy(manifest["quality_moe"]["assessments"][0]),
+            "candidate_id": "clip-2",
+        }
+        second["evidence"][0]["candidate_id"] = "clip-2"
+        second["evidence_hashes"] = [_quality_evidence_hash(second["evidence"][0])]
+        manifest["quality_moe"]["assessments"].append(second)
+        manifest["quality_moe"]["decision_counts"] = {"KEEP_AS_IS": 2}
+        manifest["quality_moe"]["top_assessments"].append({
+            "candidate_id": "clip-2",
+            "effective_decision": "KEEP_AS_IS",
+            "confidence": 0.92,
+        })
+
+        with pytest.raises(ValueError, match="report_only"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_rejects_repair_outside_safe_recipe_bounds(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["clips"][0]["quality_assessment"]
+        assessment["recommended_decision"] = "KEEP_FOR_REPAIR"
+        assessment["effective_decision"] = "KEEP_FOR_REPAIR"
+        assessment["decision"] = "KEEP_FOR_REPAIR"
+        assessment["selected_recipe_id"] = "repair-1"
+        assessment["repair"] = {
+            "recipe_id": "repair-1",
+            "exposure_ev": 0.0,
+            "gamma": 1.0,
+            "contrast": 0.0,
+            "shadows": 0.0,
+            "highlights": 0.0,
+            "white_balance": [1.0, 1.0, 1.0],
+            "crop": [0.0, 0.0, 0.5, 0.5],
+            "zoom": 1.0,
+            "rotation_degrees": 0.0,
+            "perspective_corner_movement": 0.0,
+            "quality_gain": 0.2,
+            "confidence": 0.9,
+            "recipe_hash": "f" * 64,
+            "validation": {
+                "candidate_id": "clip-1",
+                "evaluation_version": "quality-moe-v1",
+                "source_input_hash": "c" * 64,
+                "proxy_artifact_hash": "1" * 64,
+                "recipe_hash": "f" * 64,
+                "config_hash": "b" * 64,
+                "repair_delta_evidence_id": "e" * 64,
+                "repair_delta_status": "AVAILABLE",
+            },
+            "validated": True,
+        }
+
+        with pytest.raises(ValueError, match="crop"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_rejects_repair_validation_bound_to_non_delta_evidence(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_repair_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        assessment["evidence"][0]["signal_family"] = "nr_vqa"
+        forged_hash = _quality_evidence_hash(assessment["evidence"][0])
+        assessment["evidence_hashes"] = [forged_hash]
+        assessment["repair"]["validation"]["repair_delta_evidence_id"] = forged_hash
+        manifest["clips"][0]["quality_assessment"] = deepcopy(assessment)
+
+        with pytest.raises(ValueError, match="repair validation"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    @pytest.mark.parametrize(
+        ("field", "value", "match"),
+        [
+            ("quality_decision", "MAYBE", "quality_decision"),
+            ("config_hash", "bad", "config_hash"),
+            ("evidence_hashes", ["bad"], "evidence_hashes"),
+        ],
+    )
+    def test_gif_manifest_strictly_validates_quality_lineage(self, field, value, match):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        assessment = _valid_quality_rank_manifest()["clips"][0]["quality_assessment"]
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "sha256": "a" * 64,
+            "duration_s": 6.0,
+            "size_bytes": 123,
+            "status": "succeeded",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+            "quality_assessment": assessment,
+            "quality_decision": "KEEP_AS_IS",
+            "current_quality": 0.81,
+            "recoverable_quality": 0.81,
+            "selected_recipe_id": None,
+            "selected_recipe": None,
+            "evidence_hashes": ["e" * 64],
+            "config_hash": "b" * 64,
+            "parent_source": {
+                "candidate_id": "clip-1",
+                "input_hash": "c" * 64,
+                "source_file_sha256": "d" * 64,
+                "video_path": "source.mp4",
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+            },
+        }
+        manifest[field] = value
+
+        with pytest.raises(ValueError, match=match):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "gif_clip_manifest"
             )
 
 

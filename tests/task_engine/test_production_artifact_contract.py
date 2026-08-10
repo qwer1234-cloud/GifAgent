@@ -298,6 +298,83 @@ class TestMaterializeArtifactContract:
                 f"materialize artifact_kind {art.artifact_kind!r} not whitelisted"
             )
 
+    def test_materialize_result_preserves_quality_lineage(
+        self, tmp_path: Path,
+    ):
+        from scripts.test_video_adaptive import _stage_materialize, extract_config
+
+        video = tmp_path / "source.mp4"
+        video.write_bytes(b"video")
+        gif = tmp_path / "clip.gif"
+        gif.write_bytes(b"GIF89a")
+        import hashlib
+        gif_sha = hashlib.sha256(gif.read_bytes()).hexdigest()
+        quality_lineage = {
+            "quality_decision": "KEEP_FOR_REPAIR",
+            "current_quality": 0.55,
+            "recoverable_quality": 0.78,
+            "selected_recipe_id": "repair-1",
+            "selected_recipe": {"recipe_id": "repair-1", "recipe_hash": "3" * 64},
+            "evidence_hashes": ["2" * 64],
+            "config_hash": "1" * 64,
+            "parent_source": {
+                "candidate_id": "clip-1",
+                "input_hash": "4" * 64,
+                "source_file_sha256": "5" * 64,
+                "video_path": str(video.resolve()),
+                "start_ts": 1.0,
+                "end_ts": 5.0,
+            },
+        }
+        gif_manifest = tmp_path / "gif_clip_manifest.json"
+        gif_manifest.write_text(json.dumps({
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": str(gif),
+            "gif_name": "clip.gif",
+            "sha256": gif_sha,
+            "start_ts": 1.0,
+            "end_ts": 5.0,
+            **quality_lineage,
+        }), encoding="utf-8")
+        work_dir = tmp_path / "materialize-work"
+        work_dir.mkdir()
+        export_base = tmp_path / "formal"
+        cfg = extract_config({"adaptive": {"potplayer_pbf_enabled": False}})
+        result = _stage_materialize(
+            str(video), str(tmp_path / "unused"), str(work_dir), cfg,
+            inputs={
+                "schema_version": 1,
+                "stage": "materialize",
+                "artifacts": {
+                    "gif_file": [{
+                        "path": str(gif), "clip_id": "clip-1",
+                        "sha256": gif_sha, "size_bytes": gif.stat().st_size,
+                    }],
+                    "gif_clip_manifest": [{
+                        "path": str(gif_manifest), "clip_id": "clip-1",
+                    }],
+                },
+                "stage_statuses": [],
+            },
+            config_data={"export_base_dir": str(export_base)},
+        )
+
+        result_artifact = next(
+            item for item in result["_artifacts"] if item["artifact_kind"] == "result"
+        )
+        materialized = json.loads(Path(result_artifact["path"]).read_text(encoding="utf-8"))
+        assert materialized["succeeded"][0] == {
+            "clip_id": "clip-1",
+            "formal_path": str((export_base / "source" / "clip.gif").resolve()),
+            "sha256": gif_sha,
+            "start_ts": 1.0,
+            "end_ts": 5.0,
+            "gif_name": "clip.gif",
+            **quality_lineage,
+        }
+
 
 class TestAdapterRejectsUnknownKind:
     """Adapter must fail when artifact_kind is missing, unknown, or not in stage whitelist."""

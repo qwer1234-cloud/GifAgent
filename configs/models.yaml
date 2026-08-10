@@ -80,6 +80,39 @@ preference_memory:
   # Minimum feedback events within a scenario key to build a scenario profile
   scenario_min_feedback: 8
 
+quality_moe:
+  enabled: true
+  # Until calibrated against human review, quality evidence is append-only and
+  # does not change candidate count or export order.
+  report_only: true
+  evaluation_version: quality-moe-v1
+  soft_reject:
+    min_judge_confidence: 0.80
+    min_independent_negative_families: 2
+  experts:
+    technical_aesthetic:
+      enabled: true
+      version: builtin-v1
+    cinematic:
+      enabled: true
+      version: builtin-v1
+    temporal:
+      enabled: true
+      version: builtin-v1
+  judge:
+    model_id: llava:13b
+    temperature: 0
+    timeout_seconds: 120
+    base_url: http://172.27.227.98:11434
+    schema_version: quality-judge-v1
+  repairability:
+    enabled: true
+    max_proxy_variants: 12
+    min_quality_gain: 0.15
+    min_confidence: 0.80
+    photometric_mode: clip_global
+    geometric_mode: fixed_or_validated_smooth
+
 adaptive:
   # Adult-candidate preset + region merge + tighter dedup (2026-07-25 v3).
   # Baseline values preserved in data/backups/before_adult_opt_* .

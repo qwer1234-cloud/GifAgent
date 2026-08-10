@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 import yaml
@@ -225,3 +226,41 @@ def test_config_extracts_transition_defaults():
     assert cfg["transition_soft_threshold"] == 0.40
     assert cfg["transition_soft_run_frames"] == 3
     assert cfg["transition_rescore_split_segments"] is True
+
+
+def test_extract_config_freezes_quality_moe_from_the_job_snapshot():
+    source = {
+        "quality_moe": {
+            "report_only": False,
+            "soft_reject": {"min_judge_confidence": 0.9},
+        }
+    }
+
+    cfg = extract_config(source)
+    source["quality_moe"]["report_only"] = True
+    source["quality_moe"]["soft_reject"]["min_judge_confidence"] = 0.8
+
+    assert cfg["quality_moe"]["enabled"] is True
+    assert cfg["quality_moe"]["report_only"] is False
+    assert cfg["quality_moe"]["soft_reject"]["min_judge_confidence"] == 0.9
+    assert len(cfg["quality_moe_config_hash"]) == 64
+    assert cfg["quality_moe_config_hash"] == extract_config(
+        {
+            "quality_moe": {
+                "report_only": False,
+                "soft_reject": {"min_judge_confidence": 0.9},
+            }
+        }
+    )["quality_moe_config_hash"]
+
+
+def test_models_yaml_enables_report_only_quality_moe_by_default():
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "models.yaml"
+    config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert config_data["quality_moe"]["report_only"] is True
+    cfg = extract_config(config_data)
+
+    assert cfg["quality_moe"]["enabled"] is True
+    assert cfg["quality_moe"]["report_only"] is True
+    assert cfg["quality_moe"]["repairability"]["photometric_mode"] == "clip_global"

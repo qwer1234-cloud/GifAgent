@@ -30,7 +30,7 @@ sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 sys.path.insert(0, ".")
 from app.db import init_db, get_connection
-from app.config import load_config, get
+from app.config import load_config
 from app.services.embedding import compute_text_embedding
 from app.services.clip_dedup import temporal_dedup_clips
 from app.services.clip_merge import merge_scored_frames_into_clips
@@ -54,6 +54,11 @@ from app.services.json_guard import parse_json_response
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
+from app.quality_moe.config import QualityMoeConfig
+from app.quality_moe.evaluator import evaluate_candidates
+from app.quality_moe.judge import OllamaQualityJudge
+from app.quality_moe.models import EvidenceStatus, QualityDecision, RepairRecipe, RepairValidation
+from app.quality_moe.repair import build_ffmpeg_filter
 
 # ---- Helpers (kept at module level, no side effects) ---------------
 
@@ -520,6 +525,7 @@ def extract_config(config_data: dict) -> dict:
     """Extract flat pipeline config from the full config dict."""
     adaptive = config_data.get("adaptive", {}) or {}
     pref_mem = config_data.get("preference_memory", {}) or {}
+    quality_moe = QualityMoeConfig.from_mapping(config_data)
     normalized_action, computed_action_hash = freeze_action_config(adaptive)
     config = {
         "sample_interval": int(adaptive.get("sample_interval", 10)),
@@ -599,9 +605,342 @@ def extract_config(config_data: dict) -> dict:
         "transition_rescore_split_segments": bool(
             adaptive.get("transition_rescore_split_segments", True)
         ),
+        "quality_moe": quality_moe.to_dict(),
+        "quality_moe_config_hash": quality_moe.config_hash,
     }
     config["action_config_hash"] = computed_action_hash
     return config
+
+
+def _extract_direct_snapshot_config(config_data: dict) -> dict:
+    """Freeze direct-mode settings from the single config load at job start."""
+    return extract_config({
+        "adaptive": config_data.get("adaptive", {}) or {},
+        "preference_memory": config_data.get("preference_memory", {}) or {},
+        "quality_moe": config_data.get("quality_moe", {}) or {},
+    })
+
+
+def _quality_config_from_pipeline_cfg(cfg: dict) -> QualityMoeConfig:
+    raw = cfg.get("quality_moe")
+    if raw is None:
+        # Compatibility for direct unit/legacy callers which construct the
+        # historical flat cfg by hand instead of going through extract_config.
+        quality_config = QualityMoeConfig.from_mapping(
+            {"quality_moe": {"enabled": False, "report_only": True}}
+        )
+        cfg["quality_moe"] = quality_config.to_dict()
+        cfg["quality_moe_config_hash"] = quality_config.config_hash
+        return quality_config
+    quality_config = QualityMoeConfig.from_mapping({"quality_moe": raw})
+    expected_hash = cfg.get("quality_moe_config_hash")
+    if expected_hash is None:
+        cfg["quality_moe_config_hash"] = quality_config.config_hash
+    elif quality_config.config_hash != expected_hash:
+        raise ValueError("quality_moe config hash does not match the frozen snapshot")
+    return quality_config
+
+
+def _quality_moe_summary(
+    cfg: dict,
+    assessments: list[dict],
+    *,
+    input_count: int,
+    effective_count: int,
+    human_review_count: int,
+) -> dict:
+    quality_config = _quality_config_from_pipeline_cfg(cfg)
+    quality = quality_config.to_dict()
+    decision_counts: dict[str, int] = {}
+    for assessment in assessments:
+        decision = str(assessment["effective_decision"])
+        decision_counts[decision] = decision_counts.get(decision, 0) + 1
+    return {
+        "enabled": bool(quality["enabled"]),
+        "report_only": bool(quality["report_only"]),
+        "evaluation_version": str(quality["evaluation_version"]),
+        "config_hash": quality_config.config_hash,
+        "input_count": input_count,
+        "assessed_count": len(assessments),
+        "effective_count": effective_count,
+        "human_review_count": human_review_count,
+        "decision_counts": decision_counts,
+        "top_assessments": [
+            {
+                "candidate_id": assessment["candidate_id"],
+                "effective_decision": assessment["effective_decision"],
+                "confidence": assessment["confidence"],
+            }
+            for assessment in assessments[:10]
+        ],
+        "assessments": assessments,
+    }
+
+
+def _quality_evidence_hash(evidence: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _enrich_quality_assessment(assessment: dict) -> dict:
+    enriched = json.loads(json.dumps(assessment))
+    evidence = enriched.get("evidence", [])
+    enriched["evidence_hashes"] = [
+        _quality_evidence_hash(item) for item in evidence if isinstance(item, dict)
+    ]
+    repair = enriched.get("repair")
+    selected_recipe_id = None
+    if (
+        enriched.get("effective_decision") == QualityDecision.KEEP_FOR_REPAIR.value
+        and isinstance(repair, dict)
+    ):
+        selected_recipe_id = repair.get("recipe_id")
+    enriched["selected_recipe_id"] = selected_recipe_id
+
+    available_scores = [
+        float(score)
+        for item in evidence
+        if isinstance(item, dict)
+        and item.get("status") == EvidenceStatus.AVAILABLE.value
+        and item.get("signal_family") != "repair_delta"
+        for score in (item.get("scores") or {}).values()
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    ]
+    repaired_scores = [
+        float(score)
+        for item in evidence
+        if isinstance(item, dict)
+        and item.get("status") == EvidenceStatus.AVAILABLE.value
+        and item.get("signal_family") == "repair_delta"
+        for score in (item.get("scores") or {}).values()
+        if isinstance(score, (int, float)) and not isinstance(score, bool)
+    ]
+    current_quality = (
+        sum(available_scores) / len(available_scores) if available_scores else None
+    )
+    quality_gain = repair.get("quality_gain") if isinstance(repair, dict) else None
+    enriched["current_quality"] = current_quality
+    if repaired_scores:
+        enriched["recoverable_quality"] = sum(repaired_scores) / len(repaired_scores)
+    elif (
+        current_quality is not None
+        and isinstance(quality_gain, (int, float))
+        and not isinstance(quality_gain, bool)
+    ):
+        enriched["recoverable_quality"] = min(
+            1.0, current_quality + float(quality_gain)
+        )
+    else:
+        enriched["recoverable_quality"] = current_quality
+    return enriched
+
+
+def _evaluate_quality_pipeline_candidates(
+    candidates: list[dict],
+    *,
+    video_path: str,
+    cfg: dict,
+    work_dir: str | Path,
+) -> tuple[list[dict], dict]:
+    """Run the one shared quality boundary for direct and staged candidates."""
+    quality_config = _quality_config_from_pipeline_cfg(cfg)
+
+    normalized: list[dict] = []
+    for index, candidate in enumerate(candidates):
+        clip = dict(candidate)
+        candidate_id = clip.get("candidate_id") or clip.get("clip_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            identity = (
+                f"{os.path.basename(video_path)}:{clip.get('start_ts')}:"
+                f"{clip.get('end_ts')}:{index}"
+            )
+            candidate_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+        clip["candidate_id"] = candidate_id
+        clip.setdefault("clip_id", candidate_id)
+        clip["video_path"] = video_path
+        normalized.append(clip)
+
+    if not quality_config.enabled:
+        return normalized, _quality_moe_summary(
+            cfg, [], input_count=len(normalized), effective_count=len(normalized),
+            human_review_count=0,
+        )
+
+    judge = (
+        OllamaQualityJudge(quality_config, httpx.HTTPTransport())
+        if quality_config.judge.get("model_id")
+        else None
+    )
+    batch = evaluate_candidates(
+        normalized,
+        config=quality_config,
+        work_dir=work_dir,
+        judge=judge,
+    )
+    assessments = [
+        _enrich_quality_assessment(assessment.to_dict())
+        for assessment in batch.assessments
+    ]
+    by_candidate_id = {
+        assessment["candidate_id"]: assessment for assessment in assessments
+    }
+    routed: list[dict] = []
+    route_source = normalized if quality_config.report_only else batch.effective_clips
+    for candidate in route_source:
+        clip = dict(candidate)
+        assessment = by_candidate_id.get(str(clip.get("candidate_id")))
+        if assessment is not None:
+            clip["quality_assessment"] = assessment
+        routed.append(clip)
+    summary = _quality_moe_summary(
+        cfg,
+        assessments,
+        input_count=len(normalized),
+        effective_count=len(routed),
+        human_review_count=len(batch.human_review_clips),
+    )
+    return routed, summary
+
+
+def _validated_repair_recipe(
+    assessment: object,
+    *,
+    candidate_id: str,
+    config_hash: str,
+) -> RepairRecipe | None:
+    """Return the bound recipe only for an effective validated repair KEEP."""
+    if not isinstance(assessment, dict):
+        return None
+    if assessment.get("effective_decision") != QualityDecision.KEEP_FOR_REPAIR.value:
+        return None
+    if (
+        assessment.get("candidate_id") != candidate_id
+        or assessment.get("config_hash") != config_hash
+    ):
+        return None
+    repair_data = assessment.get("repair")
+    if not isinstance(repair_data, dict):
+        return None
+    if assessment.get("selected_recipe_id") != repair_data.get("recipe_id"):
+        return None
+    validation_data = repair_data.get("validation")
+    if not isinstance(validation_data, dict):
+        return None
+    try:
+        validation = RepairValidation(
+            candidate_id=validation_data["candidate_id"],
+            evaluation_version=validation_data["evaluation_version"],
+            source_input_hash=validation_data["source_input_hash"],
+            proxy_artifact_hash=validation_data["proxy_artifact_hash"],
+            recipe_hash=validation_data["recipe_hash"],
+            config_hash=validation_data["config_hash"],
+            repair_delta_evidence_id=validation_data["repair_delta_evidence_id"],
+            repair_delta_status=validation_data["repair_delta_status"],
+        )
+        recipe = RepairRecipe(
+            recipe_id=repair_data["recipe_id"],
+            exposure_ev=repair_data.get("exposure_ev", 0.0),
+            gamma=repair_data.get("gamma", 1.0),
+            contrast=repair_data.get("contrast", 0.0),
+            shadows=repair_data.get("shadows", 0.0),
+            highlights=repair_data.get("highlights", 0.0),
+            white_balance=repair_data.get("white_balance", (1.0, 1.0, 1.0)),
+            crop=repair_data.get("crop", (0.0, 0.0, 1.0, 1.0)),
+            zoom=repair_data.get("zoom", 1.0),
+            rotation_degrees=repair_data.get("rotation_degrees", 0.0),
+            perspective_corner_movement=repair_data.get("perspective_corner_movement", 0.0),
+            quality_gain=repair_data.get("quality_gain", 0.0),
+            confidence=repair_data.get("confidence", 0.0),
+            validation=validation,
+        ).validate()
+    except (KeyError, TypeError, ValueError):
+        return None
+    matching_delta = any(
+        _quality_evidence_hash(item) == validation.repair_delta_evidence_id
+        and item.get("signal_family") == "repair_delta"
+        and item.get("status") == EvidenceStatus.AVAILABLE.value
+        and item.get("polarity") == "POSITIVE"
+        and item.get("candidate_id") == candidate_id
+        and item.get("evaluation_version") == assessment.get("evaluation_version")
+        and item.get("config_hash") == config_hash
+        and item.get("input_hash") == validation.proxy_artifact_hash
+        and item.get("parent_input_hash") == validation.source_input_hash
+        for item in assessment.get("evidence", [])
+        if isinstance(item, dict)
+    )
+    if (
+        validation.candidate_id != candidate_id
+        or validation.evaluation_version != assessment.get("evaluation_version")
+        or validation.config_hash != config_hash
+        or validation.source_input_hash != assessment.get("input_hash")
+        or validation.recipe_hash != recipe.recipe_hash
+        or validation.repair_delta_status is not EvidenceStatus.AVAILABLE
+        or not matching_delta
+    ):
+        return None
+    return recipe
+
+
+_QUALITY_LINEAGE_FIELDS = (
+    "quality_decision",
+    "current_quality",
+    "recoverable_quality",
+    "selected_recipe_id",
+    "selected_recipe",
+    "evidence_hashes",
+    "config_hash",
+    "parent_source",
+)
+
+
+def _quality_export_lineage(
+    assessment: object,
+    *,
+    candidate_id: str,
+    video_path: str,
+    start_ts: float,
+    end_ts: float,
+    config_hash: str,
+    repair_applied: bool,
+) -> dict:
+    if not isinstance(assessment, dict):
+        return {}
+    provenance = assessment.get("provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    source_file_sha256 = provenance.get("source_file_sha256")
+    if not isinstance(source_file_sha256, str) or re.fullmatch(
+        r"[0-9a-f]{64}", source_file_sha256
+    ) is None:
+        source_hasher = hashlib.sha256()
+        try:
+            with open(video_path, "rb") as source_file:
+                for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                    source_hasher.update(chunk)
+            source_file_sha256 = source_hasher.hexdigest()
+        except OSError:
+            source_file_sha256 = None
+    selected_recipe = assessment.get("repair") if repair_applied else None
+    selected_recipe_id = assessment.get("selected_recipe_id") if repair_applied else None
+    return {
+        "quality_decision": assessment.get("effective_decision"),
+        "current_quality": assessment.get("current_quality"),
+        "recoverable_quality": assessment.get("recoverable_quality"),
+        "selected_recipe_id": selected_recipe_id,
+        "selected_recipe": selected_recipe,
+        "evidence_hashes": list(assessment.get("evidence_hashes", [])),
+        "config_hash": config_hash,
+        "parent_source": {
+            "candidate_id": candidate_id,
+            "input_hash": assessment.get("input_hash"),
+            "source_file_sha256": source_file_sha256,
+            "video_path": os.path.abspath(video_path),
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+        },
+    }
 
 
 def _resolve_vlm_config(config_data: dict | None) -> tuple[str, str]:
@@ -1257,6 +1596,13 @@ def run_pipeline(
             f"  Temporal dedup disabled -- {len(deduped_clips)} clips passed through"
         )
 
+    deduped_clips, quality_moe = _evaluate_quality_pipeline_candidates(
+        list(deduped_clips),
+        video_path=video_path,
+        cfg=cfg,
+        work_dir=frames_dir,
+    )
+
     # ---- Phase 3: RAG + LLM synthesis -----------------------------------
     print(f"\n[3/4] RAG + LLM synthesis...")
 
@@ -1503,6 +1849,24 @@ def run_pipeline(
         palette = f"{export_dir}/pal_{i+1:03d}.png"
 
         fps = GIF_FPS
+        assessment = clip.get("quality_assessment")
+        repair_recipe = _validated_repair_recipe(
+            assessment,
+            candidate_id=str(clip.get("candidate_id", clip.get("clip_id", ""))),
+            config_hash=str(cfg["quality_moe_config_hash"]),
+        )
+        ffmpeg_filter = build_ffmpeg_filter(
+            repair_recipe, fps=fps, max_width=GIF_MAX_WIDTH
+        )
+        quality_lineage = _quality_export_lineage(
+            assessment,
+            candidate_id=str(clip.get("candidate_id", clip.get("clip_id", ""))),
+            video_path=video_path,
+            start_ts=start,
+            end_ts=end,
+            config_hash=str(cfg["quality_moe_config_hash"]),
+            repair_applied=repair_recipe is not None,
+        )
 
         attempt = run_gif_export_attempt(
             palette_command=[
@@ -1515,7 +1879,7 @@ def run_pipeline(
                 "-i",
                 video_path,
                 "-vf",
-                f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",
+                f"{ffmpeg_filter},palettegen",
                 palette,
             ],
             gif_command=[
@@ -1530,7 +1894,7 @@ def run_pipeline(
                 "-i",
                 palette,
                 "-filter_complex",
-                f"fps={fps},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+                f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
                 out_gif,
             ],
             palette_path=palette,
@@ -1552,6 +1916,8 @@ def run_pipeline(
                 "guarded_export_window": bool(
                     clip.get("guarded_export_window", False)
                 ),
+                "quality_assessment": assessment,
+                **quality_lineage,
                 "action_boundary_mode": clip.get("action_boundary_mode"),
                 "action_start_ts": clip.get("action_start_ts"),
                 "action_peak_ts": clip.get("action_peak_ts"),
@@ -1663,6 +2029,7 @@ def run_pipeline(
         "gif_succeeded": gif_succeeded,
         "gif_failed": gif_failed,
         "gif_exports": gif_export_results,
+        "quality_moe": quality_moe,
         "preference_memory_enabled": PREFERENCE_MEMORY_ENABLED,
         "base_score_weight": BASE_SCORE_WEIGHT,
         "preference_score_weight": PREFERENCE_SCORE_WEIGHT,
@@ -1752,12 +2119,7 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
     print(f"Export: {EXPORT_DIR}")
 
     # Read config via shared extract_config (same logic as stage mode)
-    cfg = extract_config(
-        {
-            "adaptive": get("adaptive", {}) or {},
-            "preference_memory": get("preference_memory", {}) or {},
-        }
-    )
+    cfg = _extract_direct_snapshot_config(config_data)
 
     print("=" * 60)
     print(
@@ -2969,6 +3331,13 @@ def _stage_rank_dedup(
     }
 
     if not clips:
+        quality_moe = _quality_moe_summary(
+            cfg,
+            [],
+            input_count=0,
+            effective_count=0,
+            human_review_count=0,
+        )
         manifest = {
             "schema_version": 2,
             "stage": "rank_dedup",
@@ -2976,6 +3345,7 @@ def _stage_rank_dedup(
             "clips": [],
             "transition_guard": transition_guard,
             "action_guard": action_guard,
+            "quality_moe": quality_moe,
             "output_key": "rank_dedup",
         }
         manifest_path = _save_manifest(work_dir, "rank_dedup", manifest)
@@ -3228,6 +3598,13 @@ def _stage_rank_dedup(
         clip["clip_id"] = hashlib.sha256(raw.encode()).hexdigest()[:16]
         clip["rank"] = i + 1
 
+    deduped_clips, quality_moe = _evaluate_quality_pipeline_candidates(
+        deduped_clips,
+        video_path=video_path,
+        cfg=cfg,
+        work_dir=work_dir,
+    )
+
     print(f"  Final: {len(deduped_clips)} deduped clips")
 
     manifest = {
@@ -3237,6 +3614,7 @@ def _stage_rank_dedup(
         "clips": deduped_clips,
         "transition_guard": transition_guard,
         "action_guard": action_guard,
+        "quality_moe": quality_moe,
         "output_key": "rank_dedup",
     }
     manifest_path = _save_manifest(work_dir, "rank_dedup", manifest)
@@ -3274,6 +3652,7 @@ def _stage_gif_clip(
     GIF_MAX_WIDTH = cfg["gif_max_width"]
     MIN_DURATION = cfg["min_duration"]
     MAX_DURATION = cfg["max_duration"]
+    quality_config = _quality_config_from_pipeline_cfg(cfg)
 
     target_clip = None
     for c in clips:
@@ -3341,17 +3720,35 @@ def _stage_gif_clip(
     palette_path = os.path.join(frames_dir, f"palette_{clip_id}.png")
     ffmpeg_start = _ffmpeg_seconds(start_ts)
     ffmpeg_duration = _ffmpeg_seconds(end_ts - start_ts)
+    assessment = target_clip.get("quality_assessment")
+    repair_recipe = _validated_repair_recipe(
+        assessment,
+        candidate_id=str(clip_id or ""),
+        config_hash=quality_config.config_hash,
+    )
+    ffmpeg_filter = build_ffmpeg_filter(
+        repair_recipe, fps=GIF_FPS, max_width=GIF_MAX_WIDTH
+    )
+    quality_lineage = _quality_export_lineage(
+        assessment,
+        candidate_id=str(clip_id or ""),
+        video_path=video_path,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        config_hash=str(cfg["quality_moe_config_hash"]),
+        repair_applied=repair_recipe is not None,
+    )
     attempt = run_gif_export_attempt(
         palette_command=[
             "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
             "-i", video_path,
-            "-vf", f"fps={GIF_FPS},scale={GIF_MAX_WIDTH}:-1:flags=lanczos,palettegen",
+            "-vf", f"{ffmpeg_filter},palettegen",
             palette_path,
         ],
         gif_command=[
                 "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
                 "-i", video_path, "-i", palette_path,
-                "-lavfi", f"fps={GIF_FPS},scale={GIF_MAX_WIDTH}:-1:flags=lanczos[x];[x][1:v]paletteuse",
+                "-lavfi", f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
                 gif_path,
             ],
         palette_path=palette_path,
@@ -3401,6 +3798,8 @@ def _stage_gif_clip(
         "size_bytes": int(attempt.size_bytes),
         "status": "succeeded",
         "output_key": f"gif_clip:{clip_id}",
+        "quality_assessment": assessment,
+        **quality_lineage,
     }
     if manifest["schema_version"] == 2:
         for field in (
@@ -3536,6 +3935,7 @@ def _stage_materialize(
 
         meta = clip_meta.get(cid, {})
         successful_gifs.append({
+            **meta,
             "path": gif_path,
             "clip_id": cid,
             "sha256": expected_sha or hashlib.sha256(open(gif_path, "rb").read()).hexdigest(),
@@ -3728,6 +4128,11 @@ def _stage_materialize(
                 "start_ts": gm.get("start_ts"),
                 "end_ts": gm.get("end_ts"),
                 "gif_name": gm.get("gif_name"),
+                **{
+                    field: gm[field]
+                    for field in _QUALITY_LINEAGE_FIELDS
+                    if field in gm
+                },
             }
             for gm in succeeded_formal
         ],

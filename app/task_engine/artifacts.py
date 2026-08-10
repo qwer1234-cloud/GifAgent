@@ -893,6 +893,15 @@ _ACTION_NULLABLE_NUMERIC_FIELDS = (
     "action_boundary_confidence",
     "loop_quality_score",
 )
+_QUALITY_DECISIONS = frozenset(
+    {"KEEP_AS_IS", "KEEP_FOR_REPAIR", "REVIEW", "REJECT", "ABSTAIN"}
+)
+_QUALITY_EVIDENCE_STATUSES = frozenset(
+    {"AVAILABLE", "UNAVAILABLE", "ABSTAINED", "INVALID"}
+)
+_QUALITY_EVIDENCE_POLARITIES = frozenset(
+    {"POSITIVE", "NEGATIVE", "NEUTRAL"}
+)
 
 
 def _require_v2_field(
@@ -1015,6 +1024,250 @@ def _validate_action_guard_v2(value: object) -> None:
             raise ValueError(f"{context} {field} must be non-negative")
 
 
+def _quality_hash(value: object, field: str, *, context: str) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
+        raise ValueError(f"{context} {field} must be 64 lowercase hexadecimal characters")
+    return value
+
+
+def _validate_quality_repair(value: object, *, assessment: dict, context: str) -> None:
+    from app.quality_moe.models import RepairRecipe, RepairValidation
+
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} repair must be an object")
+    validation_data = value.get("validation")
+    if not isinstance(validation_data, dict):
+        raise ValueError(f"{context} repair validation must be an object")
+    try:
+        validation = RepairValidation(
+            candidate_id=validation_data["candidate_id"],
+            evaluation_version=validation_data["evaluation_version"],
+            source_input_hash=validation_data["source_input_hash"],
+            proxy_artifact_hash=validation_data["proxy_artifact_hash"],
+            recipe_hash=validation_data["recipe_hash"],
+            config_hash=validation_data["config_hash"],
+            repair_delta_evidence_id=validation_data["repair_delta_evidence_id"],
+            repair_delta_status=validation_data["repair_delta_status"],
+        )
+        recipe = RepairRecipe(
+            recipe_id=value["recipe_id"],
+            exposure_ev=value.get("exposure_ev", 0.0),
+            gamma=value.get("gamma", 1.0),
+            contrast=value.get("contrast", 0.0),
+            shadows=value.get("shadows", 0.0),
+            highlights=value.get("highlights", 0.0),
+            white_balance=value.get("white_balance", (1.0, 1.0, 1.0)),
+            crop=value.get("crop", (0.0, 0.0, 1.0, 1.0)),
+            zoom=value.get("zoom", 1.0),
+            rotation_degrees=value.get("rotation_degrees", 0.0),
+            perspective_corner_movement=value.get("perspective_corner_movement", 0.0),
+            quality_gain=value.get("quality_gain", 0.0),
+            confidence=value.get("confidence", 0.0),
+            validation=validation,
+        ).validate()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{context} repair is invalid: {exc}") from exc
+    _quality_hash(value.get("recipe_hash"), "repair.recipe_hash", context=context)
+    for field in (
+        "source_input_hash", "proxy_artifact_hash", "recipe_hash",
+        "config_hash", "repair_delta_evidence_id",
+    ):
+        _quality_hash(validation_data.get(field), f"repair.validation.{field}", context=context)
+    if value["recipe_hash"] != recipe.recipe_hash or validation.recipe_hash != recipe.recipe_hash:
+        raise ValueError(f"{context} repair recipe_hash does not match the recipe")
+    matching_delta = any(
+        hashlib.sha256(
+            json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest() == validation.repair_delta_evidence_id
+        and item.get("signal_family") == "repair_delta"
+        and item.get("status") == "AVAILABLE"
+        and item.get("polarity") == "POSITIVE"
+        and item.get("candidate_id") == assessment["candidate_id"]
+        and item.get("evaluation_version") == assessment["evaluation_version"]
+        and item.get("config_hash") == assessment["config_hash"]
+        and item.get("input_hash") == validation.proxy_artifact_hash
+        and item.get("parent_input_hash") == validation.source_input_hash
+        for item in assessment.get("evidence", [])
+        if isinstance(item, dict)
+    )
+    if (
+        validation.candidate_id != assessment["candidate_id"]
+        or validation.evaluation_version != assessment["evaluation_version"]
+        or validation.config_hash != assessment["config_hash"]
+        or validation.source_input_hash != assessment.get("input_hash")
+        or validation.repair_delta_status.value != "AVAILABLE"
+        or not matching_delta
+    ):
+        raise ValueError(f"{context} repair validation does not match assessment context")
+
+
+def _validate_quality_assessment(value: object, *, context: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    for field in (
+        "candidate_id",
+        "evaluation_version",
+        "config_hash",
+        "policy_version",
+        "recommended_decision",
+        "effective_decision",
+        "confidence",
+    ):
+        _require_v2_field(value, field, context=context)
+    for field in ("recommended_decision", "effective_decision"):
+        if value[field] not in _QUALITY_DECISIONS:
+            raise ValueError(f"{context} {field} has an unknown quality decision")
+    confidence = _finite_number(value["confidence"], "confidence", context=context)
+    if not 0.0 <= float(confidence) <= 1.0:
+        raise ValueError(f"{context} confidence must be in [0, 1]")
+    _quality_hash(value["config_hash"], "config_hash", context=context)
+    if "input_hash" in value:
+        _quality_hash(value["input_hash"], "input_hash", context=context)
+    if "decision" in value and value["decision"] != value["recommended_decision"]:
+        raise ValueError(f"{context} decision must match recommended_decision")
+    evidence = value.get("evidence", [])
+    if not isinstance(evidence, list):
+        raise ValueError(f"{context} evidence must be an array")
+    for index, item in enumerate(evidence):
+        evidence_context = f"{context} evidence[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{evidence_context} must be an object")
+        if item.get("status") not in _QUALITY_EVIDENCE_STATUSES:
+            raise ValueError(f"{evidence_context} status is unknown")
+        if item.get("polarity") not in _QUALITY_EVIDENCE_POLARITIES:
+            raise ValueError(f"{evidence_context} polarity is unknown")
+        scores = item.get("scores", {})
+        if not isinstance(scores, dict):
+            raise ValueError(f"{evidence_context} scores must be an object")
+        for score_name, score in scores.items():
+            parsed = _finite_number(
+                score, str(score_name), context=evidence_context
+            )
+            if not 0.0 <= float(parsed) <= 1.0:
+                raise ValueError(
+                    f"{evidence_context} {score_name} must be in [0, 1]"
+                )
+        for field in ("input_hash", "config_hash"):
+            _quality_hash(item.get(field), field, context=evidence_context)
+        for field in ("parent_input_hash", "prompt_hash"):
+            if item.get(field) is not None:
+                _quality_hash(item[field], field, context=evidence_context)
+        for field in ("candidate_id", "evaluation_version", "config_hash"):
+            if item.get(field) != value.get(field):
+                raise ValueError(f"{evidence_context} {field} does not match assessment")
+    evidence_hashes = value.get("evidence_hashes", [])
+    if not isinstance(evidence_hashes, list):
+        raise ValueError(f"{context} evidence_hashes must be an array")
+    for evidence_hash in evidence_hashes:
+        _quality_hash(evidence_hash, "evidence_hashes", context=context)
+    actual_evidence_hashes = [
+        hashlib.sha256(
+            json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+        for item in evidence
+    ]
+    if evidence_hashes != actual_evidence_hashes:
+        raise ValueError(f"{context} evidence_hashes do not match evidence")
+    for field in ("current_quality", "recoverable_quality"):
+        if field in value and value[field] is not None:
+            score = _finite_number(value[field], field, context=context)
+            if not 0.0 <= float(score) <= 1.0:
+                raise ValueError(f"{context} {field} must be in [0, 1]")
+    selected_recipe_id = value.get("selected_recipe_id")
+    if value["effective_decision"] == "KEEP_FOR_REPAIR":
+        if not isinstance(selected_recipe_id, str) or not selected_recipe_id:
+            raise ValueError(f"{context} selected_recipe_id is required")
+        _validate_quality_repair(value.get("repair"), assessment=value, context=context)
+        if value["repair"].get("recipe_id") != selected_recipe_id:
+            raise ValueError(f"{context} selected_recipe_id does not match repair")
+    elif selected_recipe_id is not None:
+        raise ValueError(f"{context} selected_recipe_id is only valid for KEEP_FOR_REPAIR")
+
+
+def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
+    context = "rank_dedup_manifest quality_moe"
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be an object")
+    for field in (
+        "enabled", "report_only", "evaluation_version", "config_hash",
+        "input_count", "assessed_count", "effective_count",
+        "human_review_count", "decision_counts", "top_assessments", "assessments",
+    ):
+        _require_v2_field(value, field, context=context)
+    for field in ("enabled", "report_only"):
+        if not isinstance(value[field], bool):
+            raise ValueError(f"{context} {field} must be a boolean")
+    for field in ("input_count", "assessed_count", "effective_count", "human_review_count"):
+        count = value[field]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise ValueError(f"{context} {field} must be a non-negative integer")
+    _quality_hash(value["config_hash"], "config_hash", context=context)
+    assessments = value["assessments"]
+    if not isinstance(assessments, list):
+        raise ValueError(f"{context} assessments must be an array")
+    if value["assessed_count"] != len(assessments):
+        raise ValueError(f"{context} assessed_count must equal len(assessments)")
+    if value["enabled"] and value["input_count"] != value["assessed_count"]:
+        raise ValueError(f"{context} input_count must equal assessed_count when enabled")
+    if not isinstance(value["decision_counts"], dict):
+        raise ValueError(f"{context} decision_counts must be an object")
+    if any(decision not in _QUALITY_DECISIONS for decision in value["decision_counts"]):
+        raise ValueError(f"{context} decision_counts has an unknown quality decision")
+    if not isinstance(value["top_assessments"], list):
+        raise ValueError(f"{context} top_assessments must be an array")
+    for index, assessment in enumerate(assessments):
+        _validate_quality_assessment(
+            assessment, context=f"{context} assessments[{index}]"
+        )
+        if assessment["config_hash"] != value["config_hash"]:
+            raise ValueError(f"{context} assessment config_hash does not match summary")
+        if assessment["evaluation_version"] != value["evaluation_version"]:
+            raise ValueError(f"{context} assessment evaluation_version does not match summary")
+    actual_counts: dict[str, int] = {}
+    for assessment in assessments:
+        decision = assessment["effective_decision"]
+        actual_counts[decision] = actual_counts.get(decision, 0) + 1
+    if value["decision_counts"] != actual_counts:
+        raise ValueError(f"{context} decision_counts do not match assessments")
+    expected_top_assessments = [
+        {
+            "candidate_id": assessment["candidate_id"],
+            "effective_decision": assessment["effective_decision"],
+            "confidence": assessment["confidence"],
+        }
+        for assessment in assessments[:10]
+    ]
+    if value["top_assessments"] != expected_top_assessments:
+        raise ValueError(f"{context} top_assessments do not match assessments")
+    if value["effective_count"] != len(clips):
+        raise ValueError(f"{context} effective_count must equal len(clips)")
+    assessment_ids = [assessment["candidate_id"] for assessment in assessments]
+    clip_ids = [clip["clip_id"] for clip in clips]
+    if value["enabled"] and value["report_only"] and clip_ids != assessment_ids:
+        raise ValueError(f"{context} report_only must preserve assessed clip count and order")
+    if value["enabled"] and not value["report_only"]:
+        keep_ids = [
+            assessment["candidate_id"] for assessment in assessments
+            if assessment["effective_decision"] in {"KEEP_AS_IS", "KEEP_FOR_REPAIR"}
+        ]
+        if clip_ids != keep_ids:
+            raise ValueError(f"{context} active routing may fan out only effective KEEP clips")
+    by_id = {assessment["candidate_id"]: assessment for assessment in assessments}
+    for clip in clips:
+        if value["enabled"] and clip.get("quality_assessment") != by_id.get(clip["clip_id"]):
+            raise ValueError(f"{context} per-clip quality_assessment is not immutable")
+
+
 def _validate_gif_export_v2(value: dict) -> None:
     context = "gif_clip_manifest"
     for field in (
@@ -1064,6 +1317,65 @@ def _validate_gif_export_v2(value: dict) -> None:
         raise ValueError(
             f"{context} status must be 'succeeded' or 'failed'"
         )
+
+
+def _validate_gif_quality_lineage(value: dict) -> None:
+    context = "gif_clip_manifest quality lineage"
+    assessment = value.get("quality_assessment")
+    if not isinstance(assessment, dict):
+        return
+    _validate_quality_assessment(assessment, context=f"{context} assessment")
+    for field in (
+        "quality_decision", "current_quality", "recoverable_quality",
+        "selected_recipe_id", "selected_recipe", "evidence_hashes",
+        "config_hash", "parent_source",
+    ):
+        _require_v2_field(value, field, context=context)
+    if value["quality_decision"] not in _QUALITY_DECISIONS:
+        raise ValueError(f"{context} quality_decision is unknown")
+    if value["quality_decision"] != assessment["effective_decision"]:
+        raise ValueError(f"{context} quality_decision does not match assessment")
+    _quality_hash(value["config_hash"], "config_hash", context=context)
+    if value["config_hash"] != assessment["config_hash"]:
+        raise ValueError(f"{context} config_hash does not match assessment")
+    for field in ("current_quality", "recoverable_quality"):
+        if value[field] is not None:
+            score = _finite_number(value[field], field, context=context)
+            if not 0.0 <= float(score) <= 1.0:
+                raise ValueError(f"{context} {field} must be in [0, 1]")
+        if value[field] != assessment.get(field):
+            raise ValueError(f"{context} {field} does not match assessment")
+    evidence_hashes = value["evidence_hashes"]
+    if not isinstance(evidence_hashes, list):
+        raise ValueError(f"{context} evidence_hashes must be an array")
+    for evidence_hash in evidence_hashes:
+        _quality_hash(evidence_hash, "evidence_hashes", context=context)
+    if evidence_hashes != assessment.get("evidence_hashes", []):
+        raise ValueError(f"{context} evidence_hashes do not match assessment")
+    if value["selected_recipe_id"] != assessment.get("selected_recipe_id"):
+        raise ValueError(f"{context} selected_recipe_id does not match assessment")
+    if value["selected_recipe"] != assessment.get("repair"):
+        raise ValueError(f"{context} selected_recipe does not match assessment")
+    parent = value["parent_source"]
+    if not isinstance(parent, dict):
+        raise ValueError(f"{context} parent_source must be an object")
+    for field in (
+        "candidate_id", "input_hash", "source_file_sha256", "video_path",
+        "start_ts", "end_ts",
+    ):
+        _require_v2_field(parent, field, context=f"{context} parent_source")
+    if parent["candidate_id"] != value["clip_id"] or parent["candidate_id"] != assessment["candidate_id"]:
+        raise ValueError(f"{context} parent_source candidate_id does not match clip")
+    for field in ("input_hash", "source_file_sha256"):
+        _quality_hash(parent[field], field, context=f"{context} parent_source")
+    if parent["input_hash"] != assessment.get("input_hash"):
+        raise ValueError(f"{context} parent_source input_hash does not match assessment")
+    if not isinstance(parent["video_path"], str) or not parent["video_path"]:
+        raise ValueError(f"{context} parent_source video_path must be non-empty")
+    for field in ("start_ts", "end_ts"):
+        timestamp = _finite_number(parent[field], field, context=f"{context} parent_source")
+        if not math.isclose(float(timestamp), float(value[field]), abs_tol=1e-6):
+            raise ValueError(f"{context} parent_source {field} does not match GIF interval")
 
 
 def validate_manifest_json(
@@ -1166,6 +1478,19 @@ def validate_manifest_json(
                     "rank_dedup_manifest clip action_analysis_version "
                     "must match action_guard action_analysis_version"
                 )
+            if "quality_moe" in data:
+                if data["quality_moe"].get("enabled") is True:
+                    for index, clip in enumerate(clips):
+                        assessment = _require_v2_field(
+                            clip,
+                            "quality_assessment",
+                            context=f"rank_dedup_manifest clips[{index}]",
+                        )
+                        _validate_quality_assessment(
+                            assessment,
+                            context=f"rank_dedup_manifest clips[{index}] quality_assessment",
+                        )
+                _validate_quality_summary(data["quality_moe"], clips=clips)
 
     if (
         artifact_kind == "gif_clip_manifest"
@@ -1173,5 +1498,6 @@ def validate_manifest_json(
     ):
         _validate_action_clip_v2(data, context="gif_clip_manifest")
         _validate_gif_export_v2(data)
+        _validate_gif_quality_lineage(data)
 
     return data
