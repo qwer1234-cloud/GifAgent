@@ -259,3 +259,9 @@ def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
     ]
     assert "eq=" not in palette_filter
     assert "eq=" not in gif_filter
+    exported = result["gif_exports"][0]
+    assert exported["recommended_recipe_id"] == "repair-1"
+    assert exported["recommended_recipe"] == {"recipe_id": "repair-1"}
+    assert exported["applied_recipe_id"] is None
+    assert exported["applied_recipe"] is None
+    assert exported["repair_applied"] is False

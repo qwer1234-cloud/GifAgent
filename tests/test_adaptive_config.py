@@ -265,6 +265,8 @@ def test_models_yaml_enables_report_only_quality_moe_by_default():
     assert cfg["quality_moe"]["report_only"] is True
     assert cfg["quality_moe"]["repairability"]["photometric_mode"] == "clip_global"
     assert config_data["quality_moe"]["judge"]["base_url"] == "inherit_vlm"
+    assert config_data["vlm"]["base_url"] == "auto"
+    assert "172.27.227.98" not in config_path.read_text(encoding="utf-8")
 
 
 def test_quality_runtime_snapshot_resolves_inherit_vlm_once():
@@ -281,7 +283,10 @@ def test_quality_runtime_snapshot_resolves_inherit_vlm_once():
         },
     }
 
-    frozen = adaptive._resolve_quality_runtime_snapshot(source)
+    frozen = adaptive._resolve_quality_runtime_snapshot(
+        source,
+        auto_resolver=lambda runtime, _snapshot: runtime.base_url,
+    )
     source["vlm"]["base_url"] = "http://drifted.example:11434"
     source["quality_moe"]["judge"]["base_url"] = "http://drifted.example:11434"
 

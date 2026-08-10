@@ -18,6 +18,26 @@ from scripts import test_video_adaptive as adaptive
 
 
 def _assessment(candidate_id: str, config_hash: str, decision: QualityDecision):
+    input_hash = hashlib.sha256(candidate_id.encode("utf-8")).hexdigest()
+    evidence = tuple(
+        ExpertEvidence(
+            candidate_id=candidate_id,
+            evaluation_version="quality-moe-v1",
+            expert_id=expert_id,
+            expert_version="v1",
+            signal_family=signal_family,
+            status=EvidenceStatus.AVAILABLE,
+            scores={"technical_integrity": 0.8},
+            input_hash=input_hash,
+            config_hash=config_hash,
+            polarity=EvidencePolarity.POSITIVE,
+        )
+        for expert_id, signal_family in (
+            ("technical", "nr_vqa"),
+            ("temporal", "deterministic_temporal"),
+            ("cinematic", "cinematic_classifier"),
+        )
+    )
     return QualityAssessment(
         candidate_id=candidate_id,
         evaluation_version="quality-moe-v1",
@@ -26,8 +46,64 @@ def _assessment(candidate_id: str, config_hash: str, decision: QualityDecision):
         recommended_decision=decision,
         effective_decision=decision,
         confidence=0.91,
-        input_hash=hashlib.sha256(candidate_id.encode("utf-8")).hexdigest(),
+        input_hash=input_hash,
+        evidence=evidence,
     )
+
+
+def _valid_repair_assessment(candidate_id: str, config_hash: str) -> dict:
+    delta = ExpertEvidence(
+        candidate_id=candidate_id,
+        evaluation_version="quality-moe-v1",
+        expert_id="repair-scorer",
+        expert_version="v1",
+        signal_family="repair_delta",
+        status=EvidenceStatus.AVAILABLE,
+        scores={"technical_integrity": 0.8},
+        input_hash="2" * 64,
+        parent_input_hash="1" * 64,
+        config_hash=config_hash,
+        polarity=EvidencePolarity.POSITIVE,
+    )
+    base = RepairRecipe(
+        recipe_id="repair-1", exposure_ev=0.25,
+        quality_gain=0.2, confidence=0.9,
+    )
+    recipe = RepairRecipe(
+        recipe_id="repair-1", exposure_ev=0.25,
+        quality_gain=0.2, confidence=0.9,
+        validation=RepairValidation(
+            candidate_id=candidate_id,
+            evaluation_version="quality-moe-v1",
+            source_input_hash="1" * 64,
+            proxy_artifact_hash="2" * 64,
+            recipe_hash=base.recipe_hash,
+            config_hash=config_hash,
+            repair_delta_evidence_id=delta.identity_hash,
+            repair_delta_status=EvidenceStatus.AVAILABLE,
+        ),
+    )
+    assessment = QualityAssessment(
+        candidate_id=candidate_id,
+        evaluation_version="quality-moe-v1",
+        config_hash=config_hash,
+        policy_version="quality-moe-policy-v1",
+        recommended_decision=QualityDecision.KEEP_FOR_REPAIR,
+        effective_decision=QualityDecision.KEEP_FOR_REPAIR,
+        confidence=0.9,
+        repair=recipe,
+        input_hash="1" * 64,
+        evidence=(delta,),
+    )
+    payload = adaptive._enrich_quality_assessment(
+        assessment.to_dict(), candidate={"transition_action": "keep"}
+    )
+    payload.update({
+        "current_quality": 0.55,
+        "recoverable_quality": 0.78,
+        "provenance": {"source_file_sha256": "4" * 64},
+    })
+    return payload
 
 
 def test_zero_clip_staged_rank_manifest_records_quality_summary(tmp_path, monkeypatch):
@@ -177,20 +253,13 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source-remains-unchanged")
     clip_id = "repair-clip"
-    assessment = _assessment(
-        clip_id,
-        adaptive.extract_config({})["quality_moe_config_hash"],
-        QualityDecision.KEEP_FOR_REPAIR,
-    ).to_dict()
-    assessment.update({
-        "input_hash": "1" * 64,
-        "evidence_hashes": ["2" * 64],
-        "selected_recipe_id": "repair-1",
-        "current_quality": 0.55,
-        "recoverable_quality": 0.78,
-        "repair": {"recipe_id": "repair-1", "recipe_hash": "3" * 64},
-        "provenance": {"source_file_sha256": "4" * 64},
+    cfg = adaptive.extract_config({
+        "adaptive": {"gif_fps": 12, "gif_max_width": 320},
+        "quality_moe": {"report_only": True},
     })
+    assessment = _valid_repair_assessment(
+        clip_id, cfg["quality_moe_config_hash"]
+    )
     rank_manifest = {
         "schema_version": 2,
         "clips": [{
@@ -201,6 +270,11 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
             "guarded_export_window": True,
             "gif_worthiness": 0.8,
             "frame_count": 1,
+            "transition_action": "keep",
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
             "quality_assessment": assessment,
         }],
     }
@@ -232,10 +306,6 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
         return SimpleNamespace(success=True, size_bytes=9, error=None)
 
     monkeypatch.setattr(adaptive, "run_gif_export_attempt", fake_export)
-    cfg = adaptive.extract_config({
-        "adaptive": {"gif_fps": 12, "gif_max_width": 320},
-        "quality_moe": {"report_only": True},
-    })
     export_dir = tmp_path / "exports"
     frames_dir = tmp_path / "frames"
     export_dir.mkdir()
@@ -262,9 +332,11 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
     assert manifest["current_quality"] == 0.55
     assert manifest["recoverable_quality"] == 0.78
     assert manifest["repair_applied"] is False
-    assert manifest["selected_recipe_id"] is None
-    assert manifest["selected_recipe"] is None
-    assert manifest["evidence_hashes"] == ["2" * 64]
+    assert manifest["recommended_recipe_id"] == "repair-1"
+    assert manifest["recommended_recipe"] == assessment["repair"]
+    assert manifest["applied_recipe_id"] is None
+    assert manifest["applied_recipe"] is None
+    assert manifest["evidence_hashes"] == assessment["evidence_hashes"]
     assert manifest["config_hash"] == cfg["quality_moe_config_hash"]
     assert manifest["parent_source"] == {
         "candidate_id": clip_id,
@@ -274,6 +346,34 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
         "start_ts": 1.0,
         "end_ts": 5.0,
     }
+
+    materialize_work = tmp_path / "materialize"
+    materialize_work.mkdir()
+    materialized = adaptive._stage_materialize(
+        str(source), str(export_dir), str(materialize_work), cfg,
+        inputs={
+            "schema_version": 1,
+            "stage": "materialize",
+            "artifacts": {
+                "gif_file": [result["_artifacts"][0]],
+                "gif_clip_manifest": [result["_artifacts"][1]],
+            },
+            "stage_statuses": [],
+        },
+        config_data={"export_base_dir": str(tmp_path / "formal")},
+    )
+    result_path = next(
+        item["path"] for item in materialized["_artifacts"]
+        if item["artifact_kind"] == "result"
+    )
+    published = json.loads(open(result_path, encoding="utf-8").read())[
+        "succeeded"
+    ][0]
+    assert published["recommended_recipe_id"] == "repair-1"
+    assert published["recommended_recipe"] == assessment["repair"]
+    assert published["applied_recipe_id"] is None
+    assert published["applied_recipe"] is None
+    assert published["repair_applied"] is False
 
 
 def test_repair_filter_selection_requires_bound_recipe_validation():
@@ -443,3 +543,57 @@ def test_direct_config_uses_one_loaded_snapshot_not_global_get(monkeypatch):
     assert cfg["gif_fps"] == 11
     assert cfg["preference_memory_enabled"] is True
     assert cfg["quality_moe"]["report_only"] is False
+
+
+def test_stage_mode_only_reads_job_frozen_quality_endpoint(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "vlm": {
+            "provider": "ollama", "model": "llava:13b",
+            "base_url": "http://job-frozen.example:11434",
+        },
+        "quality_moe": {
+            "judge": {
+                "model_id": "llava:13b",
+                "base_url": "http://job-frozen.example:11434",
+            },
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        adaptive,
+        "_resolve_quality_runtime_snapshot",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("stage must not resolve an already frozen endpoint")
+        ),
+    )
+    monkeypatch.setattr(adaptive, "init_db", lambda: None)
+    seen = []
+
+    def fake_stage(stage, **kwargs):
+        seen.append(kwargs["config_data"]["quality_moe"]["judge"]["base_url"])
+        return {"output_key": stage, "_artifacts": []}
+
+    monkeypatch.setattr(adaptive, "_run_stage", fake_stage)
+
+    adaptive.run_stage_mode(
+        stage="discover",
+        video_path=str(tmp_path / "source.mp4"),
+        work_dir=str(tmp_path / "work"),
+        result_path=str(tmp_path / "result.json"),
+        config_path=str(config_path),
+    )
+
+    assert seen == ["http://job-frozen.example:11434"]
+
+
+def test_quality_stage_rejects_unfrozen_endpoint_sentinel_before_judge_http():
+    cfg = adaptive.extract_config({
+        "quality_moe": {
+            "enabled": True,
+            "judge": {"model_id": "llava:13b", "base_url": "inherit_vlm"},
+        },
+    })
+
+    import pytest
+    with pytest.raises(ValueError, match="frozen absolute URL"):
+        adaptive._quality_config_from_pipeline_cfg(cfg)

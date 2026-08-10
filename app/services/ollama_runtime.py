@@ -520,9 +520,11 @@ class OllamaRuntimeManager:
 _default_runtime = OllamaRuntimeManager()
 
 
-def ensure_runtime_ready() -> RuntimeState:
+def ensure_runtime_ready(
+    config: Optional[EmbeddingRuntimeConfig] = None,
+) -> RuntimeState:
     """Ensure the default runtime is ready (module-level convenience)."""
-    return _default_runtime.ensure_ready()
+    return _default_runtime.ensure_ready(config)
 
 
 def resolve_base_url() -> str:

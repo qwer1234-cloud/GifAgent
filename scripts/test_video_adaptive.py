@@ -426,57 +426,22 @@ def _resolve_quality_runtime_snapshot(
     *,
     auto_resolver=None,
 ) -> dict:
-    """Resolve sentinel Ollama URLs once and return a detached job snapshot."""
-    snapshot = json.loads(json.dumps(config_data))
-    quality = snapshot.get("quality_moe")
-    if not isinstance(quality, dict):
-        return snapshot
-    judge = quality.get("judge")
-    if not isinstance(judge, dict):
-        return snapshot
-    configured = str(judge.get("base_url", "") or "").strip()
-    if configured.lower() not in {"inherit_vlm", "auto"}:
-        if configured:
-            from app.services.ollama_runtime import normalize_base_url
-            judge["base_url"] = normalize_base_url(configured)
-        return snapshot
+    """Resolve runtime URLs once at the Direct-mode startup boundary."""
+    from app.quality_moe.config import freeze_quality_runtime_config
 
-    vlm_runtime = _resolve_vlm_runtime(snapshot)
-    vlm_base = str(vlm_runtime.base_url).strip()
+    if auto_resolver is None:
+        return freeze_quality_runtime_config(config_data)
 
-    def default_auto_resolver(runtime, frozen_snapshot):
-        from app.services.ollama_runtime import (
-            EmbeddingRuntimeConfig,
-            OllamaRuntimeManager,
+    def ready(runtime_config):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            base_url=auto_resolver(
+                _resolve_vlm_runtime(config_data), config_data
+            )
         )
 
-        vlm = frozen_snapshot.get("vlm") or {}
-        runtime_config = EmbeddingRuntimeConfig(
-            base_url="auto",
-            manage_lifecycle=runtime.manage_lifecycle,
-            launch_mode=runtime.launch_mode,
-            wsl_distro=str(vlm.get("wsl_distro", "Ubuntu-20.04")),
-            startup_timeout_s=float(vlm.get("startup_timeout_s", 120.0)),
-            request_timeout_s=float(vlm.get("timeout_seconds", 120.0)),
-            embedding_model=runtime.model,
-        )
-        return OllamaRuntimeManager().resolve_base_url(runtime_config)
-
-    resolver = auto_resolver or default_auto_resolver
-    if configured.lower() == "auto" or vlm_base.lower() == "auto":
-        resolved_base = resolver(vlm_runtime, snapshot)
-    else:
-        resolved_base = vlm_base
-
-    from app.services.ollama_runtime import normalize_base_url
-    resolved_base = normalize_base_url(str(resolved_base))
-    if not resolved_base.startswith(("http://", "https://")):
-        raise ValueError("resolved quality judge base_url must be absolute")
-    judge["base_url"] = resolved_base
-    vlm = snapshot.get("vlm")
-    if isinstance(vlm, dict):
-        vlm["base_url"] = resolved_base
-    return snapshot
+    return freeze_quality_runtime_config(config_data, ready_resolver=ready)
 
 
 def _ollama_command(runtime: VlmRuntimeConfig, *args: str) -> list[str]:
@@ -691,6 +656,17 @@ def _quality_config_from_pipeline_cfg(cfg: dict) -> QualityMoeConfig:
         cfg["quality_moe_config_hash"] = quality_config.config_hash
         return quality_config
     quality_config = QualityMoeConfig.from_mapping({"quality_moe": raw})
+    judge_base_url = str(quality_config.judge.get("base_url", "") or "").strip()
+    if judge_base_url:
+        parsed_url = httpx.URL(judge_base_url)
+        if (
+            judge_base_url.lower() in {"auto", "inherit_vlm"}
+            or not parsed_url.is_absolute_url
+            or parsed_url.scheme not in {"http", "https"}
+        ):
+            raise ValueError(
+                "quality_moe judge base_url must be a frozen absolute URL"
+            )
     expected_hash = cfg.get("quality_moe_config_hash")
     if expected_hash is None:
         cfg["quality_moe_config_hash"] = quality_config.config_hash
@@ -751,8 +727,32 @@ def _quality_evidence_hash(evidence: dict) -> str:
     ).hexdigest()
 
 
-def _enrich_quality_assessment(assessment: dict) -> dict:
+_QUALITY_HARD_GATE_INPUT_FIELDS = (
+    "transition_action",
+    "action_completeness_score",
+    "media_decodable",
+    "decode_ok",
+)
+
+
+def _quality_hard_gate_context(candidate: dict | None) -> dict:
+    candidate = candidate or {}
+    return {
+        field: candidate[field]
+        for field in _QUALITY_HARD_GATE_INPUT_FIELDS
+        if field in candidate
+    }
+
+
+def _enrich_quality_assessment(
+    assessment: dict,
+    *,
+    candidate: dict | None = None,
+) -> dict:
     enriched = json.loads(json.dumps(assessment))
+    hard_gate_context = _quality_hard_gate_context(candidate)
+    enriched["hard_gate_context"] = hard_gate_context
+    enriched["hard_gate_context_hash"] = _quality_evidence_hash(hard_gate_context)
     evidence = enriched.get("evidence", [])
     enriched["evidence_hashes"] = [
         _quality_evidence_hash(item) for item in evidence if isinstance(item, dict)
@@ -846,8 +846,14 @@ def _evaluate_quality_pipeline_candidates(
         work_dir=work_dir,
         judge=judge,
     )
+    candidates_by_id = {
+        str(candidate["candidate_id"]): candidate for candidate in normalized
+    }
     assessments = [
-        _enrich_quality_assessment(assessment.to_dict())
+        _enrich_quality_assessment(
+            assessment.to_dict(),
+            candidate=candidates_by_id.get(assessment.candidate_id),
+        )
         for assessment in batch.assessments
     ]
     by_candidate_id = {
@@ -971,8 +977,10 @@ _QUALITY_LINEAGE_FIELDS = (
     "current_quality",
     "recoverable_quality",
     "repair_applied",
-    "selected_recipe_id",
-    "selected_recipe",
+    "recommended_recipe_id",
+    "recommended_recipe",
+    "applied_recipe_id",
+    "applied_recipe",
     "evidence_hashes",
     "config_hash",
     "parent_source",
@@ -1005,15 +1013,19 @@ def _quality_export_lineage(
             source_file_sha256 = source_hasher.hexdigest()
         except OSError:
             source_file_sha256 = None
-    selected_recipe = assessment.get("repair") if repair_applied else None
-    selected_recipe_id = assessment.get("selected_recipe_id") if repair_applied else None
+    recommended_recipe = assessment.get("repair")
+    recommended_recipe_id = assessment.get("selected_recipe_id")
+    applied_recipe = recommended_recipe if repair_applied else None
+    applied_recipe_id = recommended_recipe_id if repair_applied else None
     return {
         "quality_decision": assessment.get("effective_decision"),
         "current_quality": assessment.get("current_quality"),
         "recoverable_quality": assessment.get("recoverable_quality"),
         "repair_applied": repair_applied,
-        "selected_recipe_id": selected_recipe_id,
-        "selected_recipe": selected_recipe,
+        "recommended_recipe_id": recommended_recipe_id,
+        "recommended_recipe": recommended_recipe,
+        "applied_recipe_id": applied_recipe_id,
+        "applied_recipe": applied_recipe,
         "evidence_hashes": list(assessment.get("evidence_hashes", [])),
         "config_hash": config_hash,
         "parent_source": {
@@ -2329,7 +2341,6 @@ def run_stage_mode(
     # Handles both historical config_snapshot wrapper and new flat format.
     from app.quality_lab.config_builder import normalize_task_config
     config_data = normalize_task_config(config_data)
-    config_data = _resolve_quality_runtime_snapshot(config_data)
 
     # Override the global config module so that ``get()`` calls inside
     # helpers (via imported modules) see the correct values.

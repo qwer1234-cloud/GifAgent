@@ -909,6 +909,12 @@ _QUALITY_HARD_REASONS = frozenset({
     "action_incomplete",
     "media_undecodable",
 })
+_QUALITY_HARD_GATE_INPUT_FIELDS = frozenset({
+    "transition_action",
+    "action_completeness_score",
+    "media_decodable",
+    "decode_ok",
+})
 
 
 def _require_v2_field(
@@ -1143,6 +1149,21 @@ def _validate_quality_assessment(value: object, *, context: str) -> None:
         reason not in _QUALITY_HARD_REASONS for reason in hard_reasons
     ):
         raise ValueError(f"{context} hard_reasons contains an unknown hard gate")
+    hard_gate_context = value.get("hard_gate_context")
+    if not isinstance(hard_gate_context, dict) or (
+        set(hard_gate_context) - _QUALITY_HARD_GATE_INPUT_FIELDS
+    ):
+        raise ValueError(f"{context} hard_gate_context is invalid")
+    expected_context_hash = hashlib.sha256(
+        json.dumps(
+            hard_gate_context,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if value.get("hard_gate_context_hash") != expected_context_hash:
+        raise ValueError(f"{context} hard_gate_context_hash does not match context")
     evidence = value.get("evidence", [])
     if not isinstance(evidence, list):
         raise ValueError(f"{context} evidence must be an array")
@@ -1288,6 +1309,7 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
             ExpertEvidence,
             QualityDecision,
         )
+        from app.quality_moe.evaluator import _coverage_failure
         from app.quality_moe.policy import enforce_decision, hard_gate_reasons
 
         defaults = QualityMoeConfig.defaults()
@@ -1335,9 +1357,42 @@ def _validate_quality_summary(value: object, *, clips: list[dict]) -> None:
                 )
             clip = clips_by_id.get(assessment["candidate_id"])
             serialized_hard_reasons = tuple(assessment.get("hard_reasons", []))
-            hard_reasons = (
-                hard_gate_reasons(clip) if clip is not None else serialized_hard_reasons
+            hard_gate_context = assessment["hard_gate_context"]
+            if clip is not None:
+                clip_context = {
+                    field: clip[field]
+                    for field in _QUALITY_HARD_GATE_INPUT_FIELDS
+                    if field in clip
+                }
+                if clip_context != hard_gate_context:
+                    raise ValueError(
+                        f"{context} assessments[{index}] hard-gate context is not immutable"
+                    )
+            hard_reasons = hard_gate_reasons(hard_gate_context)
+            if serialized_hard_reasons != hard_reasons:
+                raise ValueError(
+                    f"{context} assessments[{index}] hard-gate context does not match hard_reasons"
+                )
+            core_expert_families = {
+                "nr_vqa", "deterministic_temporal", "cinematic_classifier",
+            }
+            current_evidence = tuple(
+                item for item in evidence
+                if item.candidate_id == assessment["candidate_id"]
+                and item.evaluation_version == value["evaluation_version"]
+                and item.config_hash == value["config_hash"]
+                and item.input_hash == assessment.get("input_hash")
+                and item.signal_family in core_expert_families
             )
+            coverage_failure = _coverage_failure(current_evidence)
+            if (
+                not hard_reasons
+                and coverage_failure is not None
+                and assessment["recommended_decision"] not in {"REVIEW", "ABSTAIN"}
+            ):
+                raise ValueError(
+                    f"{context} assessments[{index}] failed expert coverage replay"
+                )
             recomputed = enforce_decision(
                 candidate_id=assessment["candidate_id"],
                 input_hash=assessment.get("input_hash", ""),
@@ -1454,7 +1509,8 @@ def _validate_gif_quality_lineage(value: dict) -> None:
     _validate_quality_assessment(assessment, context=f"{context} assessment")
     for field in (
         "quality_decision", "current_quality", "recoverable_quality",
-        "repair_applied", "selected_recipe_id", "selected_recipe", "evidence_hashes",
+        "repair_applied", "recommended_recipe_id", "recommended_recipe",
+        "applied_recipe_id", "applied_recipe", "evidence_hashes",
         "config_hash", "parent_source",
     ):
         _require_v2_field(value, field, context=context)
@@ -1481,14 +1537,18 @@ def _validate_gif_quality_lineage(value: dict) -> None:
         raise ValueError(f"{context} evidence_hashes do not match assessment")
     if not isinstance(value["repair_applied"], bool):
         raise ValueError(f"{context} repair_applied must be a boolean")
+    if value["recommended_recipe_id"] != assessment.get("selected_recipe_id"):
+        raise ValueError(f"{context} recommended_recipe_id does not match assessment")
+    if value["recommended_recipe"] != assessment.get("repair"):
+        raise ValueError(f"{context} recommended_recipe does not match assessment")
     if value["repair_applied"]:
         if assessment["effective_decision"] != "KEEP_FOR_REPAIR":
             raise ValueError(f"{context} applied repair requires KEEP_FOR_REPAIR")
-        if value["selected_recipe_id"] != assessment.get("selected_recipe_id"):
-            raise ValueError(f"{context} selected_recipe_id does not match assessment")
-        if value["selected_recipe"] != assessment.get("repair"):
-            raise ValueError(f"{context} selected_recipe does not match assessment")
-    elif value["selected_recipe_id"] is not None or value["selected_recipe"] is not None:
+        if value["applied_recipe_id"] != value["recommended_recipe_id"]:
+            raise ValueError(f"{context} applied_recipe_id does not match recommendation")
+        if value["applied_recipe"] != value["recommended_recipe"]:
+            raise ValueError(f"{context} applied_recipe does not match recommendation")
+    elif value["applied_recipe_id"] is not None or value["applied_recipe"] is not None:
         raise ValueError(f"{context} unapplied repair must not select a recipe")
     parent = value["parent_source"]
     if not isinstance(parent, dict):

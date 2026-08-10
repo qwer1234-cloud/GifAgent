@@ -53,6 +53,76 @@ def _strict_merge(defaults: Mapping[str, Any], values: Mapping[str, Any], *, nam
     return {key: values.get(key, default) for key, default in defaults.items()}
 
 
+def _ensure_quality_runtime_ready(runtime_config):
+    from app.services.ollama_runtime import ensure_runtime_ready
+
+    return ensure_runtime_ready(runtime_config)
+
+
+def freeze_quality_runtime_config(
+    config_data: Mapping[str, Any],
+    *,
+    ready_resolver=None,
+) -> dict[str, Any]:
+    """Resolve quality/VLM sentinel URLs once for immutable job storage."""
+    snapshot = json.loads(json.dumps(dict(config_data)))
+    quality = snapshot.get("quality_moe")
+    judge = quality.get("judge") if isinstance(quality, dict) else None
+    if not isinstance(judge, dict):
+        return snapshot
+    judge_base = str(judge.get("base_url", "") or "").strip()
+    vlm = snapshot.get("vlm")
+    vlm = vlm if isinstance(vlm, dict) else {}
+    vlm_base = str(vlm.get("base_url", "") or "").strip()
+    sentinel = judge_base.lower() in {"inherit_vlm", "auto"}
+    vlm_auto = vlm_base.lower() == "auto"
+
+    from app.services.ollama_runtime import (
+        EmbeddingRuntimeConfig,
+        normalize_base_url,
+    )
+
+    if not sentinel and not vlm_auto:
+        if judge_base:
+            judge["base_url"] = normalize_base_url(judge_base)
+        return snapshot
+
+    embedding = snapshot.get("embedding")
+    embedding = embedding if isinstance(embedding, dict) else {}
+    runtime_config = EmbeddingRuntimeConfig(
+        base_url=(
+            str(embedding.get("base_url", "auto") or "auto")
+            if vlm_auto
+            else vlm_base
+        ),
+        manage_lifecycle=bool(
+            embedding.get("manage_lifecycle", vlm.get("manage_lifecycle", False))
+        ),
+        launch_mode=str(
+            embedding.get("launch_mode", vlm.get("launch_mode", "wsl")) or "wsl"
+        ).lower(),
+        wsl_distro=str(embedding.get("wsl_distro", "Ubuntu-20.04")),
+        startup_timeout_s=float(embedding.get("startup_timeout_s", 120.0)),
+        request_timeout_s=float(embedding.get("request_timeout_s", 60.0)),
+        retry_attempts=int(embedding.get("retry_attempts", 3)),
+        retry_backoff_s=float(embedding.get("retry_backoff_s", 2.0)),
+        keep_alive=str(embedding.get("keep_alive", "30m")),
+        embedding_model=str(
+            embedding.get("text_model", "nomic-embed-text:latest")
+        ),
+        embedding_dim=int(embedding.get("embedding_dim", 768)),
+    )
+    resolver = ready_resolver or _ensure_quality_runtime_ready
+    state = resolver(runtime_config)
+    resolved_base = normalize_base_url(str(state.base_url))
+    if not resolved_base.startswith(("http://", "https://")):
+        raise ValueError("resolved quality judge base_url must be absolute")
+    judge["base_url"] = resolved_base
+    if isinstance(snapshot.get("vlm"), dict):
+        snapshot["vlm"]["base_url"] = resolved_base
+    return snapshot
+
+
 @dataclass(frozen=True)
 class SoftRejectConfig:
     min_judge_confidence: float = 0.80

@@ -8,11 +8,8 @@ media:
 vlm:
   provider: "ollama"
   model: "llava:13b"
-  # Session note 2026-07-25: Windows host cannot reach WSL ollama via
-  # 127.0.0.1; use the current WSL eth0 IP. Revert to 127.0.0.1 if
-  # localhost forwarding is restored. Original backed up under
-  # data/backups/before_adult_opt_*.
-  base_url: "http://172.27.227.98:11434"
+  # Resolved once through the lifecycle-aware Ollama runtime when a job starts.
+  base_url: "auto"
   batch_size: 50
   max_batch_size: 100
   # Task 4 (seventh-review): explicit lifecycle config.  URL never

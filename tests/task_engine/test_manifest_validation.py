@@ -31,7 +31,42 @@ def _quality_evidence_hash(evidence: dict) -> str:
     ).hexdigest()
 
 
+def _hard_gate_context_hash(context: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            context,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def _valid_quality_rank_manifest() -> dict:
+    hard_gate_context = {"transition_action": "keep"}
+    evidence = []
+    for expert_id, signal_family in (
+        ("technical", "nr_vqa"),
+        ("temporal", "deterministic_temporal"),
+        ("cinematic", "cinematic_classifier"),
+    ):
+        evidence.append({
+            "candidate_id": "clip-1",
+            "evaluation_version": "quality-moe-v1",
+            "expert_id": expert_id,
+            "expert_version": "v1",
+            "signal_family": signal_family,
+            "status": "AVAILABLE",
+            "scores": {"technical_integrity": 0.81},
+            "findings": [],
+            "summary": "clean",
+            "input_hash": "c" * 64,
+            "config_hash": "b" * 64,
+            "parent_input_hash": None,
+            "polarity": "POSITIVE",
+            "prompt_hash": None,
+            "latency_ms": 1,
+        })
     assessment = {
         "candidate_id": "clip-1",
         "evaluation_version": "quality-moe-v1",
@@ -43,27 +78,13 @@ def _valid_quality_rank_manifest() -> dict:
         "confidence": 0.92,
         "negative_signal_families": [],
         "hard_reasons": [],
+        "hard_gate_context": hard_gate_context,
+        "hard_gate_context_hash": _hard_gate_context_hash(hard_gate_context),
         "repair": None,
         "reason_codes": [],
         "summary": "clean",
         "input_hash": "c" * 64,
-        "evidence": [{
-            "candidate_id": "clip-1",
-            "evaluation_version": "quality-moe-v1",
-            "expert_id": "technical",
-            "expert_version": "v1",
-            "signal_family": "nr_vqa",
-            "status": "AVAILABLE",
-            "scores": {"technical_integrity": 0.81},
-            "findings": [],
-            "summary": "clean",
-            "input_hash": "c" * 64,
-            "config_hash": "b" * 64,
-            "parent_input_hash": None,
-            "polarity": "POSITIVE",
-            "prompt_hash": None,
-            "latency_ms": 1,
-        }],
+        "evidence": evidence,
         "provenance": {"source_file_sha256": "d" * 64},
         "evidence_hashes": [],
         "selected_recipe_id": None,
@@ -71,7 +92,7 @@ def _valid_quality_rank_manifest() -> dict:
         "recoverable_quality": 0.81,
     }
     assessment["evidence_hashes"] = [
-        _quality_evidence_hash(assessment["evidence"][0])
+        _quality_evidence_hash(item) for item in assessment["evidence"]
     ]
     return {
         "schema_version": 2,
@@ -86,6 +107,7 @@ def _valid_quality_rank_manifest() -> dict:
             "action_vlm_verified": False,
             "action_analysis_version": 1,
             "guarded_export_window": True,
+            "transition_action": "keep",
             "quality_assessment": deepcopy(assessment),
         }],
         "action_guard": {
@@ -158,8 +180,8 @@ def _valid_quality_repair_rank_manifest() -> dict:
         "effective_decision": "KEEP_FOR_REPAIR",
         "decision": "KEEP_FOR_REPAIR",
         "repair": recipe.to_dict(),
-        "evidence": [delta],
-        "evidence_hashes": [delta_hash],
+        "evidence": [*assessment["evidence"], delta],
+        "evidence_hashes": [*assessment["evidence_hashes"], delta_hash],
         "selected_recipe_id": "repair-1",
     })
     manifest["clips"][0]["quality_assessment"] = deepcopy(assessment)
@@ -638,43 +660,9 @@ class TestManifestValidation:
     def test_rank_manifest_accepts_quality_evidence_and_rejects_unknown_decision(self):
         from app.task_engine.artifacts import validate_manifest_json
 
-        assessment = {
-            "candidate_id": "clip-1",
-            "evaluation_version": "quality-moe-v1",
-            "config_hash": "b" * 64,
-            "policy_version": "quality-moe-policy-v1",
-            "recommended_decision": "KEEP_AS_IS",
-            "effective_decision": "KEEP_AS_IS",
-            "decision": "KEEP_AS_IS",
-            "confidence": 0.92,
-            "negative_signal_families": [],
-            "hard_reasons": [],
-            "repair": None,
-            "reason_codes": [],
-            "summary": "clean",
-            "input_hash": "c" * 64,
-            "evidence": [{
-                "candidate_id": "clip-1",
-                "evaluation_version": "quality-moe-v1",
-                "expert_id": "technical",
-                "expert_version": "v1",
-                "signal_family": "nr_vqa",
-                "status": "AVAILABLE",
-                "scores": {"technical_integrity": 0.81},
-                "findings": [],
-                "summary": "clean",
-                "input_hash": "c" * 64,
-                "config_hash": "b" * 64,
-                "parent_input_hash": None,
-                "polarity": "POSITIVE",
-                "prompt_hash": None,
-                "latency_ms": 1,
-            }],
-            "provenance": {"source_file_sha256": "d" * 64},
-        }
-        assessment["evidence_hashes"] = [
-            _quality_evidence_hash(assessment["evidence"][0])
-        ]
+        assessment = deepcopy(
+            _valid_quality_rank_manifest()["quality_moe"]["assessments"][0]
+        )
         manifest = {
             "schema_version": 2,
             "stage": "rank_dedup",
@@ -688,6 +676,7 @@ class TestManifestValidation:
                 "action_vlm_verified": False,
                 "action_analysis_version": 1,
                 "guarded_export_window": True,
+                "transition_action": "keep",
                 "quality_assessment": assessment,
             }],
             "action_guard": {
@@ -833,8 +822,11 @@ class TestManifestValidation:
             **deepcopy(manifest["quality_moe"]["assessments"][0]),
             "candidate_id": "clip-2",
         }
-        second["evidence"][0]["candidate_id"] = "clip-2"
-        second["evidence_hashes"] = [_quality_evidence_hash(second["evidence"][0])]
+        for item in second["evidence"]:
+            item["candidate_id"] = "clip-2"
+        second["evidence_hashes"] = [
+            _quality_evidence_hash(item) for item in second["evidence"]
+        ]
         manifest["quality_moe"]["assessments"].append(second)
         manifest["quality_moe"]["decision_counts"] = {"KEEP_AS_IS": 2}
         manifest["quality_moe"]["top_assessments"].append({
@@ -875,7 +867,7 @@ class TestManifestValidation:
         manifest["clips"] = []
         manifest["clip_count"] = 0
 
-        with pytest.raises(ValueError, match="policy recomputation"):
+        with pytest.raises(ValueError, match="expert coverage replay"):
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
             )
@@ -908,6 +900,68 @@ class TestManifestValidation:
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
             )
+
+    def test_active_rank_manifest_recomputes_hard_reasons_from_frozen_context(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        assessment.update({
+            "recommended_decision": "REJECT",
+            "effective_decision": "REJECT",
+            "decision": "REJECT",
+            "confidence": 1.0,
+            "hard_reasons": ["transition_drop"],
+        })
+        manifest["quality_moe"]["report_only"] = False
+        manifest["quality_moe"]["policy_snapshot"]["report_only"] = False
+        manifest["quality_moe"]["effective_count"] = 0
+        manifest["quality_moe"]["decision_counts"] = {"REJECT": 1}
+        manifest["quality_moe"]["top_assessments"] = [{
+            "candidate_id": "clip-1",
+            "effective_decision": "REJECT",
+            "confidence": 1.0,
+        }]
+        manifest["clips"] = []
+        manifest["clip_count"] = 0
+
+        with pytest.raises(ValueError, match="hard-gate context"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_rejects_zero_evidence_keep_that_bypasses_coverage(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        assessment["evidence"] = []
+        assessment["evidence_hashes"] = []
+        manifest["clips"][0]["quality_assessment"] = deepcopy(assessment)
+
+        with pytest.raises(ValueError, match="expert coverage"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_rank_manifest_replays_core_coverage_without_counting_judge_evidence(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        assessment = manifest["quality_moe"]["assessments"][0]
+        judge_evidence = deepcopy(assessment["evidence"][0])
+        judge_evidence.update({
+            "expert_id": "semantic-judge",
+            "signal_family": "semantic_judge",
+        })
+        assessment["evidence"].append(judge_evidence)
+        assessment["evidence_hashes"].append(_quality_evidence_hash(judge_evidence))
+        manifest["clips"][0]["quality_assessment"] = deepcopy(assessment)
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+        )
+        assert len(validated["quality_moe"]["assessments"][0]["evidence"]) == 4
 
     def test_rank_manifest_rejects_repair_outside_safe_recipe_bounds(self):
         from app.task_engine.artifacts import validate_manifest_json
@@ -956,9 +1010,9 @@ class TestManifestValidation:
 
         manifest = _valid_quality_repair_rank_manifest()
         assessment = manifest["quality_moe"]["assessments"][0]
-        assessment["evidence"][0]["signal_family"] = "nr_vqa"
-        forged_hash = _quality_evidence_hash(assessment["evidence"][0])
-        assessment["evidence_hashes"] = [forged_hash]
+        assessment["evidence"][-1]["signal_family"] = "nr_vqa"
+        forged_hash = _quality_evidence_hash(assessment["evidence"][-1])
+        assessment["evidence_hashes"][-1] = forged_hash
         assessment["repair"]["validation"]["repair_delta_evidence_id"] = forged_hash
         manifest["clips"][0]["quality_assessment"] = deepcopy(assessment)
 
@@ -1000,8 +1054,10 @@ class TestManifestValidation:
             "current_quality": 0.81,
             "recoverable_quality": 0.81,
             "repair_applied": False,
-            "selected_recipe_id": None,
-            "selected_recipe": None,
+            "recommended_recipe_id": None,
+            "recommended_recipe": None,
+            "applied_recipe_id": None,
+            "applied_recipe": None,
             "evidence_hashes": ["e" * 64],
             "config_hash": "b" * 64,
             "parent_source": {
@@ -1047,8 +1103,10 @@ class TestManifestValidation:
             "current_quality": assessment["current_quality"],
             "recoverable_quality": assessment["recoverable_quality"],
             "repair_applied": False,
-            "selected_recipe_id": None,
-            "selected_recipe": None,
+            "recommended_recipe_id": assessment["selected_recipe_id"],
+            "recommended_recipe": assessment["repair"],
+            "applied_recipe_id": None,
+            "applied_recipe": None,
             "evidence_hashes": assessment["evidence_hashes"],
             "config_hash": assessment["config_hash"],
             "parent_source": {
@@ -1065,6 +1123,8 @@ class TestManifestValidation:
             json.dumps(manifest).encode("utf-8"), "gif_clip_manifest"
         )
         assert validated["repair_applied"] is False
+        assert validated["recommended_recipe_id"] == "repair-1"
+        assert validated["applied_recipe_id"] is None
         assert validated["quality_assessment"]["selected_recipe_id"] == "repair-1"
 
 
