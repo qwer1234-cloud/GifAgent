@@ -203,8 +203,12 @@ def _validate_config(values: Mapping[str, Any]) -> None:
             raise ValueError(f"{name} must be in [0, 1]")
     if values["preferred_min_duration_s"] > values["preferred_max_duration_s"]:
         raise ValueError("preferred_min_duration_s must not exceed preferred_max_duration_s")
+    if values["min_duration_s"] > values["preferred_min_duration_s"]:
+        raise ValueError("min_duration_s must not exceed preferred_min_duration_s")
     if values["preferred_max_duration_s"] > values["max_duration_s"]:
         raise ValueError("preferred_max_duration_s must not exceed max_duration_s")
+    if values["min_duration_s"] > values["max_duration_s"]:
+        raise ValueError("min_duration_s must not exceed max_duration_s")
     if values["max_duration_s"] > values["analysis_window_s"]:
         raise ValueError("max_duration_s must not exceed analysis_window_s")
     if values["min_duration_s"] < 2.0:
@@ -237,7 +241,9 @@ def _repair_non_strict_config(
         values["fallback_mode"] = defaults.fallback_mode
     duration_relationship_invalid = (
         values["preferred_min_duration_s"] > values["preferred_max_duration_s"]
+        or values["min_duration_s"] > values["preferred_min_duration_s"]
         or values["preferred_max_duration_s"] > values["max_duration_s"]
+        or values["min_duration_s"] > values["max_duration_s"]
         or values["max_duration_s"] > values["analysis_window_s"]
     )
     if duration_relationship_invalid:
@@ -248,6 +254,14 @@ def _repair_non_strict_config(
             "max_duration_s",
         ):
             values[name] = getattr(defaults, name)
+        if values["preferred_min_duration_s"] < values["min_duration_s"]:
+            values["preferred_min_duration_s"] = values["min_duration_s"]
+        if values["preferred_max_duration_s"] < values["preferred_min_duration_s"]:
+            values["preferred_max_duration_s"] = values["preferred_min_duration_s"]
+        if values["max_duration_s"] < values["preferred_max_duration_s"]:
+            values["max_duration_s"] = values["preferred_max_duration_s"]
+        if values["analysis_window_s"] < values["max_duration_s"]:
+            values["analysis_window_s"] = values["max_duration_s"]
 
 
 def _motion_value(pair: TemporalPairEvidence) -> tuple[float, float]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from typing import Any, Mapping
 
 from app.services.action_boundary import ActionBoundaryConfig
@@ -26,9 +27,6 @@ def freeze_action_config(
         "action_preferred_min_duration_s": values.get(
             "action_preferred_min_duration_s", 4.0
         ),
-        "action_preferred_max_duration_s": values.get(
-            "action_preferred_max_duration_s", 12.0
-        ),
         "action_min_duration_s": values.get("min_duration", 2.0),
         "action_max_duration_s": values.get("max_duration", 20.0),
         "action_scan_fps": values.get("action_scan_fps", 4.0),
@@ -43,6 +41,27 @@ def freeze_action_config(
             "action_fallback_mode", "fixed_window"
         ),
     }
+    try:
+        minimum_duration = float(action_values["action_min_duration_s"])
+        maximum_duration = float(action_values["action_max_duration_s"])
+        if not math.isfinite(minimum_duration) or not math.isfinite(
+            maximum_duration
+        ):
+            raise ValueError
+    except (TypeError, ValueError):
+        minimum_duration, maximum_duration = 2.0, 20.0
+    if "action_preferred_min_duration_s" not in values:
+        action_values["action_preferred_min_duration_s"] = max(
+            minimum_duration, min(4.0, maximum_duration)
+        )
+    if "action_preferred_max_duration_s" in values:
+        action_values["action_preferred_max_duration_s"] = values[
+            "action_preferred_max_duration_s"
+        ]
+    else:
+        action_values["action_preferred_max_duration_s"] = min(
+            12.0, maximum_duration
+        )
     try:
         config = ActionBoundaryConfig.from_mapping(action_values, strict=True)
     except ValueError as exc:

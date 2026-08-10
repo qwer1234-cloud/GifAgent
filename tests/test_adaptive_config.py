@@ -26,6 +26,35 @@ def test_adaptive_action_defaults_are_frozen():
     assert cfg["action_fallback_mode"] == "fixed_window"
 
 
+def test_implicit_preferred_action_maximum_never_exceeds_configured_maximum():
+    cfg = extract_config({"adaptive": {"max_duration": 10}})
+
+    assert cfg["max_duration"] == 10.0
+    assert cfg["action_preferred_max_duration_s"] == 10.0
+
+
+def test_implicit_action_preferences_stay_within_configured_duration_bounds():
+    cfg = extract_config(
+        {"adaptive": {"min_duration": 6, "max_duration": 10}}
+    )
+
+    assert cfg["action_preferred_min_duration_s"] == 6.0
+    assert cfg["action_preferred_max_duration_s"] == 10.0
+
+
+def test_explicit_preferred_action_minimum_below_configured_minimum_is_rejected():
+    with pytest.raises(ValueError, match="action_preferred_min_duration_s"):
+        extract_config(
+            {
+                "adaptive": {
+                    "min_duration": 6,
+                    "max_duration": 10,
+                    "action_preferred_min_duration_s": 4,
+                }
+            }
+        )
+
+
 @pytest.mark.parametrize(
     ("adaptive", "offending_key"),
     [
