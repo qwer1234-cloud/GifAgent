@@ -374,6 +374,7 @@ class TestMaterializeArtifactContract:
             "quality_assessment": quality_assessment,
             **quality_lineage,
         }), encoding="utf-8")
+        gif_manifest_raw = gif_manifest.read_bytes()
         work_dir = tmp_path / "materialize-work"
         work_dir.mkdir()
         export_base = tmp_path / "formal"
@@ -390,6 +391,8 @@ class TestMaterializeArtifactContract:
                     }],
                     "gif_clip_manifest": [{
                         "path": str(gif_manifest), "clip_id": "clip-1",
+                        "sha256": hashlib.sha256(gif_manifest_raw).hexdigest(),
+                        "size_bytes": len(gif_manifest_raw),
                     }],
                 },
                 "stage_statuses": [],
@@ -460,6 +463,74 @@ class TestMaterializeArtifactContract:
                         "gif_clip_manifest": [{
                             "path": str(gif_manifest), "clip_id": "clip-1",
                         }],
+                    },
+                    "stage_statuses": [],
+                },
+                config_data={"export_base_dir": str(tmp_path / "formal")},
+            )
+
+    @pytest.mark.parametrize(
+        "tamper", ["sha", "size", "missing", "duplicate", "clip_id"]
+    )
+    def test_materialize_fails_closed_on_manifest_envelope_mismatch(
+        self, tmp_path: Path, tamper: str,
+    ):
+        import hashlib
+
+        from scripts.test_video_adaptive import _stage_materialize, extract_config
+
+        video = tmp_path / "source.mp4"
+        video.write_bytes(b"video")
+        gif = tmp_path / "clip.gif"
+        gif.write_bytes(b"GIF89a")
+        manifest = tmp_path / "gif_clip_manifest.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "stage": "gif_clip",
+                    "clip_id": "other" if tamper == "clip_id" else "clip-1",
+                    "gif_path": str(gif),
+                }
+            ),
+            encoding="utf-8",
+        )
+        raw = manifest.read_bytes()
+        manifest_entry = {
+            "path": str(manifest),
+            "clip_id": "clip-1",
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "size_bytes": len(raw),
+        }
+        if tamper == "sha":
+            manifest_entry["sha256"] = "0" * 64
+        elif tamper == "size":
+            manifest_entry["size_bytes"] = len(raw) + 1
+        manifests = [] if tamper == "missing" else [manifest_entry]
+        if tamper == "duplicate":
+            manifests.append(dict(manifest_entry))
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+
+        with pytest.raises(ValueError):
+            _stage_materialize(
+                str(video),
+                str(tmp_path / "unused"),
+                str(work_dir),
+                extract_config({"adaptive": {"potplayer_pbf_enabled": False}}),
+                inputs={
+                    "schema_version": 1,
+                    "stage": "materialize",
+                    "artifacts": {
+                        "gif_file": [
+                            {
+                                "path": str(gif),
+                                "clip_id": "clip-1",
+                                "sha256": hashlib.sha256(gif.read_bytes()).hexdigest(),
+                                "size_bytes": gif.stat().st_size,
+                            }
+                        ],
+                        "gif_clip_manifest": manifests,
                     },
                     "stage_statuses": [],
                 },

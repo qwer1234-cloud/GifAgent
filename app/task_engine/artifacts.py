@@ -1359,6 +1359,37 @@ def _validate_assessed_candidates(value: object, *, context: str) -> list[dict]:
             raise ValueError(
                 f"{item_context} hard_gate_context_hash does not match context"
             )
+        source_identity = candidate.get("source_identity")
+        if source_identity is not None:
+            if not isinstance(source_identity, dict):
+                raise ValueError(f"{item_context} source_identity must be an object")
+            required_source_fields = {
+                "video_path", "source_file_sha256", "size_bytes", "mtime_ns",
+            }
+            if set(source_identity) != required_source_fields:
+                raise ValueError(
+                    f"{item_context} source_identity fields are invalid"
+                )
+            source_path = source_identity["video_path"]
+            if not isinstance(source_path, str) or not source_path or not Path(source_path).is_absolute():
+                raise ValueError(
+                    f"{item_context} source_identity video_path must be absolute"
+                )
+            _quality_hash(
+                source_identity["source_file_sha256"],
+                "source_identity.source_file_sha256",
+                context=item_context,
+            )
+            for field in ("size_bytes", "mtime_ns"):
+                field_value = source_identity[field]
+                if (
+                    isinstance(field_value, bool)
+                    or not isinstance(field_value, int)
+                    or field_value < 0
+                ):
+                    raise ValueError(
+                        f"{item_context} source_identity {field} must be non-negative"
+                    )
         candidate_ids.append(candidate_id)
     if len(candidate_ids) != len(set(candidate_ids)):
         raise ValueError(f"{context} has duplicate candidate_id values")
@@ -1633,6 +1664,33 @@ def _validate_quality_summary(
                 raise ValueError(
                     f"{context} assessments[{index}] hard-gate context does not match hard_reasons"
                 )
+            source_identity = ledger_candidate.get("source_identity")
+            if clip is not None and not hard_reasons and source_identity is None:
+                raise ValueError(
+                    f"{context} assessments[{index}] lacks immutable source identity"
+                )
+            if source_identity is not None:
+                provenance = assessment.get("provenance")
+                if not isinstance(provenance, dict):
+                    raise ValueError(
+                        f"{context} assessments[{index}] provenance must be an object"
+                    )
+                if (
+                    provenance.get("source_file_sha256")
+                    != source_identity["source_file_sha256"]
+                ):
+                    raise ValueError(
+                        f"{context} assessments[{index}] source hash does not match ledger"
+                    )
+                provenance_path = provenance.get("source_video")
+                if (
+                    not isinstance(provenance_path, str)
+                    or str(Path(provenance_path).resolve(strict=False)).casefold()
+                    != str(Path(source_identity["video_path"]).resolve(strict=False)).casefold()
+                ):
+                    raise ValueError(
+                        f"{context} assessments[{index}] source path does not match ledger"
+                    )
             core_expert_families = {
                 "nr_vqa", "deterministic_temporal", "cinematic_classifier",
             }

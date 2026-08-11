@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -490,6 +491,8 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
     assessment = _valid_repair_assessment(
         clip_id, cfg["quality_moe_config_hash"]
     )
+    source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+    assessment["provenance"]["source_file_sha256"] = source_sha256
     rank_manifest = {
         "schema_version": 2,
         "clips": [{
@@ -571,7 +574,7 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
     assert manifest["parent_source"] == {
         "candidate_id": clip_id,
         "input_hash": "1" * 64,
-        "source_file_sha256": "4" * 64,
+        "source_file_sha256": source_sha256,
         "video_path": str(source.resolve()),
         "start_ts": 1.0,
         "end_ts": 5.0,
@@ -579,14 +582,22 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
 
     materialize_work = tmp_path / "materialize"
     materialize_work.mkdir()
+    gif_artifact = dict(result["_artifacts"][0])
+    manifest_artifact = dict(result["_artifacts"][1])
+    gif_artifact["sha256"] = hashlib.sha256(
+        Path(gif_artifact["path"]).read_bytes()
+    ).hexdigest()
+    manifest_artifact["sha256"] = hashlib.sha256(
+        Path(manifest_artifact["path"]).read_bytes()
+    ).hexdigest()
     materialized = adaptive._stage_materialize(
         str(source), str(export_dir), str(materialize_work), cfg,
         inputs={
             "schema_version": 1,
             "stage": "materialize",
             "artifacts": {
-                "gif_file": [result["_artifacts"][0]],
-                "gif_clip_manifest": [result["_artifacts"][1]],
+                "gif_file": [gif_artifact],
+                "gif_clip_manifest": [manifest_artifact],
             },
             "stage_statuses": [],
         },
@@ -604,6 +615,60 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
     assert published["applied_recipe_id"] is None
     assert published["applied_recipe"] is None
     assert published["repair_applied"] is False
+
+
+def test_stage_gif_rejects_source_changed_after_quality_rank(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"ranked-source")
+    clip_id = "changed-source"
+    cfg = adaptive.extract_config({"quality_moe": {"report_only": True}})
+    assessment = _valid_repair_assessment(
+        clip_id, cfg["quality_moe_config_hash"]
+    )
+    assessment["provenance"]["source_file_sha256"] = hashlib.sha256(
+        source.read_bytes()
+    ).hexdigest()
+    rank_manifest = {
+        "schema_version": 2,
+        "clips": [
+            {
+                "clip_id": clip_id,
+                "rank": 1,
+                "start_ts": 1.0,
+                "end_ts": 5.0,
+                "guarded_export_window": True,
+                "gif_worthiness": 0.8,
+                "frame_count": 1,
+                "quality_assessment": assessment,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        adaptive, "_read_upstream_manifest", lambda *_args, **_kwargs: rank_manifest
+    )
+    export_called = False
+
+    def forbidden_export(**_kwargs):
+        nonlocal export_called
+        export_called = True
+        raise AssertionError("FFmpeg export must not run for a changed source")
+
+    monkeypatch.setattr(adaptive, "run_gif_export_attempt", forbidden_export)
+    source.write_bytes(b"changed-after-rank")
+
+    with pytest.raises(ValueError, match="source.*changed"):
+        adaptive._stage_gif_clip(
+            str(source),
+            str(tmp_path),
+            str(tmp_path),
+            str(tmp_path),
+            cfg,
+            clip_id=clip_id,
+            inputs={},
+        )
+    assert export_called is False
 
 
 def test_repair_filter_selection_requires_bound_recipe_validation():
@@ -683,6 +748,9 @@ def test_repair_filter_selection_requires_bound_recipe_validation():
 def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
     tmp_path, monkeypatch,
 ):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
     clips = [
         {"start_ts": 2.0, "end_ts": 6.0, "gif_worthiness": 0.7},
         {"start_ts": 8.0, "end_ts": 12.0, "gif_worthiness": 0.9},
@@ -717,9 +785,15 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
     def fake_evaluate(values, **kwargs):
         seen.extend(values)
         assessments = tuple(
-            _assessment(
-                value["candidate_id"], kwargs["config"].config_hash,
-                QualityDecision.KEEP_AS_IS,
+            replace(
+                _assessment(
+                    value["candidate_id"], kwargs["config"].config_hash,
+                    QualityDecision.KEEP_AS_IS,
+                ),
+                provenance={
+                    "source_file_sha256": source_sha,
+                    "source_video": str(source),
+                },
             )
             for value in values
         )
@@ -745,7 +819,7 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
     })
 
     result = adaptive._stage_rank_dedup(
-        "source.mp4", str(tmp_path / "exports"), str(tmp_path), cfg,
+        str(source), str(tmp_path / "exports"), str(tmp_path), cfg,
         {"synthesize_manifest": [_synthesize_lineage_ref()]},
         config_data={"quality_moe": {"report_only": False}},
     )

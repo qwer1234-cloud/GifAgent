@@ -43,6 +43,15 @@ def test_implicit_action_preferences_stay_within_configured_duration_bounds():
     assert cfg["action_preferred_max_duration_s"] == 10.0
 
 
+def test_implicit_action_preferences_support_minimum_above_twelve_seconds():
+    cfg = extract_config(
+        {"adaptive": {"min_duration": 15, "max_duration": 20}}
+    )
+
+    assert cfg["action_preferred_min_duration_s"] == 15.0
+    assert cfg["action_preferred_max_duration_s"] == 15.0
+
+
 def test_explicit_preferred_action_minimum_below_configured_minimum_is_rejected():
     with pytest.raises(ValueError, match="action_preferred_min_duration_s"):
         extract_config(

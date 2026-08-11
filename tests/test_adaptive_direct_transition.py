@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import hashlib
 
 from PIL import Image
 import pytest
@@ -57,6 +58,7 @@ def _run_direct_pipeline_fixture(
     export_dir = tmp_path / "exports"
     frames_dir.mkdir()
     export_dir.mkdir()
+    (tmp_path / "source.mp4").write_bytes(b"direct-source")
     source_frame = Image.new("RGB", (32, 32), (100, 110, 120))
 
     def fake_run(command, **_kwargs):
@@ -229,6 +231,11 @@ def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
                     "selected_recipe_id": "repair-1",
                     "repair": {"recipe_id": "repair-1"},
                     "evidence_hashes": [],
+                    "provenance": {
+                        "source_file_sha256": hashlib.sha256(
+                            Path(_kwargs["video_path"]).read_bytes()
+                        ).hexdigest(),
+                    },
                 },
             })
         return routed, {"assessments": []}

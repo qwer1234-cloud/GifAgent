@@ -6,6 +6,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 
 from app.quality_moe.config import QualityMoeConfig
 from app.quality_moe.judge import JudgeResult
@@ -212,6 +213,63 @@ def test_one_bad_candidate_does_not_stop_the_batch(tmp_path):
     assert len(batch.assessments) == 2
     assert batch.assessments[0].decision is QualityDecision.ABSTAIN
     assert batch.assessments[1].candidate_id == "good"
+
+
+def test_batch_hashes_each_source_only_before_and_after_evaluation(
+    tmp_path, monkeypatch,
+):
+    from app.quality_moe import evaluator
+
+    video = tmp_path / "shared.mp4"
+    video.write_bytes(b"whole-source-video")
+    candidates = [
+        {
+            "candidate_id": candidate_id,
+            "video_path": str(video),
+            "start_ts": 1.0,
+            "end_ts": 2.0,
+        }
+        for candidate_id in ("one", "two")
+    ]
+    original_hash = evaluator._source_hash
+    hash_calls = []
+
+    def counting_hash(path):
+        hash_calls.append(str(Path(path).resolve()))
+        return original_hash(path)
+
+    def sampler(path, start, end, candidate_id):
+        return _sample(candidate_id, str(path))
+
+    monkeypatch.setattr(evaluator, "_source_hash", counting_hash)
+    batch = evaluator.evaluate_candidates(
+        candidates,
+        config=_config(),
+        work_dir=tmp_path,
+        sampler=sampler,
+    )
+
+    assert len(batch.assessments) == 2
+    assert hash_calls == [str(video.resolve()), str(video.resolve())]
+
+
+def test_batch_fails_closed_when_source_changes_during_evaluation(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidates
+
+    candidate = _candidate(tmp_path)
+
+    def mutating_sampler(path, start, end, candidate_id):
+        sample = _sample(candidate_id, str(path))
+        Path(path).write_bytes(b"changed-after-initial-identity")
+        return sample
+
+    with pytest.raises(ValueError, match="changed during quality evaluation"):
+        evaluate_candidates(
+            [candidate],
+            config=_config(),
+            work_dir=tmp_path,
+            sampler=mutating_sampler,
+        )
 
 
 def test_default_sampler_unavailable_cannot_keep_and_routes_to_manual_review(tmp_path):

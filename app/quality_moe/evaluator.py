@@ -43,6 +43,13 @@ class QualityBatchResult:
     human_review_clips: tuple[dict[str, object], ...]
 
 
+@dataclass(frozen=True)
+class _SourceIdentity:
+    normalized_path: str
+    source_path: str
+    sha256: str | None
+
+
 def evaluate_candidate(
     candidate: Mapping[str, object],
     *,
@@ -53,6 +60,8 @@ def evaluate_candidate(
     judge: _Judge | Callable[[JudgeRequest], JudgeResult] | None = None,
     repair_search: Callable[..., RepairSearchResult] = search_repairs,
     clock: Callable[[], int] = time.monotonic_ns,
+    source_identity: _SourceIdentity | None = None,
+    verify_source_after_sampling: bool = True,
 ) -> QualityAssessment:
     """Evaluate one exact source interval without permitting a model bypass.
 
@@ -74,7 +83,16 @@ def evaluate_candidate(
             candidate_id, video_path, "not_checked", start_ts, end_ts, (), config, (), None, None, _latencies(total=0),
         ))
 
-    source_hash = _source_hash(video_path)
+    if (
+        source_identity is not None
+        and source_identity.normalized_path != _normal_path(video_path)
+    ):
+        raise ValueError("source identity does not match candidate video_path")
+    source_hash = (
+        source_identity.sha256
+        if source_identity is not None
+        else _source_hash(video_path)
+    )
     if source_hash is None:
         unavailable_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": "unavailable", "start_ts": start_ts, "end_ts": end_ts})
         return _abstained(candidate_id, video_path, "unavailable", start_ts, end_ts, unavailable_input, config, "source_unavailable", "Source media is missing, unreadable, or cannot be fully hashed.")
@@ -87,7 +105,9 @@ def evaluate_candidate(
     except Exception as error:  # A bad candidate is data, never a batch failure.
         return _abstained(candidate_id, video_path, source_hash, start_ts, end_ts, fallback_input, config, "sampling_exception", str(error), _latencies(sampler=_elapsed_ms(sampler_started, clock), total=_elapsed_ms(total_started, clock)))
     sampler_latency = _elapsed_ms(sampler_started, clock)
-    current_source_hash = _source_hash(video_path)
+    current_source_hash = (
+        _source_hash(video_path) if verify_source_after_sampling else source_hash
+    )
     if current_source_hash is None or current_source_hash != source_hash:
         current_input = _hash_json({"candidate_id": candidate_id, "source_file_sha256": current_source_hash or "unavailable", "start_ts": start_ts, "end_ts": end_ts})
         return _abstained(candidate_id, video_path, current_source_hash or "unavailable", start_ts, end_ts, current_input, config, "source_hash_changed", "Source media changed while sampling.", _latencies(sampler=sampler_latency, total=_elapsed_ms(total_started, clock)))
@@ -177,12 +197,37 @@ def evaluate_candidates(
     config = kwargs.get("config")
     if not isinstance(config, QualityMoeConfig):
         raise ValueError("config must be a QualityMoeConfig")
+    identities: dict[str, _SourceIdentity] = {}
+    candidate_identities: list[_SourceIdentity | None] = []
+    for candidate in candidates:
+        identity: _SourceIdentity | None = None
+        if isinstance(candidate, Mapping):
+            try:
+                _candidate_id, video_path, _start, _end = _candidate_fields(candidate)
+                if not hard_gate_reasons(candidate):
+                    normalized_path = _normal_path(video_path)
+                    identity = identities.get(normalized_path)
+                    if identity is None:
+                        identity = _SourceIdentity(
+                            normalized_path=normalized_path,
+                            source_path=video_path,
+                            sha256=_source_hash(video_path),
+                        )
+                        identities[normalized_path] = identity
+            except ValueError:
+                identity = None
+        candidate_identities.append(identity)
+
     assessments: list[QualityAssessment] = []
     effective: list[dict[str, object]] = []
     human: list[dict[str, object]] = []
-    for candidate in candidates:
+    for candidate, identity in zip(candidates, candidate_identities):
         try:
-            assessment = evaluate_candidate(candidate, **kwargs)  # type: ignore[arg-type]
+            candidate_kwargs = dict(kwargs)
+            if identity is not None:
+                candidate_kwargs["source_identity"] = identity
+                candidate_kwargs["verify_source_after_sampling"] = False
+            assessment = evaluate_candidate(candidate, **candidate_kwargs)  # type: ignore[arg-type]
         except Exception as error:
             candidate_id = str(candidate.get("candidate_id", candidate.get("id", "invalid"))) if isinstance(candidate, Mapping) else "invalid"
             assessment = _abstained(candidate_id, "", "unavailable", 0.0, 1.0, _hash_json({"candidate_id": candidate_id}), config, "candidate_exception", str(error))
@@ -193,6 +238,15 @@ def evaluate_candidates(
             effective.append(clip)
         if assessment.effective_decision in {QualityDecision.REVIEW, QualityDecision.ABSTAIN}:
             human.append(clip)
+
+    for identity in identities.values():
+        if identity.sha256 is None:
+            continue
+        current_hash = _source_hash(identity.source_path)
+        if current_hash != identity.sha256:
+            raise ValueError(
+                f"source changed during quality evaluation: {identity.source_path}"
+            )
     return QualityBatchResult(tuple(assessments), tuple(effective), tuple(human))
 
 

@@ -120,6 +120,29 @@ def test_config_accepts_and_copies_spec_shaped_expert_and_judge_settings():
 
 
 @pytest.mark.parametrize(
+    "quality_moe",
+    [
+        {"experts": {"technical_aesthetic": {"enabled": True, "typo": 1}}},
+        {"experts": {"unknown_expert": {"enabled": True}}},
+        {"judge": {"model_id": "local-video", "temperatur": 0}},
+    ],
+)
+def test_config_rejects_unknown_nested_quality_fields(quality_moe):
+    with pytest.raises(ValueError, match="unknown"):
+        QualityMoeConfig.from_mapping({"quality_moe": quality_moe})
+
+
+@pytest.mark.parametrize(
+    "expert_id", ["technical_aesthetic", "cinematic", "temporal"]
+)
+def test_v1_config_rejects_disabled_mandatory_experts(expert_id):
+    with pytest.raises(ValueError, match="mandatory"):
+        QualityMoeConfig.from_mapping(
+            {"quality_moe": {"experts": {expert_id: {"enabled": False}}}}
+        )
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("photometric_mode", "per_frame_auto"),

@@ -59,8 +59,11 @@ def freeze_action_config(
             "action_preferred_max_duration_s"
         ]
     else:
-        action_values["action_preferred_max_duration_s"] = min(
-            12.0, maximum_duration
+        preferred_minimum = float(
+            action_values["action_preferred_min_duration_s"]
+        )
+        action_values["action_preferred_max_duration_s"] = max(
+            preferred_minimum, min(12.0, maximum_duration)
         )
     try:
         config = ActionBoundaryConfig.from_mapping(action_values, strict=True)

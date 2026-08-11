@@ -407,19 +407,59 @@ def _link_is_unsupported(error: OSError) -> bool:
     return error.errno in {errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EXDEV} or getattr(error, "winerror", None) in {1, 50}
 
 
+def _try_advisory_lock(descriptor: int) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _release_advisory_lock(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
 def _publish_via_locked_replace(temporary: Path, target: Path, content_hash: str) -> None:
-    """Fallback for filesystems without hard links; all writers coordinate here."""
+    """Fallback for filesystems without hard links; the OS releases dead locks."""
     lock = target.with_name(f".{target.name}.publish.lock")
     deadline = time.monotonic() + 1.0
-    descriptor: int | None = None
-    while descriptor is None:
-        try:
-            descriptor = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-        except FileExistsError:
-            if time.monotonic() >= deadline:
-                raise FileExistsError(f"contact sheet publication lock timed out: {target}")
-            time.sleep(0.01)
+    descriptor = os.open(
+        lock,
+        os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0),
+        0o600,
+    )
+    if os.fstat(descriptor).st_size == 0:
+        os.write(descriptor, b"\0")
+        os.fsync(descriptor)
+    acquired = False
     try:
+        while not acquired:
+            acquired = _try_advisory_lock(descriptor)
+            if not acquired:
+                if time.monotonic() >= deadline:
+                    raise FileExistsError(
+                        f"contact sheet publication lock timed out: {target}"
+                    )
+                time.sleep(0.01)
         try:
             existing_hash = _stable_file_hash(target)
         except FileNotFoundError:
@@ -429,11 +469,9 @@ def _publish_via_locked_replace(temporary: Path, target: Path, content_hash: str
             return
         raise FileExistsError(f"contact sheet already exists with different content: {target}")
     finally:
+        if acquired:
+            _release_advisory_lock(descriptor)
         os.close(descriptor)
-        try:
-            lock.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _write_new_file_or_reuse_identical(target: Path, content: bytes) -> None:

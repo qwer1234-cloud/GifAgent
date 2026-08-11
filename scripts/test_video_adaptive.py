@@ -750,17 +750,44 @@ def _quality_hard_gate_context(candidate: dict | None) -> dict:
     }
 
 
-def _quality_candidate_ledger(candidates: list[dict]) -> list[dict]:
-    return [
-        {
+def _quality_candidate_ledger(
+    candidates: list[dict], assessments: list[dict] | None = None,
+) -> list[dict]:
+    assessments_by_id = {
+        str(item.get("candidate_id")): item
+        for item in assessments or []
+        if isinstance(item, dict)
+    }
+    ledger: list[dict] = []
+    for candidate in candidates:
+        candidate_id = str(candidate["candidate_id"])
+        entry = {
             "candidate_id": str(candidate["candidate_id"]),
             "hard_gate_context": _quality_hard_gate_context(candidate),
             "hard_gate_context_hash": _quality_evidence_hash(
                 _quality_hard_gate_context(candidate)
             ),
         }
-        for candidate in candidates
-    ]
+        assessment = assessments_by_id.get(candidate_id)
+        provenance = assessment.get("provenance") if assessment else None
+        provenance = provenance if isinstance(provenance, dict) else {}
+        source_sha = provenance.get("source_file_sha256")
+        if isinstance(source_sha, str) and re.fullmatch(r"[0-9a-f]{64}", source_sha):
+            source_path = os.path.abspath(str(candidate["video_path"]))
+            try:
+                source_stat = os.stat(source_path)
+            except OSError as exc:
+                raise ValueError(
+                    f"quality source became unavailable: {source_path}"
+                ) from exc
+            entry["source_identity"] = {
+                "video_path": source_path,
+                "source_file_sha256": source_sha,
+                "size_bytes": source_stat.st_size,
+                "mtime_ns": source_stat.st_mtime_ns,
+            }
+        ledger.append(entry)
+    return ledger
 
 
 def _enrich_quality_assessment(
@@ -854,8 +881,6 @@ def _evaluate_quality_pipeline_candidates(
             human_review_count=0, assessed_candidates=[],
         )
 
-    assessed_candidates = _quality_candidate_ledger(normalized)
-
     judge = (
         OllamaQualityJudge(quality_config, httpx.HTTPTransport())
         if quality_config.judge.get("model_id")
@@ -934,6 +959,7 @@ def _evaluate_quality_pipeline_candidates(
         )
         for assessment in batch.assessments
     ]
+    assessed_candidates = _quality_candidate_ledger(normalized, assessments)
     by_candidate_id = {
         assessment["candidate_id"]: assessment for assessment in assessments
     }
@@ -1064,6 +1090,64 @@ _QUALITY_LINEAGE_FIELDS = (
 )
 
 
+_QUALITY_SOURCE_HASH_CACHE: dict[tuple[object, ...], str] = {}
+
+
+def _stable_source_sha256(video_path: str) -> str:
+    """Hash a stable source once per process/stat identity."""
+    absolute_path = os.path.abspath(video_path)
+    try:
+        before = os.stat(absolute_path)
+    except OSError as exc:
+        raise ValueError(f"quality source is unavailable: {absolute_path}") from exc
+    stat_identity = (
+        os.path.normcase(absolute_path),
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        getattr(before, "st_ino", 0),
+    )
+    cached = _QUALITY_SOURCE_HASH_CACHE.get(stat_identity)
+    if cached is not None:
+        return cached
+    digest = hashlib.sha256()
+    try:
+        with open(absolute_path, "rb") as source_file:
+            for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        after = os.stat(absolute_path)
+    except OSError as exc:
+        raise ValueError(f"quality source is unavailable: {absolute_path}") from exc
+    after_identity = (
+        os.path.normcase(absolute_path),
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        getattr(after, "st_ino", 0),
+    )
+    if after_identity != stat_identity:
+        raise ValueError("quality source changed while its identity was verified")
+    value = digest.hexdigest()
+    _QUALITY_SOURCE_HASH_CACHE[stat_identity] = value
+    return value
+
+
+def _assert_quality_source_unchanged(
+    video_path: str, assessment: object,
+) -> str | None:
+    if not isinstance(assessment, dict):
+        return None
+    provenance = assessment.get("provenance")
+    provenance = provenance if isinstance(provenance, dict) else {}
+    expected = provenance.get("source_file_sha256")
+    if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ValueError("quality assessment lacks a valid source identity")
+    actual = _stable_source_sha256(video_path)
+    if actual != expected:
+        raise ValueError("quality source changed after assessment")
+    return expected
+
+
 def _quality_export_lineage(
     assessment: object,
     *,
@@ -1082,14 +1166,7 @@ def _quality_export_lineage(
     if not isinstance(source_file_sha256, str) or re.fullmatch(
         r"[0-9a-f]{64}", source_file_sha256
     ) is None:
-        source_hasher = hashlib.sha256()
-        try:
-            with open(video_path, "rb") as source_file:
-                for chunk in iter(lambda: source_file.read(1024 * 1024), b""):
-                    source_hasher.update(chunk)
-            source_file_sha256 = source_hasher.hexdigest()
-        except OSError:
-            source_file_sha256 = None
+        raise ValueError("quality assessment lacks a valid source identity")
     recommended_recipe = assessment.get("repair")
     recommended_recipe_id = assessment.get("selected_recipe_id")
     applied_recipe = recommended_recipe if repair_applied else None
@@ -2040,6 +2117,7 @@ def run_pipeline(
 
         fps = GIF_FPS
         assessment = clip.get("quality_assessment")
+        _assert_quality_source_unchanged(video_path, assessment)
         repair_recipe = _export_repair_recipe(
             assessment,
             candidate_id=str(clip.get("candidate_id", clip.get("clip_id", ""))),
@@ -3963,6 +4041,9 @@ def _stage_gif_clip(
     if target_clip is None:
         raise ValueError(f"clip_id {clip_id} not found in rank_dedup manifest")
 
+    assessment = target_clip.get("quality_assessment")
+    _assert_quality_source_unchanged(video_path, assessment)
+
     probe = subprocess.run(
         [
             "ffprobe", "-v", "error",
@@ -4020,7 +4101,6 @@ def _stage_gif_clip(
     palette_path = os.path.join(frames_dir, f"palette_{clip_id}.png")
     ffmpeg_start = _ffmpeg_seconds(start_ts)
     ffmpeg_duration = _ffmpeg_seconds(end_ts - start_ts)
-    assessment = target_clip.get("quality_assessment")
     repair_recipe = _export_repair_recipe(
         assessment,
         candidate_id=str(clip_id or ""),
@@ -4177,7 +4257,8 @@ def _stage_materialize(
     inputs = inputs or {}
 
     # P0-2: Read from versioned envelope if present.
-    if "artifacts" in inputs:
+    has_versioned_envelope = "artifacts" in inputs
+    if has_versioned_envelope:
         # P1-2: defend against an unknown envelope version.
         from app.task_engine.artifacts import validate_materialize_envelope
         validate_materialize_envelope(inputs)
@@ -4195,21 +4276,103 @@ def _stage_materialize(
     from app.task_engine.artifacts import validate_manifest_json
 
     clip_meta: dict[str, dict] = {}
-    for entry in gif_manifest_entries:
-        path = entry.get("path", "")
-        if path and os.path.exists(path):
+    if has_versioned_envelope:
+        gif_clip_ids = []
+        for entry in gif_entries:
+            if not isinstance(entry, dict):
+                raise ValueError("materialize gif_file entry must be an object")
+            cid = entry.get("clip_id")
+            if not isinstance(cid, str) or not cid:
+                raise ValueError("materialize gif_file entry needs a clip_id")
+            gif_clip_ids.append(cid)
+        if len(set(gif_clip_ids)) != len(gif_clip_ids):
+            raise ValueError("materialize envelope has duplicate gif_file clip_id")
+
+        manifest_by_clip: dict[str, dict] = {}
+        for entry in gif_manifest_entries:
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    "materialize gif_clip_manifest entry must be an object"
+                )
+            cid = entry.get("clip_id")
+            if not isinstance(cid, str) or not cid:
+                raise ValueError(
+                    "materialize gif_clip_manifest entry needs a clip_id"
+                )
+            if cid in manifest_by_clip:
+                raise ValueError(
+                    f"materialize envelope has duplicate manifest for {cid!r}"
+                )
+            manifest_by_clip[cid] = entry
+        if set(manifest_by_clip) != set(gif_clip_ids):
+            missing = sorted(set(gif_clip_ids) - set(manifest_by_clip))
+            extra = sorted(set(manifest_by_clip) - set(gif_clip_ids))
+            raise ValueError(
+                "materialize envelope gif/manifest clip_ids differ: "
+                f"missing={missing}, extra={extra}"
+            )
+
+        for cid in gif_clip_ids:
+            entry = manifest_by_clip[cid]
+            path = entry.get("path")
+            expected_sha = entry.get("sha256")
+            expected_size = entry.get("size_bytes")
+            if not isinstance(path, str) or not path:
+                raise ValueError(
+                    f"gif_clip_manifest for {cid!r} needs a path"
+                )
+            if (
+                not isinstance(expected_sha, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_sha) is None
+            ):
+                raise ValueError(
+                    f"gif_clip_manifest for {cid!r} needs a lowercase SHA-256"
+                )
+            if (
+                isinstance(expected_size, bool)
+                or not isinstance(expected_size, int)
+                or expected_size < 0
+            ):
+                raise ValueError(
+                    f"gif_clip_manifest for {cid!r} needs a valid size_bytes"
+                )
             try:
-                with open(path, "rb") as f:
-                    gm = validate_manifest_json(
-                        f.read(),
-                        "gif_clip_manifest",
-                        expected_stage="gif_clip",
-                    )
-                cid = gm.get("clip_id", entry.get("clip_id", ""))
-                if cid:
-                    clip_meta[cid] = gm
-            except OSError:
-                pass
+                with open(path, "rb") as manifest_file:
+                    raw_manifest = manifest_file.read()
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot read gif_clip_manifest for {cid!r}: {exc}"
+                ) from exc
+            if len(raw_manifest) != expected_size:
+                raise ValueError(
+                    f"gif_clip_manifest size mismatch for {cid!r}"
+                )
+            if hashlib.sha256(raw_manifest).hexdigest() != expected_sha:
+                raise ValueError(
+                    f"gif_clip_manifest SHA-256 mismatch for {cid!r}"
+                )
+            clip_meta[cid] = validate_manifest_json(
+                raw_manifest,
+                "gif_clip_manifest",
+                expected_stage="gif_clip",
+                expected_clip_id=cid,
+            )
+    else:
+        for entry in gif_manifest_entries:
+            path = entry.get("path", "")
+            if path and os.path.exists(path):
+                try:
+                    with open(path, "rb") as f:
+                        gm = validate_manifest_json(
+                            f.read(),
+                            "gif_clip_manifest",
+                            expected_stage="gif_clip",
+                        )
+                    cid = gm.get("clip_id", entry.get("clip_id", ""))
+                    if cid:
+                        clip_meta[cid] = gm
+                except OSError:
+                    pass
 
     # Validate each gif_file entry.
     successful_gifs = []

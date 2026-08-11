@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import errno
 from pathlib import Path
 import shutil
 import subprocess
@@ -284,6 +285,24 @@ def test_identical_concurrent_contact_sheets_are_idempotent_successes(
     assert target.is_file()
     assert errors == []
     assert cv2.imread(str(target), cv2.IMREAD_COLOR) is not None
+
+
+def test_fallback_publisher_ignores_stale_lock_file_from_dead_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    import app.quality_moe.repair as repair
+
+    target = tmp_path / "fallback-contact-sheet.png"
+    stale_lock = target.with_name(f".{target.name}.publish.lock")
+    stale_lock.write_bytes(b"stale-owner")
+
+    def unsupported_link(*_args, **_kwargs):
+        raise OSError(errno.EOPNOTSUPP, "hard links unsupported")
+
+    monkeypatch.setattr(repair.os, "link", unsupported_link)
+    repair._write_new_file_or_reuse_identical(target, b"complete-image")
+
+    assert target.read_bytes() == b"complete-image"
 
 
 def test_best_contact_name_includes_config_recipe_and_proxy_hashes(tmp_path: Path):

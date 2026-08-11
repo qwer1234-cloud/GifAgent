@@ -246,10 +246,8 @@ class QualityMoeConfig:
             raise ValueError(
                 "geometric_mode must be fixed_or_validated_smooth"
             )
-        experts = _freeze_mapping(values["experts"], name="quality_moe.experts")
-        judge = _freeze_primitive_mapping(
-            values["judge"], name="quality_moe.judge"
-        )
+        experts = _freeze_expert_mapping(values["experts"])
+        judge = _freeze_judge_mapping(values["judge"])
         resolved = {
             "enabled": _bool(values["enabled"], name="enabled"),
             "report_only": _bool(values["report_only"], name="report_only"),
@@ -283,36 +281,84 @@ class QualityMoeConfig:
         }
 
 
-def _freeze_mapping(value: object, *, name: str) -> Mapping[str, Mapping[str, object]]:
+def _freeze_expert_mapping(value: object) -> Mapping[str, Mapping[str, object]]:
+    name = "quality_moe.experts"
     source = _mapping(value, name=name)
+    allowed_experts = {"technical_aesthetic", "cinematic", "temporal"}
+    unknown_experts = set(source) - allowed_experts
+    if unknown_experts:
+        raise ValueError(
+            f"{name} has unknown experts: {', '.join(sorted(unknown_experts))}"
+        )
     result: dict[str, Mapping[str, object]] = {}
     for key, nested in source.items():
-        if not isinstance(key, str) or not key:
-            raise ValueError(f"{name} keys must be non-empty strings")
         nested_mapping = _mapping(nested, name=f"{name}.{key}")
+        allowed_fields = {"enabled", "version", "model_id"}
+        unknown_fields = set(nested_mapping) - allowed_fields
+        if unknown_fields:
+            raise ValueError(
+                f"{name}.{key} has unknown fields: "
+                f"{', '.join(sorted(unknown_fields))}"
+            )
         frozen: dict[str, object] = {}
         for nested_key, nested_value in nested_mapping.items():
-            if not isinstance(nested_key, str):
-                raise ValueError(f"{name}.{key} keys must be strings")
-            if isinstance(nested_value, float) and not math.isfinite(nested_value):
-                raise ValueError(f"{name}.{key}.{nested_key} must be finite")
-            if not isinstance(nested_value, (str, bool, int, float)):
-                raise ValueError(f"{name}.{key}.{nested_key} must be JSON-safe")
+            if nested_key == "enabled":
+                if not isinstance(nested_value, bool):
+                    raise ValueError(f"{name}.{key}.enabled must be a boolean")
+                if not nested_value:
+                    raise ValueError(
+                        f"{name}.{key} is mandatory in quality-moe-v1"
+                    )
+            elif not isinstance(nested_value, str) or not nested_value.strip():
+                raise ValueError(
+                    f"{name}.{key}.{nested_key} must be a non-empty string"
+                )
             frozen[nested_key] = nested_value
         result[key] = MappingProxyType(frozen)
     return MappingProxyType(result)
 
 
-def _freeze_primitive_mapping(value: object, *, name: str) -> Mapping[str, object]:
+def _freeze_judge_mapping(value: object) -> Mapping[str, object]:
+    name = "quality_moe.judge"
     source = _mapping(value, name=name)
+    allowed_fields = {
+        "base_url",
+        "launch_mode",
+        "manage_lifecycle",
+        "model_id",
+        "retry_attempts",
+        "retry_backoff_s",
+        "schema_version",
+        "startup_timeout_s",
+        "temperature",
+        "timeout_seconds",
+        "wsl_distro",
+    }
+    unknown_fields = set(source) - allowed_fields
+    if unknown_fields:
+        raise ValueError(
+            f"{name} has unknown fields: {', '.join(sorted(unknown_fields))}"
+        )
     result: dict[str, object] = {}
     for key, item in source.items():
-        if not isinstance(key, str):
-            raise ValueError(f"{name} keys must be strings")
-        if isinstance(item, float) and not math.isfinite(item):
-            raise ValueError(f"{name}.{key} must be finite")
-        if not isinstance(item, (str, bool, int, float)):
-            raise ValueError(f"{name}.{key} must be JSON-safe")
+        if key == "manage_lifecycle":
+            if not isinstance(item, bool):
+                raise ValueError(f"{name}.{key} must be a boolean")
+        elif key in {"model_id", "base_url", "schema_version", "launch_mode", "wsl_distro"}:
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(f"{name}.{key} must be a non-empty string")
+        elif key == "temperature":
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or item != 0:
+                raise ValueError(f"{name}.temperature must be 0")
+        elif key == "retry_attempts":
+            if isinstance(item, bool) or not isinstance(item, int) or item < 1:
+                raise ValueError(f"{name}.retry_attempts must be a positive integer")
+        elif key in {"timeout_seconds", "startup_timeout_s"}:
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(float(item)) or float(item) <= 0:
+                raise ValueError(f"{name}.{key} must be positive and finite")
+        elif key == "retry_backoff_s":
+            if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(float(item)) or float(item) < 0:
+                raise ValueError(f"{name}.{key} must be non-negative and finite")
         result[key] = item
     return MappingProxyType(result)
 

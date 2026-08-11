@@ -96,7 +96,10 @@ def _valid_quality_rank_manifest() -> dict:
         "summary": "clean",
         "input_hash": "c" * 64,
         "evidence": evidence,
-        "provenance": {"source_file_sha256": "d" * 64},
+        "provenance": {
+            "source_file_sha256": "d" * 64,
+            "source_video": "C:\\source.mp4",
+        },
         "evidence_hashes": [],
         "selected_recipe_id": None,
         "current_quality": 0.81,
@@ -109,6 +112,12 @@ def _valid_quality_rank_manifest() -> dict:
         "candidate_id": "clip-1",
         "hard_gate_context": deepcopy(hard_gate_context),
         "hard_gate_context_hash": _hard_gate_context_hash(hard_gate_context),
+        "source_identity": {
+            "video_path": "C:\\source.mp4",
+            "source_file_sha256": "d" * 64,
+            "size_bytes": 123,
+            "mtime_ns": 0,
+        },
     }]
     return {
         "schema_version": 2,
@@ -245,6 +254,23 @@ def _valid_quality_repair_rank_manifest() -> dict:
         "KEEP_FOR_REPAIR"
     )
     return manifest
+
+
+def test_rank_manifest_binds_assessment_source_to_candidate_ledger():
+    from app.task_engine.artifacts import validate_manifest_json
+
+    manifest = _valid_quality_rank_manifest()
+    manifest["quality_moe"]["assessments"][0]["provenance"][
+        "source_file_sha256"
+    ] = "e" * 64
+    manifest["clips"][0]["quality_assessment"] = deepcopy(
+        manifest["quality_moe"]["assessments"][0]
+    )
+
+    with pytest.raises(ValueError, match="source hash does not match ledger"):
+        validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+        )
 
 
 # ---------------------------------------------------------------------------
