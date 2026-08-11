@@ -1,9 +1,9 @@
 # GIF/图片 MoE 美学裁决与非生成式可挽救性设计
 
-> Implementation status (2026-08-11): **implementation complete, verification
-> pending**. Report-only operation remains mandatory until the complete release
-> verification and human calibration gates in section 16 pass; this document
-> does not yet claim those final gates have passed.
+> Implementation status (2026-08-11): **implementation and automated release
+> verification complete; human calibration pending**. The full repository gate
+> passed with 1497 tests and 2 skips. Report-only operation remains mandatory
+> until the human calibration gates in section 16 pass.
 
 ## 1. 文档状态
 
