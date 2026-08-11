@@ -111,18 +111,20 @@ quality_moe:
     geometric_mode: fixed_or_validated_smooth
 
 adaptive:
-  # Adult-candidate preset + region merge + tighter dedup (2026-07-25 v3).
+  # Balanced quality-first preset (2026-08-11): keep dense discovery, then
+  # demand stronger evidence. Output count is not itself minimized; qualified,
+  # deduplicated candidates retain a generous ratio and cap.
   # Baseline values preserved in data/backups/before_adult_opt_* .
   sample_interval: 7
   merge_gap: 15
-  merge_score_threshold: 0.50
+  merge_score_threshold: 0.58
   # Prevent dense high-score runs from collapsing into one mega-clip.
-  max_merge_span_s: 24
+  max_merge_span_s: 18
   # Multi-frame groups must contain a peak at/above this (else demote to single).
-  merge_peak_threshold: 0.55
-  worthiness_threshold: 0.42
-  refine_threshold: 0.55
-  refine_radius: 15
+  merge_peak_threshold: 0.65
+  worthiness_threshold: 0.55
+  refine_threshold: 0.65
+  refine_radius: 12
   refine_interval: 5
   min_duration: 2
   max_duration: 20
@@ -140,9 +142,9 @@ adaptive:
   # Dark-frame prefilter (grayscale mean). 0 = disable. Legacy default was 25.
   min_brightness: 10
   # v3: cut near-duplicate / near-time clips after denser adult scoring.
-  output_ratio: 0.45
-  max_output: 35
-  vlm_temperature: 0.50
+  output_ratio: 0.75
+  max_output: 50
+  vlm_temperature: 0.25
   vlm_top_p: 0.90
   vlm_top_k: 40
   gif_fps: 24

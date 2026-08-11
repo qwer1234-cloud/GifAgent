@@ -28,10 +28,10 @@
 - Consumes: `yaml.safe_load(configs/models.yaml)` and `scripts.test_video_adaptive.extract_config`
 - Produces: the frozen adaptive profile used by Direct and Staged execution
 
-- [ ] Add `test_models_yaml_uses_balanced_quality_first_profile` asserting the exact thresholds, sampling coverage, output allowance, render settings, dedup settings, and `quality_moe.report_only`.
-- [ ] Run the test and verify it fails against the previous profile.
-- [ ] Change only the selected adaptive values in `configs/models.yaml` and document the profile in `Agent.md`.
-- [ ] Run `uv run pytest -q tests/test_adaptive_config.py tests/quality_moe` and verify all tests pass.
+- [x] Add `test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity` asserting the thresholds, sampling coverage, output allowance, render settings, dedup settings, and `quality_moe.report_only`.
+- [x] Run the test and verify it fails against the previous profile.
+- [x] Change only the selected adaptive values in `configs/models.yaml` and document the profile in `Agent.md`.
+- [x] Run `uv run pytest -q tests/test_adaptive_config.py tests/quality_moe` and verify all tests pass.
 
 ### Task 2: Prepare and verify the writable packaged configuration
 
@@ -43,9 +43,9 @@
 - Consumes: the existing user-owned writable YAML
 - Produces: the same YAML with only quality-profile keys overlaid
 
-- [ ] Hash packaged runtime databases and copy the existing writable config to the named backup.
-- [ ] Update the selected adaptive fields and add the strict `quality_moe` section while preserving endpoints, model choices, preference settings, and paths.
-- [ ] Parse both source and writable configs and assert that the quality-profile values match.
+- [x] Hash packaged runtime databases and copy the existing writable config to the named backup.
+- [x] Update the selected adaptive fields and add the strict `quality_moe` section while preserving endpoints, model choices, preference settings, and paths.
+- [x] Parse both source and writable configs and assert that the quality-profile values match.
 
 ### Task 3: Run release gates
 
@@ -55,9 +55,9 @@
 - Consumes: repository source and tests
 - Produces: fresh verification evidence
 
-- [ ] Run `uv run python -m compileall -q app scripts tests`.
-- [ ] Run `uv run pytest -q` and require zero failures.
-- [ ] Run `git diff --check`.
+- [x] Run `uv run python -m compileall -q app scripts tests`.
+- [x] Run `uv run pytest -q` and require zero failures.
+- [x] Run `git diff --check`.
 
 ### Task 4: Rebuild and smoke-test the real EXE
 
@@ -68,11 +68,11 @@
 - Consumes: `build_exe.spec`, source tree, preserved packaged data/config
 - Produces: a self-contained Windows GUI distribution
 
-- [ ] Run `bash scripts/rebuild_exe.sh` without `--no-backup`.
-- [ ] Verify the packaged internal config and `app/quality_moe` modules are present.
-- [ ] Start the EXE hidden and wait for HTTP 200 from ports 8000 and 7861.
-- [ ] Close it through `WM_CLOSE`, verify the process exits, and verify both ports are released.
-- [ ] Re-hash packaged and production databases and require exact equality with pre-build values.
+- [x] Run `& 'C:\Program Files\Git\bin\bash.exe' scripts/rebuild_exe.sh` without `--no-backup` (PowerShell's bare `bash` resolves to WSL on this machine and must not be used for a Windows build).
+- [x] Verify the packaged internal config and `app/quality_moe` modules are present.
+- [x] Start the EXE hidden and wait for HTTP 200 from ports 8000 and 7861.
+- [x] Close it through `WM_CLOSE`, verify the process exits, and verify both ports are released.
+- [x] Re-hash packaged and production databases and require exact equality with pre-build values.
 
 ### Task 5: Commit the release source changes
 
@@ -83,7 +83,6 @@
 - Consumes: verified source diff and build evidence
 - Produces: an auditable local commit; no remote push
 
-- [ ] Review `git diff`, `git status`, and the requirement checklist.
+- [x] Review `git diff`, `git status`, and the requirement checklist.
 - [ ] Commit only the intended tracked files with `feat: ship quality-first GUI profile`.
 - [ ] Report the EXE path, hashes, tests, runtime safety result, and the remaining `report_only` limitation.
-

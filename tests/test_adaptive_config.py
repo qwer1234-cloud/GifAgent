@@ -278,6 +278,33 @@ def test_models_yaml_enables_report_only_quality_moe_by_default():
     assert "172.27.227.98" not in config_path.read_text(encoding="utf-8")
 
 
+def test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity():
+    """Catch profiles that equate quality with sparse discovery or tiny output."""
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "models.yaml"
+    config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    cfg = extract_config(config_data)
+
+    assert cfg["sample_interval"] <= 7
+    assert cfg["merge_score_threshold"] >= 0.58
+    assert cfg["merge_peak_threshold"] >= 0.65
+    assert cfg["max_merge_span_s"] <= 18
+    assert cfg["worthiness_threshold"] >= 0.55
+    assert cfg["refine_threshold"] >= 0.65
+    assert cfg["vlm_temperature"] <= 0.25
+    assert cfg["embed_sim_threshold"] <= 0.88
+    assert cfg["temporal_dedup_min_gap_s"] >= 15
+    assert cfg["gif_fps"] == 24
+    assert cfg["gif_max_width"] == 720
+
+    qualified_candidates = 40
+    planned_output = min(
+        int(qualified_candidates * cfg["output_ratio"]),
+        cfg["max_output"],
+    )
+    assert planned_output >= 30
+    assert cfg["quality_moe"]["report_only"] is True
+
+
 def test_quality_runtime_snapshot_resolves_inherit_vlm_once():
     from scripts import test_video_adaptive as adaptive
 

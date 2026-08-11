@@ -89,6 +89,17 @@ score, merge type, and caption summary.
 
 ## How to Run
 
+### Balanced quality-first adaptive profile
+
+The default adaptive profile keeps discovery dense (`sample_interval: 7`) and
+raises the evidence required for merging, refinement, and export. It then keeps
+up to 75% of the qualified, deduplicated candidates with a cap of 50 per video.
+This makes quality the admission rule without treating low output count as a
+success metric: a video with many strong moments may still produce many GIFs.
+VLM scoring uses `temperature: 0.25` for repeatability; exports remain 24 fps at
+up to 720 px wide. Action completeness, transition protection, low-light
+tolerance, and duplicate removal stay enabled.
+
 ### Quality MoE evaluation and repair boundary
 
 Quality MoE is enabled in `configs/models.yaml` with `report_only: true` by
