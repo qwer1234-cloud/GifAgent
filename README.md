@@ -704,6 +704,11 @@ window close.
 
 ```
 
+Profile 页面中的 `Backfill Missing Vectors` 会在后台以单个任务运行，并每两秒刷新
+`Vector Backfill` 状态。任务开始前会检查 Ollama 端点和配置的 embedding 模型；服务不可用时
+会立即标记为 `paused`，不会对每个 GIF 逐个等待连接超时。每个向量独立提交，重启后只处理
+仍缺失的向量，不会修改已有评分、数据库记录或导出目录。
+
 # 发布画像
 uv run python scripts/preference_memory.py publish --profile-version <version>
 ```
@@ -797,8 +802,27 @@ output as `needs_attention` instead of silently marking the video successful.
 
 The full production-path release gate covers success, VLM outage, invalid VLM
 payload, valid zero-clip execution, and the persistent serial folder queue. The
-merged 2026-07-18 baseline is `1012 passed, 2 skipped, 3 warnings`; the warnings
-are dependency deprecations.
+2026-07-23 baseline is `1014 passed, 2 skipped, 3 warnings`; the warnings are
+dependency deprecations.
+
+### Packaged Startup Fix (2026-07-23)
+
+The packaged Gradio 6 launcher now supplies `allowed_paths` as `list[str]`.
+Passing the previous tuple caused `GifAgentUI.exe` to terminate after the API
+started with ``allowed_paths` must be a list of directories``.
+
+`init_db()` now applies the Workbench search and collections schemas before
+routers accept requests. Existing library records are preserved; startup only
+creates missing FTS5 state and collection tables. This prevents the Workbench
+from returning `no such table: collections` on databases created by older
+releases.
+
+The rebuilt package was verified with isolated runtime data: both the API on
+port 8000 and Gradio on port 7861 returned HTTP 200, with neither startup error.
+The packaged EXE SHA-256 is
+`D74BD753B8B57CD9E8ED149999059BCDAD5035D79E51552CDBE866F8E8373BED`.
+Production `data/` and writable `configs/models.yaml` were restored byte-for-byte
+after the build and were not used for the startup smoke test.
 
 ### Task API Endpoints (7)
 

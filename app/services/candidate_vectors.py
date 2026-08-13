@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.preference_memory import (
     REQUIRED_EMBEDDING_DIM,
     REQUIRED_EMBEDDING_MODEL,
@@ -19,6 +20,7 @@ from app.services.ollama_runtime import EmbeddingRuntimeError
 EmbeddingFn = Callable[[str], list[float]]
 BatchEmbeddingFn = Callable[[list[str]], list[list[float]]]
 ProgressCb = Callable[[int, int], None]
+ProgressFn = Callable[[dict[str, Any]], None]
 
 
 def _loads_json(value: str | None, fallback: Any) -> Any:
@@ -119,6 +121,7 @@ def backfill_candidate_vectors(
     batch_embed_fn: BatchEmbeddingFn | None = None,
     batch_size: int = 32,
     progress_cb: ProgressCb | None = None,
+    progress_fn: ProgressFn | None = None,
 ) -> dict[str, Any]:
     """Create missing candidate_vectors rows for candidate GIFs.
 
@@ -136,6 +139,9 @@ def backfill_candidate_vectors(
     rows = _candidate_rows(conn, only_feedback=only_feedback)
     result: dict[str, Any] = {
         "scanned": len(rows),
+        "total": len(rows),
+        "processed": 0,
+        "current_candidate": None,
         "missing": 0,
         "inserted": 0,
         "skipped_existing": 0,
@@ -156,8 +162,13 @@ def backfill_candidate_vectors(
     }
 
     missing_rows: list[sqlite3.Row] = []
+
+    def emit_progress() -> None:
+        _emit_progress_fn(progress_fn, result)
+
     for row in rows:
         candidate_id = row["candidate_id"]
+        result["current_candidate"] = candidate_id
         if _has_vector(
             conn,
             candidate_id,
@@ -165,14 +176,17 @@ def backfill_candidate_vectors(
             embedding_dim=embedding_dim,
         ):
             result["skipped_existing"] += 1
+            result["processed"] += 1
+            emit_progress()
             continue
-
         missing_rows.append(row)
 
     result["missing"] = len(missing_rows)
 
     if dry_run:
+        result["processed"] = result["skipped_existing"] + result["missing"]
         result["remaining"] = result["missing"] - result["inserted"]
+        emit_progress()
         return result
 
     if batch_embed_fn is not None:
@@ -186,6 +200,7 @@ def backfill_candidate_vectors(
             embedding_dim=embedding_dim,
             limit=limit,
             progress_cb=progress_cb,
+            progress_fn=progress_fn,
         )
 
     if embed_fn is None:
@@ -197,6 +212,7 @@ def backfill_candidate_vectors(
         if limit is not None and result["inserted"] >= limit:
             break
         candidate_id = row["candidate_id"]
+        result["current_candidate"] = candidate_id
         try:
             blob = _vector_blob(
                 embed_fn(build_candidate_embedding_text(row)),
@@ -211,9 +227,15 @@ def backfill_candidate_vectors(
             )
             conn.commit()
             result["inserted"] += 1
+        except EmbeddingServiceUnavailable:
+            # A missing/unreachable model service is transient. Do not turn it
+            # into per-candidate failures or continue an unproductive scan.
+            raise
         except Exception as exc:
             result["failed"] += 1
             result["errors"].append({"candidate_id": candidate_id, "error": str(exc)})
+        result["processed"] += 1
+        emit_progress()
 
     result["remaining"] = result["missing"] - result["inserted"]
 
@@ -231,6 +253,7 @@ def _backfill_batch(
     embedding_dim: int,
     limit: int | None,
     progress_cb: ProgressCb | None,
+    progress_fn: ProgressFn | None = None,
 ) -> dict[str, Any]:
     """Batch-embed missing rows, committing once per successful batch.
 
@@ -247,6 +270,7 @@ def _backfill_batch(
     total = len(to_process)
 
     _notify_progress(progress_cb, 0, total, result)
+    _emit_progress_fn(progress_fn, result)
 
     for start in range(0, total, batch_size):
         chunk = to_process[start : start + batch_size]
@@ -290,7 +314,10 @@ def _backfill_batch(
 
         result["inserted"] += len(chunk)
         result["batches"] += 1
+        result["processed"] = result["skipped_existing"] + result["inserted"]
+        result["current_candidate"] = chunk[-1]["candidate_id"]
         _notify_progress(progress_cb, result["inserted"], total, result)
+        _emit_progress_fn(progress_fn, result)
 
     result["remaining"] = result["missing"] - result["inserted"]
     return result
@@ -329,6 +356,19 @@ def _notify_progress(
         progress_cb(completed, total)
     except Exception as exc:
         result.setdefault("progress_errors", []).append(str(exc))
+
+
+def _emit_progress_fn(
+    progress_fn: ProgressFn | None,
+    result: dict[str, Any],
+) -> None:
+    """Run the dict progress callback without interrupting durable writes."""
+    if progress_fn is None:
+        return
+    try:
+        progress_fn(dict(result))
+    except Exception:
+        pass
 
 
 def backfill_missing_vectors(
@@ -398,6 +438,10 @@ def backfill_missing_vectors(
         try:
             blob = _vector_blob(embedder(text), embedding_dim=embedding_dim)
             pending.append((candidate_id, blob))
+        except EmbeddingServiceUnavailable:
+            # Service outages must pause the resumable job, not permanently
+            # exclude every candidate that has not been reached yet.
+            raise
         except Exception as exc:
             report["failed"] += 1
             if isinstance(exc, EmbeddingRuntimeError) and exc.retryable:

@@ -2,6 +2,7 @@ import json
 import sqlite3
 
 import numpy as np
+import pytest
 
 
 def _conn() -> sqlite3.Connection:
@@ -429,3 +430,38 @@ def test_legacy_backfill_does_not_exclude_transient_endpoint_failures():
         .fetchone()[0]
         == 0
     )
+
+
+def test_backfill_candidate_vectors_stops_when_embedding_service_is_unavailable():
+    from app.services.candidate_vectors import backfill_candidate_vectors
+    from app.services.embedding import EmbeddingServiceUnavailable
+
+    conn = _conn()
+    _insert_candidate(conn)
+
+    def embed(_text: str):
+        raise EmbeddingServiceUnavailable("embedding service unavailable")
+
+    with pytest.raises(EmbeddingServiceUnavailable):
+        backfill_candidate_vectors(conn, embed_fn=embed)
+
+    assert conn.execute("SELECT COUNT(*) FROM candidate_vectors").fetchone()[0] == 0
+
+
+def test_backfill_candidate_vectors_reports_incremental_progress():
+    from app.services.candidate_vectors import backfill_candidate_vectors
+
+    conn = _conn()
+    _insert_candidate(conn)
+    progress = []
+
+    result = backfill_candidate_vectors(
+        conn,
+        embed_fn=lambda _text: [0.5] * 768,
+        progress_fn=progress.append,
+    )
+
+    assert result["inserted"] == 1
+    assert progress[-1]["total"] == 1
+    assert progress[-1]["processed"] == 1
+    assert progress[-1]["current_candidate"] == "cand-1"

@@ -22,6 +22,13 @@ PAGE_SIZE = 12
 THUMB_DIR = "data/thumbs/candidates"
 STATIC_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 DEFAULT_SAMPLE_ROOT = os.path.abspath(os.path.join("data", "exports", "adaptive_test"))
+RATING_STATUS = {
+    "like": "liked",
+    "neutral": "neutral",
+    "dislike": "disliked",
+    "quality_reject": "rejected",
+    "favorite": "favorited",
+}
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -70,6 +77,27 @@ def _candidate_display_path(candidate: dict) -> str:
     return thumb_path or candidate.get("display_path") or preview_path or artifact_path
 
 
+def _candidate_gallery(candidates: list[dict]) -> list[tuple[str, str]]:
+    """Render a page from already-loaded candidate rows.
+
+    Rating normally removes or updates one row locally. Re-rendering this small
+    in-memory page avoids the expensive API round-trip that used to happen
+    after every rating while retaining the existing thumbnail cache behavior.
+    """
+    gallery = []
+    for candidate in candidates:
+        path = _candidate_display_path(candidate)
+        cid = candidate.get("candidate_id", "")
+        status = candidate.get("status", "candidate")
+        icon = RATING_ICON.get(status, "?")
+        start_s = _safe_float(candidate.get("start_sec"), 0.0)
+        end_s = _safe_float(candidate.get("end_sec"), 0.0)
+        label = f"{icon} [{status}] {start_s:.0f}s-{end_s:.0f}s | {cid[:16]}"
+        if path:
+            gallery.append((path, label))
+    return gallery
+
+
 def _folder_label(folder: dict) -> str:
     relative = folder.get("relative_folder") or "."
     depth = 0 if relative == "." else relative.count("/") + 1
@@ -87,7 +115,7 @@ def _folder_label(folder: dict) -> str:
 
 def load_folder_choices(root_dir: str):
     if not root_dir or not root_dir.strip():
-        return gr.update(choices=[], value=None), "Select a data folder first.", []
+        return gr.update(choices=[], value=None), "Select a data folder first.", [], 0
 
     try:
         resp = httpx.get(
@@ -100,6 +128,7 @@ def load_folder_choices(root_dir: str):
                 gr.update(choices=[], value=None),
                 f"Folder error: {_format_api_error(resp)}",
                 [],
+                0,
             )
 
         data = resp.json()
@@ -117,15 +146,17 @@ def load_folder_choices(root_dir: str):
                 gr.update(choices=[], value=None),
                 f"No reviewable folders under {data.get('root', root_dir)}{extra}.",
                 [],
+                0,
             )
         extra = f" ({fully_rated} fully rated, hidden)" if fully_rated else ""
         return (
             gr.update(choices=choices, value=None),
             f"Found {len(choices)} reviewable folder(s){extra}. Choose a folder to review.",
             reviewable,
+            len(reviewable),
         )
     except Exception as e:
-        return gr.update(choices=[], value=None), f"Folder error: {e}", []
+        return gr.update(choices=[], value=None), f"Folder error: {e}", [], 0
 
 
 def load_candidates(
@@ -212,7 +243,8 @@ def load_candidate_page(
         or "no candidates"
     )
 
-    gallery, page_items = _build_candidate_gallery(candidates)
+    page_items = list(candidates)
+    gallery = _candidate_gallery(page_items)
 
     folder_name = os.path.basename(folder.rstrip("\\/")) or folder
     info = (
@@ -232,11 +264,38 @@ def selection_values(item: dict):
     return cid, f"Selected: {src[:40]}", preview, artifact_path
 
 
+def _next_preview_path(item: dict | None, page_items: list[dict]) -> str | None:
+    if not item or not page_items:
+        return None
+    candidate_id = item.get("candidate_id")
+    try:
+        index = next(
+            index for index, page_item in enumerate(page_items)
+            if page_item.get("candidate_id") == candidate_id
+        )
+    except StopIteration:
+        return None
+    if index + 1 >= len(page_items):
+        return None
+    return page_items[index + 1].get("artifact_path") or page_items[index + 1].get("display_path")
+
+
+def selection_values_with_next(item: dict, page_items: list[dict]):
+    """Return selection values plus the next GIF path for one-item preload."""
+    return (*selection_values(item), _next_preview_path(item, page_items))
+
+
+def select_first_candidate_with_next(page_items: list[dict]):
+    if not page_items:
+        return "", "", None, "", None
+    return selection_values_with_next(page_items[0], page_items)
+
+
 def select_candidate(evt: gr.SelectData, page_items: list[dict]):
     idx = evt.index
     if 0 <= idx < len(page_items):
-        return selection_values(page_items[idx])
-    return "", "Selection error", None, ""
+        return selection_values_with_next(page_items[idx], page_items)
+    return "", "Selection error", None, "", None
 
 
 def select_first_candidate(page_items: list[dict]):
@@ -250,7 +309,7 @@ def refresh_page(page, filtr, folder):
     gal, info, p, page_items = load_candidate_page(
         int(page), filter_status=filtr, folder=folder
     )
-    return gal, info, p, page_items, *select_first_candidate(page_items)
+    return gal, info, p, page_items, *select_first_candidate_with_next(page_items)
 
 
 def load_folder_page(folder: str | None, filter_status: str = "candidate"):
@@ -258,7 +317,7 @@ def load_folder_page(folder: str | None, filter_status: str = "candidate"):
     gallery, info, page_update, page_items = load_candidate_page(
         0, filter_status=filter_status, folder=folder
     )
-    return gallery, info, page_update, page_items, *select_first_candidate(page_items)
+    return gallery, info, page_update, page_items, *select_first_candidate_with_next(page_items)
 
 
 def next_reviewable_folder(
@@ -345,30 +404,57 @@ def submit_review_action(candidate_id: str, action: str, note: str = "", expecte
     return rate_candidate(candidate_id, action, note, expected_artifact_path)
 
 
-def _try_local_advance(
-    candidate_id: str,
-    page_items_state: list[dict] | None,
-    filter_status: str,
-) -> tuple[list, list[dict], str, str, str, str] | None:
-    """Rebuild the current page locally after a rating when possible.
+def _keep_after_local_rating(rating: str, filter_status: str) -> bool:
+    """Mirror the server's effective status filter for one local update."""
+    if filter_status in (None, "", "all"):
+        return True
+    if filter_status == "candidate":
+        return False
+    return RATING_STATUS.get(rating) == filter_status
 
-    Returns ``None`` when the caller should fall back to a server refresh;
-    otherwise returns ``(gallery, remaining_items, cid, label, preview, path)``
-    rebuilt with the same path/label logic as ``load_candidate_page``.
+
+def _apply_local_rating(
+    page_items: list[dict],
+    candidate_id: str,
+    rating: str,
+    filter_status: str,
+) -> tuple[list[dict], dict | None]:
+    """Apply a successful rating to the current page and choose its successor.
+
+    The returned page is deliberately limited to the rows already visible in
+    the browser. The authoritative API page is refreshed only when this local
+    queue becomes empty, which prevents a full-folder scan after every click.
     """
-    if filter_status != "candidate":
-        return None
-    if not isinstance(page_items_state, list) or not page_items_state:
-        return None
-    remaining = [
-        item for item in page_items_state
-        if item.get("candidate_id") != candidate_id
-    ]
-    if len(remaining) == len(page_items_state) or not remaining:
-        return None
-    gallery, _ = _build_candidate_gallery(remaining)
-    cid, label, preview, artifact_path = select_first_candidate(remaining)
-    return gallery, remaining, cid, label, preview, artifact_path
+    selected_index = next(
+        (
+            index for index, item in enumerate(page_items)
+            if item.get("candidate_id") == candidate_id
+        ),
+        None,
+    )
+    if selected_index is None:
+        return page_items, None
+
+    updated_item = dict(page_items[selected_index])
+    updated_item["status"] = RATING_STATUS.get(rating, updated_item.get("status", "candidate"))
+
+    if _keep_after_local_rating(rating, filter_status):
+        remaining = list(page_items)
+        remaining[selected_index] = updated_item
+        next_index = selected_index + 1
+        if next_index >= len(remaining):
+            next_index = 0
+    else:
+        remaining = page_items[:selected_index] + page_items[selected_index + 1:]
+        next_index = min(selected_index, len(remaining) - 1)
+
+    next_item = remaining[next_index] if remaining else None
+    return remaining, next_item
+
+
+def _local_queue_info(folder: str | None, page: int, remaining: int) -> str:
+    folder_name = os.path.basename((folder or "").rstrip("\\/")) or folder or "?"
+    return f"Folder: {folder_name} | Page {int(page) + 1} | Local queue remaining: {remaining}"
 
 
 def rate_and_advance(
@@ -381,6 +467,7 @@ def rate_and_advance(
     folder: str | None,
     root_dir: str,
     previous_folders: list[dict],
+    page_items: list[dict] | None = None,
     *,
     page_items_state: list[dict] | None = None,
     _submit_action=None,
@@ -389,10 +476,10 @@ def rate_and_advance(
 ):
     """Rate a GIF, select the next item, and advance folders when necessary.
 
-    When ``page_items_state`` is a valid list containing the rated candidate
-    (and the active filter is ``candidate``), the page is rebuilt locally from
-    the remaining items without a server reload.  Otherwise the existing
-    server refresh/advance path is used.
+    When ``page_items`` / ``page_items_state`` is a valid list containing the
+    rated candidate, the current page is updated locally and the successor is
+    selected without a server reload.  The API is consulted again only when
+    this local queue becomes empty.
     """
     submit_action = _submit_action or submit_review_action
     load_page = _load_page or load_candidate_page
@@ -403,17 +490,37 @@ def rate_and_advance(
         return (
             result, gr.update(), gr.update(), gr.update(), gr.update(),
             candidate_id, "Rating failed; selection kept", expected_artifact_path or None,
-            expected_artifact_path, gr.update(), previous_folders,
+            expected_artifact_path, gr.update(), previous_folders, gr.update(), gr.update(),
         )
 
-    local_advance = _try_local_advance(candidate_id, page_items_state, filter_status)
-    if local_advance is not None:
-        gallery, remaining_items, cid, label, preview, artifact_path = local_advance
-        return (
-            result, gallery, gr.update(), gr.update(), remaining_items,
-            cid, label, preview, artifact_path,
-            gr.update(value=folder), previous_folders,
+    # Keep the current page responsive. The rating has already been durably
+    # written by ``submit_action``; only the small in-memory page is changed
+    # here. The API is consulted again once this local queue is exhausted.
+    items = page_items_state if page_items_state is not None else page_items
+    if isinstance(items, list) and any(
+        isinstance(item, dict) and item.get("candidate_id") == candidate_id
+        for item in items
+    ):
+        remaining_items, next_item = _apply_local_rating(
+            items, candidate_id, rating, filter_status
         )
+        if remaining_items:
+            cid, label, preview, artifact_path = selection_values(next_item)
+            return (
+                result,
+                _candidate_gallery(remaining_items),
+                _local_queue_info(folder, int(page), len(remaining_items)),
+                gr.update(value=page),
+                remaining_items,
+                cid,
+                label,
+                preview,
+                artifact_path,
+                gr.update(value=folder),
+                previous_folders,
+                _next_preview_path(next_item, remaining_items),
+                gr.update(),
+            )
 
     gallery, info, page_update, page_items = load_page(
         int(page), filter_status=filter_status, folder=folder
@@ -424,9 +531,16 @@ def rate_and_advance(
             result, gallery, info, page_update, page_items,
             cid, label, preview, artifact_path,
             gr.update(value=folder), previous_folders,
+            _next_preview_path(page_items[0], page_items),
+            gr.update(),
         )
 
-    _folder_update, folder_info, refreshed_folders = load_folders(root_dir)
+    folder_result = load_folders(root_dir)
+    if len(folder_result) >= 4:
+        _folder_update, folder_info, refreshed_folders, remaining_folder_count = folder_result
+    else:
+        _folder_update, folder_info, refreshed_folders = folder_result
+        remaining_folder_count = len(refreshed_folders)
     next_folder = next_reviewable_folder(previous_folders, refreshed_folders, folder)
     folder_choices = [(_folder_label(item), item["folder"]) for item in refreshed_folders]
     if next_folder:
@@ -439,23 +553,26 @@ def rate_and_advance(
             page_update, page_items,
             cid, label, preview, artifact_path,
             gr.update(choices=folder_choices, value=next_folder), refreshed_folders,
+            _next_preview_path(page_items[0], page_items) if page_items else None,
+            remaining_folder_count,
         )
 
     return (
         result, [], folder_info, page_update, [],
         "", "All reviewable folders are complete.", None, "",
-        gr.update(choices=folder_choices, value=None), refreshed_folders,
+        gr.update(choices=folder_choices, value=None), refreshed_folders, None,
+        remaining_folder_count,
     )
 
 
 def undo_and_refresh(page: int, filter_status: str, folder: str | None):
     result = undo_last_action()
     if result != "Undo: undone":
-        return result, gr.update(), gr.update(), gr.update(), gr.update(), "", "", None, ""
+        return result, gr.update(), gr.update(), gr.update(), gr.update(), "", "", None, "", gr.update()
     gallery, info, page_update, page_items = load_candidate_page(
         int(page), filter_status=filter_status, folder=folder
     )
-    return result, gallery, info, page_update, page_items, *select_first_candidate(page_items)
+    return result, gallery, info, page_update, page_items, *select_first_candidate_with_next(page_items)
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +610,12 @@ REVIEW_LAYOUT_CSS = """
     margin: auto;
     object-fit: contain;
     object-position: center;
+}
+#next-gif-preload {
+    display: none !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
 }
 """
 
@@ -549,12 +672,22 @@ def build_review_tab() -> dict:
                     placeholder="Folder containing exported candidate GIF folders...",
                 )
                 load_folders_btn = gr.Button("Load Folders", variant="primary")
-            folder_dropdown = gr.Dropdown(
-                choices=[],
-                value=None,
-                label="Folder to Review",
-                interactive=True,
-            )
+            with gr.Row():
+                folder_dropdown = gr.Dropdown(
+                    choices=[],
+                    value=None,
+                    label="Folder to Review",
+                    interactive=True,
+                    scale=4,
+                )
+                remaining_folder_count = gr.Number(
+                    value=0,
+                    label="Remaining folders",
+                    precision=0,
+                    minimum=0,
+                    interactive=False,
+                    scale=1,
+                )
             gallery = gr.Gallery(
                 label="Candidate GIFs - liked | disliked | unrated - click to select",
                 columns=None, object_fit="contain", allow_preview=True,
@@ -577,6 +710,17 @@ def build_review_tab() -> dict:
                 elem_id="selected-gif-preview",
                 elem_classes=["ga-selected-preview"],
             )
+            # One hidden full-GIF image keeps the next item in the browser's
+            # cache while the current item is being reviewed. Only one item is
+            # prefetched to avoid competing with the visible animation.
+            next_preview_preload = gr.Image(
+                label="Next GIF preload",
+                interactive=False,
+                type="filepath",
+                visible=True,
+                show_label=False,
+                elem_id="next-gif-preload",
+            )
             with gr.Row():
                 like_btn = gr.Button("Like", variant="primary", elem_id="like-btn")
                 neutral_btn = gr.Button("Neutral", elem_id="neutral-btn")
@@ -595,18 +739,18 @@ def build_review_tab() -> dict:
     # ---- Event wiring ----
 
     def clear_review_message():
-        return [], gr.update(), gr.update(value=0, maximum=1), [], "", "", None, ""
+        return [], gr.update(), gr.update(value=0, maximum=1), [], "", "", None, "", None
 
     load_folders_btn.click(
         fn=load_folder_choices,
         inputs=[review_root_input],
-        outputs=[folder_dropdown, info_text, folder_choices_state],
+        outputs=[folder_dropdown, info_text, folder_choices_state, remaining_folder_count],
     ).then(
         fn=clear_review_message,
         outputs=[
             gallery, info_text, page_slider, page_items_state,
             candidate_id_input, selected_label, selected_preview,
-            selected_artifact_path_state,
+            selected_artifact_path_state, next_preview_preload,
         ],
     )
 
@@ -616,7 +760,7 @@ def build_review_tab() -> dict:
         outputs=[
             gallery, info_text, page_slider, page_items_state,
             candidate_id_input, selected_label, selected_preview,
-            selected_artifact_path_state,
+            selected_artifact_path_state, next_preview_preload,
         ],
     )
 
@@ -626,7 +770,7 @@ def build_review_tab() -> dict:
         outputs=[
             gallery, info_text, page_slider, page_items_state,
             candidate_id_input, selected_label, selected_preview,
-            selected_artifact_path_state,
+            selected_artifact_path_state, next_preview_preload,
         ],
     )
 
@@ -636,7 +780,7 @@ def build_review_tab() -> dict:
         outputs=[
             gallery, info_text, page_slider, page_items_state,
             candidate_id_input, selected_label, selected_preview,
-            selected_artifact_path_state,
+            selected_artifact_path_state, next_preview_preload,
         ],
     )
 
@@ -645,7 +789,7 @@ def build_review_tab() -> dict:
         inputs=[page_items_state],
         outputs=[
             candidate_id_input, selected_label, selected_preview,
-            selected_artifact_path_state,
+            selected_artifact_path_state, next_preview_preload,
         ],
     )
 
@@ -655,7 +799,7 @@ def build_review_tab() -> dict:
         outputs=[
             feedback_output, gallery, info_text, page_slider,
             page_items_state, candidate_id_input, selected_label,
-            selected_preview, selected_artifact_path_state,
+            selected_preview, selected_artifact_path_state, next_preview_preload,
         ],
     )
 
@@ -664,37 +808,43 @@ def build_review_tab() -> dict:
                         folder_dropdown, review_root_input, folder_choices_state,
                         feedback_output, gallery, info_text, page_slider,
                         page_items_state, selected_label, selected_preview,
-                        selected_artifact_path_state, folder_dropdown, folder_choices_state)
+                        selected_artifact_path_state, folder_dropdown, folder_choices_state,
+                        next_preview_preload, remaining_folder_count)
 
     _wire_rating_button(neutral_btn, "neutral", candidate_id_input, note_input,
                         selected_artifact_path_state, page_slider, filter_dropdown,
                         folder_dropdown, review_root_input, folder_choices_state,
                         feedback_output, gallery, info_text, page_slider,
                         page_items_state, selected_label, selected_preview,
-                        selected_artifact_path_state, folder_dropdown, folder_choices_state)
+                        selected_artifact_path_state, folder_dropdown, folder_choices_state,
+                        next_preview_preload, remaining_folder_count)
 
     _wire_rating_button(dislike_btn, "dislike", candidate_id_input, note_input,
                         selected_artifact_path_state, page_slider, filter_dropdown,
                         folder_dropdown, review_root_input, folder_choices_state,
                         feedback_output, gallery, info_text, page_slider,
                         page_items_state, selected_label, selected_preview,
-                        selected_artifact_path_state, folder_dropdown, folder_choices_state)
+                        selected_artifact_path_state, folder_dropdown, folder_choices_state,
+                        next_preview_preload, remaining_folder_count)
 
     _wire_rating_button(skip_btn, "favorite", candidate_id_input, note_input,
                         selected_artifact_path_state, page_slider, filter_dropdown,
                         folder_dropdown, review_root_input, folder_choices_state,
                         feedback_output, gallery, info_text, page_slider,
                         page_items_state, selected_label, selected_preview,
-                        selected_artifact_path_state, folder_dropdown, folder_choices_state)
+                        selected_artifact_path_state, folder_dropdown, folder_choices_state,
+                        next_preview_preload, remaining_folder_count)
 
     return {
         "gallery": gallery,
         "folder_dropdown": folder_dropdown,
+        "remaining_folder_count": remaining_folder_count,
         "filter_dropdown": filter_dropdown,
         "page_slider": page_slider,
         "candidate_id_input": candidate_id_input,
         "selected_label": selected_label,
         "selected_preview": selected_preview,
+        "next_preview_preload": next_preview_preload,
         "note_input": note_input,
         "feedback_output": feedback_output,
         "like_btn": like_btn,
@@ -719,12 +869,12 @@ def _wire_rating_button(
     feedback_output, gallery, info_text, page_slider_out,
     page_items_state, selected_label, selected_preview,
     selected_artifact_path_state, folder_dropdown_out, folder_choices_out,
+    next_preview_preload, remaining_folder_count,
 ):
     """Wire a rating button's click event with ``rate_and_advance``."""
     btn.click(
         fn=lambda c, n, ep, p, f, folder, root, folders, items: rate_and_advance(
-            c, rating, n, ep, p, f, folder, root, folders,
-            page_items_state=items,
+            c, rating, n, ep, p, f, folder, root, folders, items,
         ),
         inputs=[
             candidate_id_input, note_input, artifact_state,
@@ -735,6 +885,10 @@ def _wire_rating_button(
             feedback_output, gallery, info_text, page_slider_out,
             page_items_state, candidate_id_input, selected_label,
             selected_preview, selected_artifact_path_state,
-            folder_dropdown_out, folder_choices_out,
+            folder_dropdown_out, folder_choices_out, next_preview_preload,
+            remaining_folder_count,
         ],
+        concurrency_limit=1,
+        concurrency_id="candidate-rating",
+        trigger_mode="once",
     )

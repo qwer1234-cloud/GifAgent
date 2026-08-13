@@ -14,7 +14,12 @@ sys.path.insert(0, str(_project_root))
 
 from app.config import load_config
 from app.services.candidate_vectors import backfill_candidate_vectors
-from app.services.embedding import compute_text_embedding, compute_text_embeddings_batch
+from app.services.embedding import (
+    EmbeddingServiceUnavailable,
+    check_embedding_service,
+    compute_text_embedding,
+    compute_text_embeddings_batch,
+)
 from app.services.preference_schema import apply_preference_schema
 
 
@@ -46,6 +51,19 @@ def main() -> None:
     if not db_path.exists():
         print(f"ERROR: database not found: {db_path}")
         raise SystemExit(1)
+
+    if not args.dry_run:
+        try:
+            check_embedding_service()
+        except EmbeddingServiceUnavailable as exc:
+            print(
+                json.dumps(
+                    {"status": "paused", "error": str(exc)},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            raise SystemExit(2)
 
     conn = _connect(db_path)
     try:

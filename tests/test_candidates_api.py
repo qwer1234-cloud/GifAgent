@@ -214,6 +214,28 @@ def test_list_candidates_filters_to_exact_selected_folder(monkeypatch, tmp_path)
     assert payload["candidates"][0]["candidate_id"] == "cand-jur"
 
 
+def test_candidate_rows_can_narrow_database_scan_to_selected_folder(tmp_path):
+    from app.routers import candidates as candidates_router
+
+    root = tmp_path / "adaptive_test"
+    jur = root / "JUR-639"
+    other = root / "Other"
+    jur.mkdir(parents=True)
+    other.mkdir()
+    jur_gif = jur / "one.gif"
+    other_gif = other / "two.gif"
+    jur_gif.write_bytes(b"gif")
+    other_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(conn, "cand-jur", artifact_path=str(jur_gif), preview_path=str(jur_gif))
+    _insert_candidate(conn, "cand-other", artifact_path=str(other_gif), preview_path=str(other_gif))
+
+    rows = candidates_router._candidate_rows(conn, status="all", folder=jur)
+
+    assert [row["candidate_id"] for row in rows] == ["cand-jur"]
+
+
 def test_list_candidates_materializes_untracked_gifs_for_selected_folder(monkeypatch, tmp_path):
     from app.routers import candidates as candidates_router
 

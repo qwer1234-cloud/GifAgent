@@ -23,6 +23,69 @@ from app.config import get
 from app.services import ollama_runtime
 
 EMBED_TEXT_MODEL = get("embedding.text_model")
+
+
+class EmbeddingServiceUnavailable(RuntimeError):
+    """Raised when the configured Ollama embedding service cannot be used."""
+
+
+EMBED_CONNECT_TIMEOUT = 3.0
+EMBED_READ_TIMEOUT = 60.0
+
+
+def _embedding_timeout(*, read: float = EMBED_READ_TIMEOUT) -> httpx.Timeout:
+    """Keep connection failures short while allowing model inference time."""
+    return httpx.Timeout(
+        read,
+        connect=EMBED_CONNECT_TIMEOUT,
+        write=10.0,
+        pool=5.0,
+    )
+
+
+def check_embedding_service(model: Optional[str] = None) -> dict:
+    """Verify Ollama is reachable and has the configured embedding model."""
+    target_model = model or EMBED_TEXT_MODEL
+    if not target_model:
+        raise EmbeddingServiceUnavailable("No embedding model is configured")
+
+    try:
+        base_url = ollama_runtime.resolve_base_url()
+    except Exception as exc:
+        raise EmbeddingServiceUnavailable(
+            f"Embedding service unavailable: {exc}"
+        ) from exc
+
+    try:
+        resp = httpx.get(
+            f"{base_url}/api/tags",
+            timeout=_embedding_timeout(read=5.0),
+        )
+        if resp.status_code != 200:
+            raise EmbeddingServiceUnavailable(
+                f"Embedding service unavailable at {base_url} "
+                f"(HTTP {resp.status_code})"
+            )
+        payload = resp.json()
+    except EmbeddingServiceUnavailable:
+        raise
+    except (httpx.HTTPError, ValueError) as exc:
+        raise EmbeddingServiceUnavailable(
+            f"Embedding service unavailable at {base_url}: {exc}"
+        ) from exc
+
+    model_names = {
+        str(item.get("name") or item.get("model"))
+        for item in payload.get("models", [])
+        if isinstance(item, dict) and (item.get("name") or item.get("model"))
+    }
+    if target_model not in model_names:
+        raise EmbeddingServiceUnavailable(
+            f"Embedding model {target_model!r} not found at {base_url}"
+        )
+    return {"base_url": base_url, "model": target_model, "models": sorted(model_names)}
+
+
 EMBED_IMAGE_MODEL = get("embedding.image_model")
 
 
