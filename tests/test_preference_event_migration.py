@@ -160,6 +160,53 @@ def test_migration_adds_new_columns():
     assert "supersedes_event_id" in cols
 
 
+def test_migration_handles_event_table_without_undo_columns():
+    """The oldest deployed event table must migrate without missing-column SQL."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE preference_events (
+            event_id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            rating TEXT NOT NULL,
+            source_video_sha256 TEXT NOT NULL,
+            scenario_keys_json TEXT NOT NULL DEFAULT '[]',
+            corrected_tags_json TEXT,
+            note TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT INTO preference_events (
+            event_id, target_type, target_id, rating,
+            source_video_sha256, created_at
+        ) VALUES (
+            'evt-oldest', 'media', 'media-1', 'like',
+            'sha256-oldest', '2025-01-01T00:00:00'
+        );
+        """
+    )
+
+    from app.services.preference_schema import apply_preference_schema
+
+    apply_preference_schema(conn)
+
+    row = conn.execute(
+        """SELECT event_id, previous_status, undone_at, undone_reason,
+                  event_kind, supersedes_event_id
+           FROM preference_events WHERE event_id='evt-oldest'"""
+    ).fetchone()
+    assert dict(row) == {
+        "event_id": "evt-oldest",
+        "previous_status": None,
+        "undone_at": None,
+        "undone_reason": None,
+        "event_kind": "feedback",
+        "supersedes_event_id": None,
+    }
+
+
 def test_migration_sets_event_kind_to_feedback():
     """Pre-existing rows must have event_kind='feedback'."""
     conn = _legacy_db()

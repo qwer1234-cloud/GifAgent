@@ -1,9 +1,15 @@
 venv/
 .venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 *.pyo
 data/library.db
+data/*.db-shm
+data/*.db-wal
+data/*.lock
+data/backups/
+data/quality_lab.db
 data/frames/
 data/thumbs/
 data/faiss/

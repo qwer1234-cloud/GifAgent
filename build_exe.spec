@@ -66,6 +66,24 @@ hiddenimports += [
     "app.services.scenario",
     "app.services.clip_dedup",
     "app.services.export_cleanup",
+    # Packaged stage-mode closure: scripts/test_video_adaptive.py is bundled
+    # as data (PyInstaller does not statically analyze scripts/), so its
+    # direct stage imports must be explicit hidden imports.
+    "app.services.clip_merge",
+    "app.services.action_pipeline",
+    "app.services.export_ranking",
+    "app.services.gif_windows",
+    "app.services.transition_candidates",
+    "app.services.transition_guard",
+    "app.quality_moe",
+    "app.quality_moe.config",
+    "app.quality_moe.evaluator",
+    "app.quality_moe.experts",
+    "app.quality_moe.judge",
+    "app.quality_moe.models",
+    "app.quality_moe.policy",
+    "app.quality_moe.repair",
+    "app.quality_moe.sampling",
     "app.services.candidate_vectors",
     "app.services.potplayer_bookmarks",
     "app.services.library_search",
@@ -101,6 +119,9 @@ for _m in [
 # Include config file, scripts, and app package data
 datas += [("configs/models.yaml", "configs")]
 datas += [("scripts", "scripts")]
+# ``app`` is a namespace package, so collect_data_files("app") can skip it.
+# Keep UI assets explicit so the frozen workbench can load them at runtime.
+datas += [("app/ui/static/layout.css", "app/ui/static")]
 datas += collect_data_files("app")
 
 a = Analysis(

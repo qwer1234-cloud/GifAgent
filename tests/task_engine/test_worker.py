@@ -264,6 +264,87 @@ class TestClassifyError:
         assert err.code == "process_error"
         assert err.transient is True
 
+    def test_called_process_error_preserves_stderr_tail(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["GifAgentUI.exe", "--run-script", "test_video_adaptive.py"],
+                stderr=(
+                    "Traceback (most recent call last):\n"
+                    "ModuleNotFoundError: No module named "
+                    "'app.services.clip_merge'\n"
+                ),
+            ),
+            "discover",
+        )
+        assert err.code == "process_error"
+        assert err.transient is True
+        assert "ModuleNotFoundError" in err.message
+        assert "app.services.clip_merge" in err.message
+        assert "[child output]" in err.message
+
+    def test_called_process_error_bytes_stderr_decodes_safely(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["some_tool"],
+                stderr=b"ModuleNotFoundError: No module named '\xff\xfe'\n",
+            ),
+            "sample",
+        )
+        assert err.code == "process_error"
+        assert err.transient is True
+        assert "ModuleNotFoundError" in err.message
+        assert "\ufffd" in err.message
+
+    def test_called_process_error_prefers_stderr_over_stdout(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["some_tool"],
+                output="stdout-noise",
+                stderr="real-error-line",
+            ),
+            "sample",
+        )
+        assert "real-error-line" in err.message
+        assert "stdout-noise" not in err.message
+
+    def test_called_process_error_falls_back_to_stdout(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1, ["some_tool"], output="stdout-error-line"
+            ),
+            "sample",
+        )
+        assert "stdout-error-line" in err.message
+
+    def test_called_process_error_large_output_is_bounded(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["some_tool"],
+                stderr="x" * 100_000 + "\nTAIL-MARKER",
+            ),
+            "sample",
+        )
+        assert "TAIL-MARKER" in err.message
+        assert "truncated" in err.message
+        assert len(err.message) < 8192
+
+    def test_ffmpeg_called_process_error_with_stderr_stays_attention(self):
+        err = classify_error(
+            subprocess.CalledProcessError(
+                1,
+                ["ffmpeg", "-i", "x.mp4"],
+                stderr="broken pipe",
+            ),
+            "sample",
+        )
+        assert err.code == "ffmpeg_error"
+        assert err.transient is False
+        assert "broken pipe" in err.message
+
     def test_model_not_found_by_class_name_is_attention(self):
         class ModelNotFoundError(Exception):
             pass
@@ -299,6 +380,194 @@ class TestTaskWorkerRunOnce:
         repo, _ = make_repo(tmp_path)
         worker = TaskWorker(repo, "worker-1", {})
         assert worker.run_once(now=T0) is False
+
+    def test_retry_consumed_for_attention_job(self, tmp_path: Path):
+        """run_once consumes a retry command even when no stage is claimable."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        # Reproduce the runtime failure: the job/stage are needs_attention,
+        # so no stage is claimable and the retry command would previously
+        # stay pending forever.
+        conn.execute(
+            "UPDATE task_stages SET status='needs_attention', attempt_count=3 "
+            "WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='needs_attention' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='needs_attention' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+        repo.append_command(job.job_id, "retry", {})
+
+        worker = TaskWorker(repo, "worker-1", {})
+        assert worker.run_once(now=T0) is True
+
+        # The retry command was handled by the existing orchestrator logic...
+        cmd = conn.execute(
+            "SELECT status FROM task_commands WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert cmd["status"] == "completed"
+
+        # ...and the stage/video/job were reset per existing _retry_job
+        # semantics (pending, attempt_count 0, job running).
+        stage_row = conn.execute(
+            "SELECT status, attempt_count FROM task_stages WHERE stage_id=?",
+            (stage.stage_id,),
+        ).fetchone()
+        assert stage_row["status"] == "pending"
+        assert stage_row["attempt_count"] == 0
+        vid_row = conn.execute(
+            "SELECT status FROM task_videos WHERE video_id=?",
+            (video.video_id,),
+        ).fetchone()
+        assert vid_row["status"] == "running"
+        job_row = conn.execute(
+            "SELECT status FROM task_jobs WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert job_row["status"] == "running"
+
+    def test_next_iteration_claims_reset_stage(self, tmp_path: Path):
+        """After the worker consumes a retry, the next run_once claims the stage."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        conn.execute(
+            "UPDATE task_stages SET status='needs_attention', attempt_count=3 "
+            "WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='needs_attention' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='needs_attention' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+        repo.append_command(job.job_id, "retry", {})
+
+        adapter = MockAdapter()
+        worker = TaskWorker(repo, "worker-1", {"discover": adapter})
+
+        # First iteration only consumes the retry command.
+        assert worker.run_once(now=T0) is True
+        assert len(adapter.called_with) == 0
+
+        # The next iteration can claim and run the reset stage.
+        assert worker.run_once(now=T0 + timedelta(seconds=1)) is True
+        assert len(adapter.called_with) == 1
+        assert stage_status(conn, stage.stage_id) == "succeeded"
+
+    def test_cancel_consumed_when_no_stage_claimable(self, tmp_path: Path):
+        """run_once consumes a cancel command when no stage is claimable."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        # retry_wait with a future retry_at is not claimable by the worker.
+        conn.execute(
+            "UPDATE task_stages SET status='retry_wait', "
+            "retry_at='2999-01-01T00:00:00.000000+00:00' WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='running' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='running' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+        repo.append_command(job.job_id, "cancel", {})
+
+        worker = TaskWorker(repo, "worker-1", {})
+        assert worker.run_once(now=T0) is True
+
+        # advance_job's existing cancel semantics apply: command completed,
+        # non-terminal stage/video cancelled, job cancelled.
+        cmd = conn.execute(
+            "SELECT status FROM task_commands WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert cmd["status"] == "completed"
+        assert stage_status(conn, stage.stage_id) == "cancelled"
+        vid_row = conn.execute(
+            "SELECT status FROM task_videos WHERE video_id=?",
+            (video.video_id,),
+        ).fetchone()
+        assert vid_row["status"] == "cancelled"
+        job_row = conn.execute(
+            "SELECT status FROM task_jobs WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert job_row["status"] == "cancelled"
+
+    def test_attention_job_without_commands_returns_false(self, tmp_path: Path):
+        """An idle worker with no commands returns promptly and invents no work."""
+        repo, conn = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({"task_work_dir": str(tmp_path / "work")}),
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        conn.execute(
+            "UPDATE task_stages SET status='needs_attention' WHERE stage_id=?",
+            (stage.stage_id,),
+        )
+        conn.execute(
+            "UPDATE task_videos SET status='needs_attention' WHERE video_id=?",
+            (video.video_id,),
+        )
+        conn.execute(
+            "UPDATE task_jobs SET status='needs_attention' WHERE job_id=?",
+            (job.job_id,),
+        )
+        conn.commit()
+
+        worker = TaskWorker(repo, "worker-1", {})
+        assert worker.run_once(now=T0) is False
+
+        # Nothing was invented or mutated.
+        assert stage_status(conn, stage.stage_id) == "needs_attention"
+        job_row = conn.execute(
+            "SELECT status FROM task_jobs WHERE job_id=?",
+            (job.job_id,),
+        ).fetchone()
+        assert job_row["status"] == "needs_attention"
 
     def test_happy_path(self, tmp_path: Path):
         """Claim a pending stage, run the adapter, complete it."""
@@ -377,6 +646,32 @@ class TestTaskWorkerRunOnce:
         ctx = adapters["discover"].called_with[0]
         expected = base_dir / "discover" / stage.stage_id
         assert ctx.work_dir == expected
+
+    def test_default_relative_work_dir_when_task_work_dir_omitted(
+        self, tmp_path: Path,
+    ):
+        """Omitting ``task_work_dir`` must fall back to the relative
+        ``data/task_work`` default (the production sample->vlm failure
+        path).  The stage is only observed, not written, so no repo
+        ``data/`` directory is created."""
+        repo, _ = make_repo(tmp_path)
+        job = repo.create_job(
+            CreateJob(
+                directory="C:/video",
+                config_json=json.dumps({}),  # no task_work_dir key
+            )
+        )
+        video = repo.add_video(job.job_id, "C:/video/a.mp4", "fp-a")
+        stage = repo.ensure_stage(video.video_id, "discover", "input-a")
+
+        adapter = MockAdapter(raise_exc=RuntimeError("stop before writes"))
+        worker = TaskWorker(repo, "worker-1", {"discover": adapter})
+        worker.run_once(now=T0)
+
+        ctx = adapter.called_with[0]
+        expected = Path("data/task_work") / "discover" / stage.stage_id
+        assert ctx.work_dir == expected
+        assert not ctx.work_dir.is_absolute()
 
     def test_save_result_file_after_success(self, tmp_path: Path):
         """After a successful run, .stage_result.json should exist."""

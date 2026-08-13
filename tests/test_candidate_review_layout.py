@@ -90,3 +90,40 @@ def test_control_tab_legacy_mode_guard_is_present():
     source = Path(candidate_review.__file__).read_text(encoding="utf-8")
 
     assert "GIFAGENT_LEGACY_QUEUE_UI" in source
+
+
+def test_review_layout_uses_scoped_ga_classes_and_scales():
+    """The Review tab rows/columns carry the responsive ga hooks and 2:3 scale."""
+    from app.ui.tabs import review
+
+    source = Path(review.__file__).read_text(encoding="utf-8")
+    assert "ga-review-layout" in source
+    assert "ga-review-preview" in source
+    assert "ga-review-controls" in source
+    assert "ga-review-gallery" in source
+    assert "ga-selected-preview" in source
+    assert "scale=2" in source
+    assert "scale=3" in source
+
+
+def test_review_gallery_uses_auto_columns_without_fixed_height():
+    """The candidate Gallery uses columns=None and no fixed height."""
+    from app.ui.tabs import review
+
+    source = Path(review.__file__).read_text(encoding="utf-8")
+    assert "columns=None" in source
+    assert "height=600" not in source
+
+
+def test_review_components_build_with_scoped_classes():
+    """build_review_tab still returns all keys with the responsive hooks."""
+    components = None
+    with gr.Blocks():
+        from app.ui.tabs.review import build_review_tab
+
+        components = build_review_tab()
+
+    assert "ga-review-gallery" in components["gallery"].elem_classes
+    assert "ga-selected-preview" in components["selected_preview"].elem_classes
+    assert components["gallery"].columns is None
+    assert components["selected_preview"].height is None

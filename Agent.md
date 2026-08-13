@@ -4,7 +4,7 @@
 
 ## What This Project Does
 
-Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/videos → VLM frame analysis → LLM synthesis → FAISS vector index → RAG-enhanced clip discovery → candidate GIF export → human feedback → preference profile building.
+Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/videos → VLM frame analysis → LLM synthesis → FAISS vector index → adaptive clip discovery (no live RAG injection) → candidate GIF export → human feedback → preference profile building.
 
 ## Current Model Stack
 
@@ -39,6 +39,7 @@ MAX_OUTPUT = 35               # hard cap per video (0 = unlimited in direct mode
 EMBED_SIM_THRESHOLD = 0.88    # text embedding duplicate threshold
 TEMPORAL_DEDUP_MIN_GAP_S = 15 # keep highest score within peak-time window
 POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
+SCORE_PROMPT_MODE = "adult"   # frozen via extract_config(); default|adult
 VLM_OPTIONS = {"temperature": 0.50, "top_p": 0.90, "top_k": 40}
 ```
 
@@ -51,10 +52,11 @@ groups whose peak score is below `MERGE_PEAK_THRESHOLD` demote to a single
 best-frame clip. This prevents dense high-score runs from collapsing into one
 mega-clip.
 
-**Adult scoring prompt**: set `GIFAGENT_SCORE_PROMPT_MODE=adult` to use the
-adult-friendly `SCORE_PROMPT_ADULT` (neutral GIF potential; does not treat
-low-light alone as BAD). Default / unset keeps the cinematic `SCORE_PROMPT`.
-A/B helper: `scripts/ab_lil_karina_run.ps1 -Phase optimized_v3`.
+**Adult scoring prompt**: set `adaptive.score_prompt_mode: adult` in
+`configs/models.yaml` (also exposed on the Settings tab). The value is frozen
+into the job snapshot and result JSON; scoring does not read
+`GIFAGENT_SCORE_PROMPT_MODE`. Default / omitted keeps the cinematic
+`SCORE_PROMPT`. A/B helper: `scripts/ab_lil_karina_run.ps1 -Phase optimized_v3`.
 
 **Dark-frame prefilter**: frames with grayscale mean `<= MIN_BRIGHTNESS` are
 dropped before VLM (configurable; set `0` to disable).
@@ -64,12 +66,88 @@ folder before exporting new GIFs, then applies text-embedding dedup followed by
 temporal dedup. The result JSON records `embedding_deduped_clips` and final
 `deduped_clips`.
 
+**Transition guard**: the Settings tab exposes only
+`adaptive.transition_guard_enabled`, `adaptive.transition_min_duration_s`, and
+`adaptive.transition_boundary_margin_s`; scan/motion thresholds remain in YAML
+and the frozen job snapshot. It runs before dedup/export: clean windows are
+kept or trimmed, transition-crossing windows are split, and windows with no
+exportable segment or an anchor in a safety margin are dropped. Coherent slow
+camera motion is classified as `coherent_camera_motion`, so motion alone does
+not cause a split/drop. Result JSON records `transition_guard` counts
+(`input`, `split`, `trim`, `drop`, `unverified`, `hard_cut`,
+`soft_transition`, `motion`) plus per-result action/risk/reason. Validate with:
+
+```powershell
+uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_config.py tests/test_tasks_api.py
+```
+
+Disabling the guard affects new runs only; it never deletes historical GIFs,
+task records, or result data, so re-enable it for rollback.
+
 **PotPlayer bookmarks**: adaptive export writes `{video_name}.pbf` in the same
 export folder when `potplayer_pbf_enabled=true`. Each successful GIF contributes
 one bookmark at the GIF start time, with the title carrying rank, interval,
 score, merge type, and caption summary.
 
 ## How to Run
+
+### Balanced quality-first adaptive profile
+
+The default adaptive profile keeps discovery dense (`sample_interval: 7`) and
+raises the evidence required for merging, refinement, and export. It then keeps
+up to 75% of the qualified, deduplicated candidates with a cap of 50 per video.
+This makes quality the admission rule without treating low output count as a
+success metric: a video with many strong moments may still produce many GIFs.
+VLM scoring uses `temperature: 0.25` for repeatability; exports remain 24 fps at
+up to 720 px wide. Action completeness, transition protection, low-light
+tolerance, and duplicate removal stay enabled.
+
+### Quality MoE evaluation and repair boundary
+
+Quality MoE is enabled in `configs/models.yaml` with `report_only: true` by
+default. Direct and staged both evaluate the full post-dedup candidate set
+**before** `output_ratio` / `max_output` truncation, so `input_count` and
+evidence coverage share one definition. In report_only it records expert
+evidence, the recommended decision, and a validated repair recipe, but soft
+quality decisions do not remove or reorder candidates and recommended repairs
+are not applied to exported pixels. Deterministic transition/action hard gates
+remain authoritative.
+
+The unified visual judge uses the existing Ollama runtime. Its endpoint is
+resolved once when the job/CLI starts and the absolute URL is frozen into the
+configuration snapshot. An unavailable endpoint, timeout, malformed response,
+or content refusal degrades to structured `UNAVAILABLE`, `INVALID`, or
+`ABSTAINED` evidence; it is never converted into a negative score and does not
+fail the whole candidate batch. Use `--skip-judge` in the explicit-file smoke
+runner to record `SKIPPED` without constructing an external transport:
+
+```powershell
+uv run python scripts/evaluate_quality_moe.py `
+  --video "C:\path\to\movie.mp4" --start 1800 --duration 12 `
+  --config configs/models.yaml `
+  --output-dir build/quality_moe_smoke/example --skip-judge
+```
+
+Every smoke run atomically claims a unique `run-<id>` child below the selected
+output directory. The CLI prints that actual directory and records both the
+requested root and actual run path in its JSON. Concurrent runs therefore
+cannot overwrite each other's evidence. Smoke artifacts inside that directory
+are:
+`quality_assessment.json`, the original contact sheet, and, only when a repair
+passes validation, the best-repair contact sheet. The source video is hashed
+before and after the run and is never opened for writing. JSON/contact-sheet
+publication uses atomic fail-if-exists semantics; identical evidence may be
+reused, while different existing content is rejected.
+
+Active soft rejection must not be enabled until the documented human
+calibration gate passes (at least 200 stratified candidates, soft-reject
+precision at least 95%, and all release acceptance metrics). Even then, a soft
+automatic rejection requires judge confidence at least `0.80` and at least two
+independent negative signal families. V1 repairs are clip-global,
+pixel-preserving photometric transforms with at most 12 proxies, measured gain
+at least `0.15`, and confidence at least `0.80`. Generative outpainting,
+inpainting, new viewpoints, missing-content synthesis, and action generation
+remain out of scope.
 
 ### Prerequisites
 ```bash
@@ -105,7 +183,9 @@ These contain the runtime databases, history, exports junction, labels,
 Preference Memory, and settings edited through the UI. Never replace only the
 EXE: release the matching `_internal/` tree as well. Before and after building,
 compare hashes for the writable config, databases, and checkpoints. A full
-historical queue rerun is optional; prefer a small new-video smoke test.
+historical queue rerun is optional; prefer a small new-video smoke test that
+reaches at least `discover`/`sample`. UI/API startup does not exercise the
+bundled stage-script import closure.
 
 ### Services
 ```bash
@@ -229,17 +309,17 @@ labels, checkpoints, or writable configuration.
 - The verified EXE SHA-256 is
   `D74BD753B8B57CD9E8ED149999059BCDAD5035D79E51552CDBE866F8E8373BED`.
 
-### Task API Endpoints (7 new)
+### Task API Endpoints (7)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/tasks/commands` | Enqueue a command (cancel/pause/resume) |
-| GET | `/api/tasks/commands/pending` | Poll pending commands |
+| POST | `/api/tasks/jobs` | Create a directory-processing job |
+| POST | `/api/tasks/jobs/{job_id}/cancel` | Request job cancellation |
+| POST | `/api/tasks/jobs/{job_id}/retry` | Retry a failed or `needs_attention` job |
 | GET | `/api/tasks/jobs` | List all jobs with status counts |
-| GET | `/api/tasks/jobs/{job_id}` | Job detail + videos + stages |
-| GET | `/api/tasks/stages` | Query stages by status/worker/video |
-| POST | `/api/tasks/export-candidates` | Package candidate GIFs for export |
-| POST | `/api/tasks/import-legacy` | Import legacy queue/checkpoint state |
+| GET | `/api/tasks/jobs/{job_id}` | Job detail, video list, and stage counts |
+| GET | `/api/tasks/events` | Read task events using stable ID-based paging |
+| GET | `/api/tasks/attention` | List jobs requiring attention |
 
 ### Control Tab Cutover
 
@@ -254,6 +334,31 @@ folders serially and uses explicit starting/running/draining/cleanup handoffs.
 Per-video and per-GIF terminal lines are retained in the status log; an empty
 or failed GIF export returns a non-zero video result. Keep the queue modules and
 their regression tests when changing the Workbench entrypoint.
+
+### Packaged Execution and Idle-Command Invariants (2026-08-01)
+
+- `adaptive_adapter._stage_script_invocation()` must produce
+  `[sys.executable, script]` in source mode and
+  `[GifAgentUI.exe, "--run-script", script]` when `sys.frozen` is true.
+  Launching the frozen executable without `--run-script` starts another GUI and
+  leaves the claimed stage unable to run.
+- `scripts/test_video_adaptive.py` is bundled as data, so PyInstaller cannot
+  discover its imports. Keep the direct stage dependencies in
+  `build_exe.spec` hidden imports and keep
+  `tests/task_engine/test_packaged_stage_imports.py` synchronized with them.
+- `classify_error()` stores at most the final 4096 characters of child output,
+  preferring stderr and falling back to stdout. Preserve this diagnostic path;
+  it is what exposes packaged import errors in `last_error_json`.
+- `TaskWorker.run_once()` must check pending `retry`/`cancel` commands when
+  `claim_stage()` returns `None`. Command transitions stay centralized in
+  `orchestrator.advance_job()`: retry resets eligible stages and attempt counts,
+  and the following worker iteration claims the reset stage.
+
+Targeted regression gate:
+
+```powershell
+uv run pytest -q tests/task_engine/test_packaged_stage_imports.py tests/task_engine/test_stage_adapter.py tests/task_engine/test_worker.py
+```
 
 ### Scripts
 
@@ -446,10 +551,10 @@ logs — state is derived solely from the task client. Key methods:
 ## test_video_adaptive.py — 4 Phases
 
 1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter (`min_brightness`)
-2. **VLM scoring**: llava:13b scores each frame (0.0-1.0) → refinement around high-score regions
-3. **RAG + LLM synthesis**: region-aware merge (`clip_merge`) → FAISS search per clip → DeepSeek synthesizes summary/tags (non-fatal)
+2. **VLM scoring**: shared `_score_vlm_frame` (strict `gif_worthiness`, no 0.5 fallback) → refinement around high-score regions; prompt comes from frozen `score_prompt_mode`
+3. **LLM synthesis**: region-aware merge (`clip_merge`) → DeepSeek synthesizes summary/tags from VLM captions (non-fatal; no live FAISS retrieval)
 3.5. **9-grid thumbnail**: select top-9 scored frames with pHash dedup (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` subfolder
-4. **GIF export**: embedding + temporal dedup → rank by gif_worthiness → ffmpeg palette two-pass
+4. **GIF export**: embedding + temporal dedup → Quality MoE on the full set → truncate by `output_ratio` / `max_output` → ffmpeg palette two-pass
 
 **Non-fatal LLM**: if LLM fails, GIFs still export. Synthesis metadata is skipped.
 
@@ -481,12 +586,70 @@ By default the script embeds only candidates with effective like/dislike
 feedback. Use `--all-candidates` to fill every `candidate_gifs` row and
 `--dry-run` to count missing vectors without calling Ollama.
 
+The backfill processes missing rows in batches of 32, committing each batch
+before starting the next and reporting `(completed, total)` progress. The
+first batch-level HTTP/validation/insert failure rolls back only the in-flight
+batch and aborts (`aborted=true`); previously committed batches stay durable.
+Existing `candidate_vectors` rows are skipped, making reruns resumable. The
+backfill is self-starting for the default WSL/Ollama setup and never requires
+the distro to be running beforehand.
+
 The Candidate Review Profile panel runs this backfill in a single background
 worker and refreshes its progress every two seconds. It first checks the
 configured Ollama endpoint/model; if the service is unavailable, the job is
-marked `paused` immediately instead of waiting once per candidate. Each vector
-is committed independently, so restarting after Ollama recovers resumes from
-the remaining missing rows without changing existing ratings or exports.
+marked `paused` immediately instead of waiting once per candidate. Successful
+batches stay durable, so restarting after Ollama recovers resumes from the
+remaining missing rows without changing existing ratings or exports.
+
+### Ollama embedding runtime (WSL backfill)
+
+`app/services/ollama_runtime.py` owns the embedding endpoint lifecycle and is
+the single place that resolves the base URL at call time:
+
+1. **Environment override**: `GIFAGENT_OLLAMA_BASE` (normalized) wins and
+   suppresses WSL lifecycle entirely.
+2. **Explicit config**: `embedding.base_url` is used as-is when it is not
+   `"auto"`.
+3. **Automatic WSL mode**: with `embedding.manage_lifecycle: true` and
+   `embedding.launch_mode: wsl`, the runtime starts an owned hidden keeper
+   (`wsl.exe -d <distro> --exec sleep infinity`, no visible console),
+   discovers the current address via
+   `wsl.exe -d <distro> -- hostname -I`, constructs
+   `http://<first-ip>:11434`, polls `/api/version` for
+   `embedding.startup_timeout_s`, and pre-warms `nomic-embed-text:latest`
+   with a one-input `/api/embed` call, verifying exactly 768 dimensions.
+
+Only successful runtime state is cached. Transport failures invalidate the
+cached URL/readiness so the next attempt rediscovers a changed WSL IP.
+Shutdown is idempotent, terminates only the keeper this process created, and
+is registered with `atexit` plus the desktop launcher's graceful shutdown;
+it never runs `wsl --shutdown` and never stops external Ollama services.
+
+The embedding client (`app/services/embedding.py`) routes single and batch
+requests through the runtime, includes `embedding.keep_alive` when set, and
+retries only transient conditions (timeouts, transport errors, HTTP
+408/429/500/502/503/504) using `embedding.retry_attempts` total attempts with
+exponential backoff. Permanent 4xx, invalid JSON, wrong vector counts, empty
+vectors, and dimension mismatches are not retried. Exhaustion or startup
+failure raises a structured `EmbeddingRuntimeError` carrying `phase`,
+`attempts`, `base_url`, and `retryable`; `backfill_candidate_vectors` surfaces
+those fields in its result and never writes transient endpoint failures to
+`candidate_vector_exclusions`.
+
+Portable keys in `configs/models.yaml`:
+
+```yaml
+embedding:
+  base_url: "auto"
+  manage_lifecycle: true
+  launch_mode: "wsl"
+  wsl_distro: "Ubuntu-20.04"
+  startup_timeout_s: 120
+  request_timeout_s: 60
+  retry_attempts: 3
+  retry_backoff_s: 2
+  keep_alive: "30m"
+```
 
 Profile publishing is available in the Candidate Review Profile panel. Click
 `Refresh Profiles`, choose a completed profile version, then click
@@ -539,6 +702,10 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
 - `GET /api/candidates` is paginated and filtered server-side. Defaults:
   `status=candidate`, `limit=24`, `offset=0`; callers can use `status=all`
   and pass `folder` for exact-folder review.
+- With `folder` set, the complete filtered folder set is ordered by descending
+  GIF file mtime (newest first), with equal-mtime ties broken by
+  case-insensitive artifact path then candidate ID, before `offset`/`limit`.
+  Without `folder`, ordering stays `candidate_gifs.created_at DESC`.
 - `GET /api/candidates/folders` discovers recursive candidate folders under a
   selected root directory and returns per-folder totals, missing counts, and
   status counts. Folders with `.gif` files but no `candidate_gifs` rows are
@@ -561,7 +728,7 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
 
 ## Known Gotchas
 
-1. **`safe_worth()` vs `validate_frame_analysis`**: VLM sometimes returns string labels ("AVERAGE - ...") instead of numbers for `gif_worthiness`. `safe_worth()` handles this, but `validate_frame_analysis()` in quality.py tries `float()` first and can raise. The exception is caught (frame skipped after 3 retries), but it's not clean.
+1. **Invalid `gif_worthiness` is a scoring failure**: the live direct/staged path uses `_score_vlm_frame`, which retries then drops the frame instead of coercing labels like `"AVERAGE"` to `0.5`. `validate_frame_analysis()` in quality.py still tries `float()` first for non-score fields.
 
 2. **LLM synthesis was silently failing**: `parse_json(raw)` was a NameError — the function is `parse_json_response(raw)` which returns a `JsonParseResult` object (use `.ok` and `.data`). Fixed 2026-07-04.
 
@@ -702,7 +869,7 @@ Lil Karina A/B (`scripts/ab_lil_karina_run.ps1`) on 3 videos:
 | **optimized v3 (current default)** | **50** | embed 0.88, temporal 15s, ratio 0.45, max 35 |
 
 Also added: configurable `min_brightness`, `SCORE_PROMPT_ADULT` via
-`GIFAGENT_SCORE_PROMPT_MODE=adult`, and `app/services/clip_merge.py`.
+`adaptive.score_prompt_mode: adult`, and `app/services/clip_merge.py`.
 
 ## Production Release Gate (2026-07-18)
 
@@ -750,3 +917,62 @@ Key invariants:
 Historical data in `data/` (task_state.db, quality_lab.db, library.db,
 exports, labels, Preference Memory) must be preserved unchanged across
 all tests; use `Get-Item data/*.db` to verify before/after.
+
+## Desktop Export Sync (Favorite GIFs + PBF)
+
+**Service**: `app/services/desktop_export_sync.py` (sync core + serialized
+background scheduler). **CLI**: `scripts/sync_desktop_exports.py`.
+
+**Defaults** (all overridable via env):
+
+| Env var | Default |
+|---------|---------|
+| `GIFAGENT_LIBRARY_DB` | `data/library.db` |
+| `GIFAGENT_ADAPTIVE_SOURCE_ROOT` | `data/exports/adaptive_test` |
+| `GIFAGENT_FAVORITE_GIF_DEST` | `~/Desktop/entertainment/favorite_gifs` |
+| `GIFAGENT_PBF_DEST` | `~/Desktop/entertainment/bookmarks/PBF` |
+
+**Rules**:
+
+- Favorite rows export only when the source `.gif` exists under the adaptive
+  source root; both GIF and PBF sync flatten to original basenames.
+- Stale absolute Favorite paths from a source checkout are relocated by their
+  suffix below `adaptive_test`, but only when the resulting file exists under
+  the configured adaptive source root.
+- Never deletes anything. Idempotent: size+mtime fast path skips unchanged
+  files; changed files are updated via `shutil.copy2` + atomic `os.replace`.
+- Case-insensitive basename collisions are reported and skipped, never
+  silently overwritten. Missing sources and copy errors continue the run and
+  land in the structured report (`copied/updated/skipped/missing/conflicts/
+  errors` per GIF and PBF section).
+- The background scheduler serializes runs and coalesces triggers (a trigger
+  during a run causes one follow-up run, never concurrent scans).
+- The legacy queue worker starts its own scheduler thread when
+  `--sync-on-success` is set: each successful folder triggers a background
+  reconciliation while later folders continue, and shutdown waits for the
+  final requested run (`wait_until_idle`) before stopping the thread. Direct
+  `--dir` processing honors `--sync-on-success` too.
+
+**Hooks**:
+
+- UI startup: `app/ui/launcher.py::main` runs `_run_startup_sync()` after
+  `_init_database()` and before `_start_task_worker()`; failure logs a
+  WARNING and startup continues.
+- Legacy queue: `scripts/test_video_batch.py::run_queue` calls
+  `scheduler.request_sync()` after each successful folder when
+  `--sync-on-success` is set (Control UI launch passes it), then drains with
+  `wait_until_idle()` before stopping the scheduler.
+- Task engine: `app/task_engine/orchestrator.py::_set_job_status` calls
+  `request_background_sync()` exactly on the first transition to
+  `succeeded` (terminal re-entry and non-success terminals do not).
+
+**Manual sync**:
+
+```bash
+uv run python scripts/sync_desktop_exports.py [--json]
+```
+
+Exit code is nonzero only for top-level fatal failures. Tests:
+`tests/test_desktop_export_sync.py` (temporary dirs + temporary SQLite only;
+never touches `dist/`, runtime databases, export files, or real desktop
+destinations).

@@ -8,11 +8,8 @@ media:
 vlm:
   provider: "ollama"
   model: "llava:13b"
-  # Session note 2026-07-25: Windows host cannot reach WSL ollama via
-  # 127.0.0.1; use the current WSL eth0 IP. Revert to 127.0.0.1 if
-  # localhost forwarding is restored. Original backed up under
-  # data/backups/before_adult_opt_*.
-  base_url: "http://172.27.227.98:11434"
+  # Resolved once through the lifecycle-aware Ollama runtime when a job starts.
+  base_url: "auto"
   batch_size: 50
   max_batch_size: 100
   # Task 4 (seventh-review): explicit lifecycle config.  URL never
@@ -37,7 +34,17 @@ embedding:
   provider: "ollama"
   image_model: "llava:13b"
   text_model: "nomic-embed-text:latest"
-  base_url: "http://172.27.227.98:11434"
+  # Portable runtime: "auto" resolves the live WSL address at call time.
+  # Set GIFAGENT_OLLAMA_BASE to pin a deterministic/remote endpoint.
+  base_url: "auto"
+  manage_lifecycle: true
+  launch_mode: "wsl"
+  wsl_distro: "Ubuntu-20.04"
+  startup_timeout_s: 120
+  request_timeout_s: 60
+  retry_attempts: 3
+  retry_backoff_s: 2
+  keep_alive: "30m"
 
 scheduler:
   model_switch_wait: 10
@@ -70,27 +77,74 @@ preference_memory:
   # Minimum feedback events within a scenario key to build a scenario profile
   scenario_min_feedback: 8
 
+quality_moe:
+  enabled: true
+  # Until calibrated against human review, quality evidence is append-only and
+  # does not change candidate count or export order.
+  report_only: true
+  evaluation_version: quality-moe-v1
+  soft_reject:
+    min_judge_confidence: 0.80
+    min_independent_negative_families: 2
+  experts:
+    technical_aesthetic:
+      enabled: true
+      version: builtin-v1
+    cinematic:
+      enabled: true
+      version: builtin-v1
+    temporal:
+      enabled: true
+      version: builtin-v1
+  judge:
+    model_id: llava:13b
+    temperature: 0
+    timeout_seconds: 120
+    base_url: inherit_vlm
+    schema_version: quality-judge-v1
+  repairability:
+    enabled: true
+    max_proxy_variants: 12
+    min_quality_gain: 0.15
+    min_confidence: 0.80
+    photometric_mode: clip_global
+    geometric_mode: fixed_or_validated_smooth
+
 adaptive:
-  # Adult-candidate preset + region merge + tighter dedup (2026-07-25 v3).
+  # Balanced quality-first preset (2026-08-11): keep dense discovery, then
+  # demand stronger evidence. Output count is not itself minimized; qualified,
+  # deduplicated candidates retain a generous ratio and cap.
   # Baseline values preserved in data/backups/before_adult_opt_* .
   sample_interval: 7
   merge_gap: 15
-  merge_score_threshold: 0.50
+  merge_score_threshold: 0.58
   # Prevent dense high-score runs from collapsing into one mega-clip.
-  max_merge_span_s: 24
+  max_merge_span_s: 18
   # Multi-frame groups must contain a peak at/above this (else demote to single).
-  merge_peak_threshold: 0.55
-  worthiness_threshold: 0.42
-  refine_threshold: 0.55
-  refine_radius: 15
+  merge_peak_threshold: 0.65
+  worthiness_threshold: 0.55
+  refine_threshold: 0.65
+  refine_radius: 12
   refine_interval: 5
-  max_duration: 10
+  min_duration: 2
+  max_duration: 20
+  action_guard_enabled: true
+  action_vlm_verify_enabled: true
+  action_analysis_version: 1
+  action_analysis_window_s: 30
+  action_preferred_min_duration_s: 4
+  action_preferred_max_duration_s: 12
+  action_scan_fps: 4
+  action_boundary_confidence_threshold: 0.65
+  action_loop_adjust_s: 0.75
+  action_vlm_min_worthiness: 0.60
+  action_fallback_mode: fixed_window
   # Dark-frame prefilter (grayscale mean). 0 = disable. Legacy default was 25.
   min_brightness: 10
   # v3: cut near-duplicate / near-time clips after denser adult scoring.
-  output_ratio: 0.45
-  max_output: 35
-  vlm_temperature: 0.50
+  output_ratio: 0.75
+  max_output: 50
+  vlm_temperature: 0.25
   vlm_top_p: 0.90
   vlm_top_k: 40
   gif_fps: 24
@@ -101,8 +155,18 @@ adaptive:
   embedding_dedup_threshold: 0.88
   temporal_dedup_enabled: true
   temporal_dedup_min_gap_s: 15
-  # Scoring prompt: set GIFAGENT_SCORE_PROMPT_MODE=adult (AB runner does this).
-  # Or leave unset to use cinematic default SCORE_PROMPT.
+  transition_guard_enabled: true
+  transition_min_duration_s: 2.0
+  transition_boundary_margin_s: 0.25
+  transition_scan_fps: 8
+  transition_scan_width: 320
+  transition_motion_compensation: true
+  transition_hard_threshold: 0.65
+  transition_soft_threshold: 0.40
+  transition_soft_run_frames: 3
+  transition_rescore_split_segments: true
+  # Frozen scoring prompt. default = cinematic; adult = adult-neutral GIF potential.
+  score_prompt_mode: adult
 
 # Previous baseline adaptive (pre-adult A/B):
 #   sample_interval: 10, merge_score_threshold: 0.50, worthiness_threshold: 0.50,

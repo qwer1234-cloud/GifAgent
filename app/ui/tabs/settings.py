@@ -14,6 +14,12 @@ import gradio as gr
 import httpx
 import yaml
 
+from app.services.action_config import freeze_action_config
+from app.services.score_prompt import (
+    SCORE_PROMPT_MODES,
+    normalize_score_prompt_mode,
+)
+
 API_BASE = "http://127.0.0.1:8000"
 CONFIG_FILE = "configs/models.yaml"
 
@@ -37,10 +43,16 @@ CONFIG_FIELD_KEYS = (
     "adaptive.worthiness_threshold",
     "adaptive.refine_threshold",
     "adaptive.max_duration",
+    "adaptive.transition_guard_enabled",
+    "adaptive.transition_min_duration_s",
+    "adaptive.transition_boundary_margin_s",
+    "adaptive.action_guard_enabled",
+    "adaptive.action_vlm_verify_enabled",
     "adaptive.vlm_temperature",
     "adaptive.output_ratio",
     "adaptive.max_output",
     "adaptive.gif_fps",
+    "adaptive.score_prompt_mode",
     "preference_memory.enabled",
     "preference_memory.base_score_weight",
     "preference_memory.preference_score_weight",
@@ -62,10 +74,16 @@ CONFIG_FIELD_HELP = {
     "adaptive.worthiness_threshold": "帧被认为值得导出为 GIF 的最低评分。",
     "adaptive.refine_threshold": "达到此评分的帧会触发周边时间段的细采样。",
     "adaptive.max_duration": "单个导出 GIF 的最长时长，单位为秒。",
+    "adaptive.transition_guard_enabled": "是否启用转场保护；关闭后仅新任务跳过转场检测，历史结果不会删除。",
+    "adaptive.transition_min_duration_s": "转场切分后允许导出的最短片段时长，单位为秒。",
+    "adaptive.transition_boundary_margin_s": "检测到转场时在边界两侧保留的安全间隔，单位为秒。",
+    "adaptive.action_guard_enabled": "是否启用动作完整性保护；启用后会优先保留动作起止完整的片段。",
+    "adaptive.action_vlm_verify_enabled": "是否使用视觉语言模型复核动作边界；关闭后仅使用确定性的运动分析结果。",
     "adaptive.vlm_temperature": "视觉模型评分时的随机性；较低值通常更稳定。",
     "adaptive.output_ratio": "从去重后的候选片段中导出的比例，范围通常为 0 到 1。",
     "adaptive.max_output": "每个视频最多导出的 GIF 数量；填写 0 表示不设上限。",
     "adaptive.gif_fps": "导出 GIF 的播放帧率，单位为每秒帧数。",
+    "adaptive.score_prompt_mode": "VLM 打分提示词；default 为影视向，adult 为成人向中性 GIF 潜力。写入任务快照，运行时不再读取环境变量。",
     "preference_memory.enabled": "是否启用基于用户反馈构建偏好画像并参与后续排序。",
     "preference_memory.base_score_weight": "导出排序中原始 VLM gif_worthiness 评分的权重；与偏好权重按比例归一化。",
     "preference_memory.preference_score_weight": "导出排序中已发布偏好画像评分的权重；与原始评分权重按比例归一化。",
@@ -77,6 +95,7 @@ CONFIG_FIELD_LABELS = {
     "adaptive.max_duration": "max_duration (s)",
     "adaptive.max_output": "max_output (0=no cap)",
     "adaptive.gif_fps": "gif_fps (frames/s)",
+    "adaptive.score_prompt_mode": "score_prompt_mode",
 }
 
 CONFIG_TOOLTIP_CSS = """
@@ -140,10 +159,11 @@ def config_field_kwargs(key: str) -> dict[str, str | bool]:
 
 def config_checkbox_kwargs(key: str) -> dict[str, str | bool]:
     """Keep a Checkbox's native, clickable label visible beside the tooltip."""
+    elem_id = "preference-memory-enabled" if key == "preference_memory.enabled" else f"config-{key.replace('.', '-')}"
     return {
         "label": config_field_name(key),
         "container": False,
-        "elem_id": "preference-memory-enabled",
+        "elem_id": elem_id,
     }
 
 
@@ -152,22 +172,35 @@ def config_textbox(key: str, **kwargs):
     return gr.Textbox(**config_field_kwargs(key), **kwargs)
 
 
+def config_dropdown(key: str, choices: list[str], **kwargs):
+    gr.HTML(config_field_label(key), sanitize_html=False)
+    return gr.Dropdown(choices=choices, **config_field_kwargs(key), **kwargs)
+
+
 def config_checkbox(key: str, **kwargs):
     return gr.Checkbox(**config_checkbox_kwargs(key), **kwargs)
 
 
 CONFIG_TOOLTIP_JS = f"""
 (() => {{
+    const tooltipFields = [
+        {{ selector: '#preference-memory-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['preference_memory.enabled'], ensure_ascii=False)} }},
+        {{ selector: '#config-adaptive-transition-guard-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.transition_guard_enabled'], ensure_ascii=False)} }},
+        {{ selector: '#config-adaptive-action-guard-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.action_guard_enabled'], ensure_ascii=False)} }},
+        {{ selector: '#config-adaptive-action-vlm-verify-enabled label', help: {json.dumps(CONFIG_FIELD_HELP['adaptive.action_vlm_verify_enabled'], ensure_ascii=False)} }},
+    ];
     const attach = () => {{
-        const label = document.querySelector('#preference-memory-enabled label');
-        if (!label || label.querySelector('.preference-tooltip-icon')) return;
-        const icon = document.createElement('span');
-        icon.className = 'config-tooltip-icon preference-tooltip-icon';
-        icon.tabIndex = 0;
-        icon.textContent = '?';
-        icon.title = {json.dumps(CONFIG_FIELD_HELP['preference_memory.enabled'], ensure_ascii=False)};
-        icon.setAttribute('aria-label', icon.title);
-        label.append(icon);
+        tooltipFields.forEach((field) => {{
+            const label = document.querySelector(field.selector);
+            if (!label || label.querySelector('.preference-tooltip-icon')) return;
+            const icon = document.createElement('span');
+            icon.className = 'config-tooltip-icon preference-tooltip-icon';
+            icon.tabIndex = 0;
+            icon.textContent = '?';
+            icon.title = field.help;
+            icon.setAttribute('aria-label', icon.title);
+            label.append(icon);
+        }});
     }};
     requestAnimationFrame(attach);
     setTimeout(attach, 250);
@@ -189,7 +222,7 @@ def load_config():
         return (
             [str(e)] * 7,
             [str(e)] * 2,
-            [str(e)] * 10,
+            [str(e)] * 16,
             [False, "0.50", "0.50"],
             "",
         )
@@ -219,10 +252,18 @@ def load_config():
         str(adaptive.get("worthiness_threshold", 0.2)),
         str(adaptive.get("refine_threshold", 0.5)),
         str(adaptive.get("max_duration", 10)),
+        bool(adaptive.get("transition_guard_enabled", True)),
+        str(adaptive.get("transition_min_duration_s", 2.0)),
+        str(adaptive.get("transition_boundary_margin_s", 0.25)),
+        bool(adaptive.get("action_guard_enabled", True)),
+        bool(adaptive.get("action_vlm_verify_enabled", True)),
         str(adaptive.get("vlm_temperature", 0.65)),
         str(adaptive.get("output_ratio", 1.0)),
         str(adaptive.get("max_output", 0)),
         str(adaptive.get("gif_fps", 24)),
+        normalize_score_prompt_mode(
+            adaptive.get("score_prompt_mode", "default"), strict=False
+        ),
     ]
     pm_fields = [
         bool(pm.get("enabled", False)),
@@ -240,7 +281,11 @@ def save_config(
     ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
     ad_worthiness_threshold, ad_refine_threshold,
     ad_max_duration,
+    ad_transition_guard_enabled, ad_transition_min_duration_s,
+    ad_transition_boundary_margin_s,
+    ad_action_guard_enabled, ad_action_vlm_verify_enabled,
     ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
+    ad_score_prompt_mode,
     pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_text,
 ):
     """Save edited fields back to configs/models.yaml, preserving other sections."""
@@ -249,36 +294,67 @@ def save_config(
             cfg = yaml.safe_load(f) or {}
     except Exception:
         cfg = {}
+    original_raw = yaml.dump(
+        cfg,
+        default_flow_style=False,
+        allow_unicode=True,
+        sort_keys=False,
+    )
 
-    cfg.setdefault("llm", {})
-    cfg["llm"]["provider"] = llm_provider
-    cfg["llm"]["model"] = llm_model
-    cfg["llm"]["api_key_env"] = llm_api_key_env
-    cfg["llm"]["base_url"] = llm_base_url
-    cfg["llm"]["temperature"] = float(llm_temperature)
-    cfg["llm"]["max_tokens"] = int(llm_max_tokens)
-    cfg["llm"]["timeout_s"] = int(llm_timeout)
+    try:
+        cfg.setdefault("llm", {})
+        cfg["llm"]["provider"] = llm_provider
+        cfg["llm"]["model"] = llm_model
+        cfg["llm"]["api_key_env"] = llm_api_key_env
+        cfg["llm"]["base_url"] = llm_base_url
+        cfg["llm"]["temperature"] = float(llm_temperature)
+        cfg["llm"]["max_tokens"] = int(llm_max_tokens)
+        cfg["llm"]["timeout_s"] = int(llm_timeout)
 
-    cfg.setdefault("vlm", {})
-    cfg["vlm"]["model"] = vlm_model
-    cfg["vlm"]["base_url"] = vlm_base_url
+        cfg.setdefault("vlm", {})
+        cfg["vlm"]["model"] = vlm_model
+        cfg["vlm"]["base_url"] = vlm_base_url
 
-    cfg.setdefault("adaptive", {})
-    cfg["adaptive"]["sample_interval"] = int(ad_sample_interval)
-    cfg["adaptive"]["merge_gap"] = int(ad_merge_gap)
-    cfg["adaptive"]["merge_score_threshold"] = float(ad_merge_score_threshold)
-    cfg["adaptive"]["worthiness_threshold"] = float(ad_worthiness_threshold)
-    cfg["adaptive"]["refine_threshold"] = float(ad_refine_threshold)
-    cfg["adaptive"]["max_duration"] = float(ad_max_duration)
-    cfg["adaptive"]["vlm_temperature"] = float(ad_vlm_temperature)
-    cfg["adaptive"]["output_ratio"] = float(ad_output_ratio)
-    cfg["adaptive"]["max_output"] = int(ad_max_output)
-    cfg["adaptive"]["gif_fps"] = int(ad_gif_fps)
+        cfg.setdefault("adaptive", {})
+        adaptive = cfg["adaptive"]
+        adaptive["sample_interval"] = int(ad_sample_interval)
+        adaptive["merge_gap"] = int(ad_merge_gap)
+        adaptive["merge_score_threshold"] = float(ad_merge_score_threshold)
+        adaptive["worthiness_threshold"] = float(ad_worthiness_threshold)
+        adaptive["refine_threshold"] = float(ad_refine_threshold)
+        adaptive["max_duration"] = float(ad_max_duration)
+        adaptive["transition_guard_enabled"] = bool(
+            ad_transition_guard_enabled
+        )
+        adaptive["transition_min_duration_s"] = float(
+            ad_transition_min_duration_s
+        )
+        adaptive["transition_boundary_margin_s"] = float(
+            ad_transition_boundary_margin_s
+        )
+        adaptive["action_guard_enabled"] = bool(ad_action_guard_enabled)
+        adaptive["action_vlm_verify_enabled"] = bool(
+            ad_action_vlm_verify_enabled
+        )
+        adaptive["vlm_temperature"] = float(ad_vlm_temperature)
+        adaptive["output_ratio"] = float(ad_output_ratio)
+        adaptive["max_output"] = int(ad_max_output)
+        adaptive["gif_fps"] = int(ad_gif_fps)
+        adaptive["score_prompt_mode"] = normalize_score_prompt_mode(
+            ad_score_prompt_mode
+        )
+        freeze_action_config(adaptive)
 
-    cfg.setdefault("preference_memory", {})
-    cfg["preference_memory"]["enabled"] = bool(pm_enabled)
-    cfg["preference_memory"]["base_score_weight"] = float(pm_base_score_weight)
-    cfg["preference_memory"]["preference_score_weight"] = float(pm_preference_score_weight)
+        cfg.setdefault("preference_memory", {})
+        cfg["preference_memory"]["enabled"] = bool(pm_enabled)
+        cfg["preference_memory"]["base_score_weight"] = float(
+            pm_base_score_weight
+        )
+        cfg["preference_memory"]["preference_score_weight"] = float(
+            pm_preference_score_weight
+        )
+    except (TypeError, ValueError) as exc:
+        return f"配置错误：{exc}", original_raw
 
     os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -324,15 +400,15 @@ def build_settings_tab(context) -> None:
         "Edit values and click **Save**. Changes write to ``configs/models.yaml``."
     )
 
-    with gr.Row():
-        with gr.Column():
-            with gr.Group():
+    with gr.Row(elem_classes=["ga-settings-layout"]):
+        with gr.Column(elem_classes=["ga-settings-group"]):
+            with gr.Accordion("LLM", open=True):
                 gr.Markdown("### LLM (text synthesis)")
                 llm_provider = config_textbox("llm.provider", value="")
                 llm_model = config_textbox("llm.model", value="")
                 llm_api_key_env = config_textbox("llm.api_key_env", value="")
                 llm_base_url = config_textbox("llm.base_url", value="")
-                with gr.Row():
+                with gr.Row(elem_classes=["ga-settings-row"]):
                     with gr.Column(min_width=160):
                         llm_temperature = config_textbox("llm.temperature", value="")
                     with gr.Column(min_width=160):
@@ -342,13 +418,12 @@ def build_settings_tab(context) -> None:
                 test_llm_btn = gr.Button("Test LLM Connection")
                 test_llm_output = gr.Textbox(label="LLM Test", interactive=False)
 
-        with gr.Column():
-            with gr.Group():
+        with gr.Column(elem_classes=["ga-settings-group"]):
+            with gr.Accordion("VLM and Adaptive", open=False):
                 gr.Markdown("### VLM (vision analysis)")
                 vlm_model = config_textbox("vlm.model", value="")
                 vlm_base_url = config_textbox("vlm.base_url", value="")
 
-            with gr.Group():
                 gr.Markdown("### Adaptive Sampling")
                 ad_sample_interval = config_textbox("adaptive.sample_interval", value="")
                 ad_merge_gap = config_textbox("adaptive.merge_gap", value="")
@@ -356,18 +431,38 @@ def build_settings_tab(context) -> None:
                 ad_worthiness_threshold = config_textbox("adaptive.worthiness_threshold", value="")
                 ad_refine_threshold = config_textbox("adaptive.refine_threshold", value="")
                 ad_max_duration = config_textbox("adaptive.max_duration", value="")
+                ad_transition_guard_enabled = config_checkbox(
+                    "adaptive.transition_guard_enabled", value=True
+                )
+                ad_transition_min_duration_s = config_textbox(
+                    "adaptive.transition_min_duration_s", value=""
+                )
+                ad_transition_boundary_margin_s = config_textbox(
+                    "adaptive.transition_boundary_margin_s", value=""
+                )
+                ad_action_guard_enabled = config_checkbox(
+                    "adaptive.action_guard_enabled", value=True
+                )
+                ad_action_vlm_verify_enabled = config_checkbox(
+                    "adaptive.action_vlm_verify_enabled", value=True
+                )
                 ad_vlm_temperature = config_textbox("adaptive.vlm_temperature", value="")
-                with gr.Row():
+                with gr.Row(elem_classes=["ga-settings-row"]):
                     with gr.Column(min_width=160):
                         ad_output_ratio = config_textbox("adaptive.output_ratio", value="")
                     with gr.Column(min_width=160):
                         ad_max_output = config_textbox("adaptive.max_output", value="")
                 ad_gif_fps = config_textbox("adaptive.gif_fps", value="")
+                ad_score_prompt_mode = config_dropdown(
+                    "adaptive.score_prompt_mode",
+                    choices=list(SCORE_PROMPT_MODES),
+                    value="default",
+                )
 
-            with gr.Group():
+            with gr.Accordion("Preference Memory", open=True):
                 gr.Markdown("### Preference Memory")
                 pm_enabled = config_checkbox("preference_memory.enabled", value=False)
-                with gr.Row():
+                with gr.Row(elem_classes=["ga-settings-row"]):
                     with gr.Column(min_width=180):
                         pm_base_score_weight = config_textbox(
                             "preference_memory.base_score_weight", value="0.50"
@@ -393,7 +488,10 @@ def build_settings_tab(context) -> None:
         vlm_model, vlm_base_url,
         ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
         ad_worthiness_threshold, ad_refine_threshold,
-        ad_max_duration, ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
+        ad_max_duration, ad_transition_guard_enabled, ad_transition_min_duration_s,
+        ad_transition_boundary_margin_s, ad_action_guard_enabled,
+        ad_action_vlm_verify_enabled,         ad_vlm_temperature, ad_output_ratio,
+        ad_max_output, ad_gif_fps, ad_score_prompt_mode,
         pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_yaml,
     ]
     save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])

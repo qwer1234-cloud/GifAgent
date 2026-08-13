@@ -255,7 +255,10 @@ def build_collections_tab(context) -> None:
     # ── Collection list ─────────────────────────────────────────────────────
     gr.Markdown("---")
     gr.Markdown("### All Collections")
-    collection_list_html = gr.HTML(value=_list_collections_ui())
+    collection_list_html = gr.HTML(
+        value=_list_collections_ui(),
+        elem_classes=["ga-collections-table"],
+    )
     refresh_list_btn = gr.Button("Refresh List", size="sm")
     refresh_list_btn.click(
         fn=_list_collections_ui,
@@ -306,29 +309,34 @@ def build_collections_tab(context) -> None:
 
     # ── Taste Map & Narrative section ─────────────────────────────────────────
     gr.Markdown("---")
-    gr.Markdown("### Taste Map & Narrative Curation")
-    with gr.Row():
-        tm_cid = gr.Textbox(
-            label="Collection ID for Taste Map",
-            placeholder="Paste a collection ID",
-            scale=2,
-        )
-        taste_map_btn = gr.Button("Compute Taste Map", variant="secondary", scale=1)
-    taste_map_output = gr.JSON(label="Taste Map (2D Projection)")
+    with gr.Accordion(
+        "Taste Map & Narrative",
+        open=False,
+        elem_classes=["ga-collections-insight"],
+    ):
+        gr.Markdown("### Taste Map & Narrative Curation")
+        with gr.Row():
+            tm_cid = gr.Textbox(
+                label="Collection ID for Taste Map",
+                placeholder="Paste a collection ID",
+                scale=2,
+            )
+            taste_map_btn = gr.Button("Compute Taste Map", variant="secondary", scale=1)
+        taste_map_output = gr.JSON(label="Taste Map (2D Projection)")
 
-    with gr.Row():
-        nar_cid = gr.Textbox(
-            label="Collection ID for Narrative",
-            placeholder="Paste a collection ID",
-            scale=2,
-        )
-        nar_beats = gr.Textbox(
-            label="Beats (comma-separated)",
-            value="opening,development,climax,ending",
-            scale=1,
-        )
-        narrative_btn = gr.Button("Curate Narrative", variant="secondary", scale=1)
-    narrative_output = gr.JSON(label="Narrative Curation")
+        with gr.Row():
+            nar_cid = gr.Textbox(
+                label="Collection ID for Narrative",
+                placeholder="Paste a collection ID",
+                scale=2,
+            )
+            nar_beats = gr.Textbox(
+                label="Beats (comma-separated)",
+                value="opening,development,climax,ending",
+                scale=1,
+            )
+            narrative_btn = gr.Button("Curate Narrative", variant="secondary", scale=1)
+        narrative_output = gr.JSON(label="Narrative Curation")
 
     taste_map_btn.click(
         fn=_do_taste_map,

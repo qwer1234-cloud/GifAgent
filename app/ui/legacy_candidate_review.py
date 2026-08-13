@@ -23,7 +23,7 @@ from app.services.batch_queue import (
     save_queue_state,
 )
 from app.services.candidate_vectors import backfill_candidate_vectors
-from app.services.embedding import compute_text_embedding
+from app.services.embedding import compute_text_embedding, compute_text_embeddings_batch
 
 API_BASE = "http://127.0.0.1:8000"
 PID_FILE = "data/batch_pid.txt"
@@ -493,6 +493,7 @@ def _launch_queue_child_locked(queue_state: dict) -> str:
         "--launch-token", launch_token,
         "--worker-lease-file", BATCH_WORKER_LEASE_FILE,
         "--pid-file", PID_FILE,
+        "--sync-on-success",
     ])
 
     queue_state["status"] = "starting"
@@ -1110,6 +1111,7 @@ def backfill_profile_vectors():
         result = backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
+            batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
         )
         return json.dumps(result, indent=2)

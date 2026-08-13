@@ -10,7 +10,9 @@ Verify:
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -112,6 +114,60 @@ class TestVlmInputDependencies:
         assert len(result["sample_frames"]) >= 1
 
         conn.close()
+
+
+    def test_legacy_gif_input_resolution_keeps_quality_ledger_optional(
+        self, tmp_path: Path,
+    ):
+        """Schema-v1 rank artifacts remain consumable without quality sidecars."""
+        import hashlib
+        from app.task_engine.schema import connect_task_db
+        from app.task_engine.artifacts import resolve_stage_inputs
+
+        conn = connect_task_db(tmp_path / "task.db")
+        now = "2026-07-18T00:00:00.000+00:00"
+        conn.execute(
+            "INSERT INTO task_jobs (job_id, directory, directory_key, config_json, status, created_at, updated_at) "
+            "VALUES ('j1', '/tmp/d', '/tmp/d', '{}', 'running', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO task_videos (video_id, job_id, path, fingerprint, status, created_at, updated_at) "
+            "VALUES ('v1', 'j1', '/tmp/v.mp4', 'fp', 'running', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO task_stages (stage_id, video_id, stage_name, clip_id, input_key, status, created_at, updated_at) "
+            "VALUES ('rank-1', 'v1', 'rank_dedup', NULL, 'key', 'succeeded', ?, ?)",
+            (now, now),
+        )
+        rank_path = tmp_path / "rank_dedup_manifest.json"
+        rank_path.write_text(json.dumps({
+            "schema_version": 1,
+            "stage": "rank_dedup",
+            "clip_count": 1,
+            "clips": [{"clip_id": "clip-1"}],
+        }), encoding="utf-8")
+        conn.execute(
+            """INSERT INTO task_artifacts
+               (artifact_id, job_id, video_id, stage_name, clip_id, path, sha256,
+                size_bytes, provenance_json, created_at, stage_id, artifact_kind)
+               VALUES ('rank-art', 'j1', 'v1', 'rank_dedup', NULL, ?, ?, ?, '{}',
+                       ?, 'rank-1', 'rank_dedup_manifest')""",
+            (
+                str(rank_path),
+                hashlib.sha256(rank_path.read_bytes()).hexdigest(),
+                rank_path.stat().st_size,
+                now,
+            ),
+        )
+        conn.commit()
+
+        resolved = resolve_stage_inputs(
+            conn, "v1", "gif_clip", clip_id="clip-1"
+        )
+
+        assert set(resolved) == {"rank_dedup_manifest"}
 
     def test_vlm_fails_when_sample_frames_missing(self, tmp_path: Path):
         """VLM resolution fails when sample_frames artifacts don't exist."""
@@ -294,3 +350,118 @@ class TestVlmInputDependencies:
         assert envelope["stage_statuses"][0]["status"] == "succeeded"
         assert envelope["stage_statuses"][0]["stage_id"] == "gc-001"
         assert envelope["stage_statuses"][0]["attempt_count"] == 1
+
+
+class TestRelativeSampleManifestCanonicalArtifactIds:
+    """Default relative ``data/task_work`` must not split sample frame IDs.
+
+    Production evidence: ``_stage_sample`` hashed the raw relative frame
+    path into ``frame_entries[].artifact_id`` while
+    ``AdaptivePipelineAdapter`` persisted the same frame under its absolute
+    path, so ``vlm`` could not cross-reference the succeeded sample stage.
+    This regression drives the sample stage with a relative work dir (the
+    default when ``task_work_dir`` is omitted) and proves the manifest IDs
+    equal the IDs the adapter persists from the artifact descriptors.
+    """
+
+    def _load_stage_module(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "tva_sample_canonical",
+            os.path.join(
+                os.path.dirname(__file__), "..", "..", "scripts",
+                "test_video_adaptive.py",
+            ),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["tva_sample_canonical"] = mod
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_relative_sample_frame_ids_match_persisted_descriptor_ids(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        import subprocess as _subprocess
+
+        mod = self._load_stage_module()
+        monkeypatch.chdir(tmp_path)
+
+        sample_stage_id = "sample-stage-relative-001"
+        # Relative work dir exactly like the default task_work_dir.
+        work_dir = os.path.join("data", "task_work", "sample", sample_stage_id)
+
+        # Valid upstream discover manifest for _read_upstream_manifest.
+        dm_path = Path(work_dir) / "discover_manifest.json"
+        dm_path.parent.mkdir(parents=True)
+        dm_path.write_text(json.dumps({
+            "schema_version": 1,
+            "stage": "discover",
+            "duration_s": 3.0,
+        }))
+        inputs = {
+            "discover_manifest": [{
+                "artifact_id": "disc-1",
+                "path": str(dm_path),
+                "clip_id": None,
+            }],
+        }
+
+        def _fake_ffmpeg(cmd, **kw):
+            from PIL import Image
+            out_path = Path(cmd[-1])
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            # 256x256 gradient: >500 bytes and bright enough to pass the
+            # sample stage's dark filter.
+            Image.linear_gradient("L").save(out_path, "JPEG", quality=95)
+            return _subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+        monkeypatch.setattr(mod.subprocess, "run", _fake_ffmpeg)
+
+        cfg = mod.extract_config({
+            "adaptive": {"sample_interval": 1, "min_brightness": 25},
+            "preference_memory": {},
+        })
+        config_data = {"_stage_id": sample_stage_id}
+
+        result = mod._stage_sample(
+            str(tmp_path / "video.mp4"),
+            os.path.join(work_dir, "frames"),
+            work_dir,
+            cfg,
+            inputs,
+            config_data,
+        )
+
+        manifest = json.loads(
+            (Path(work_dir) / "sample_manifest.json").read_text(encoding="utf-8")
+        )
+        entries = manifest["frame_entries"]
+        assert manifest["frame_count"] == 2, manifest  # ts 1 and 2
+        assert len(entries) == 2, entries
+
+        from app.task_engine.artifacts import make_artifact_id
+
+        frame_artifacts = [
+            a for a in result["_artifacts"]
+            if a["artifact_kind"] == "sample_frames"
+        ]
+        assert len(frame_artifacts) == len(entries)
+
+        for entry, art in zip(entries, frame_artifacts):
+            assert os.path.isabs(entry["path"]), (
+                "canonical sample manifest frame path must be absolute; "
+                f"got {entry['path']!r}"
+            )
+            persisted_id = make_artifact_id(
+                stage_id=sample_stage_id,
+                artifact_kind="sample_frames",
+                clip_id=None,
+                normalized_path=art["path"],
+            )
+            assert entry["artifact_id"] == persisted_id, (
+                "frame_entries[].artifact_id must equal the ID the adapter "
+                f"persists from the artifact descriptor: entry="
+                f"{entry['artifact_id']!r} persisted={persisted_id!r} "
+                f"path={art['path']!r}"
+            )
+            assert os.path.abspath(entry["path"]) == os.path.abspath(art["path"])

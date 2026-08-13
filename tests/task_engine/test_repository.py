@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -88,6 +89,52 @@ def test_create_job_returns_pending_record(tmp_path):
     assert job.job_id
     assert job.directory == "C:/video"
     assert job.status == "pending"
+
+
+def test_create_job_resolves_quality_endpoint_once_into_immutable_config(
+    tmp_path, monkeypatch,
+):
+    from app.quality_moe import config as quality_config
+
+    calls = []
+
+    def fake_ready(runtime_config):
+        calls.append(runtime_config)
+        return SimpleNamespace(base_url="http://job-frozen.example:11434")
+
+    monkeypatch.setattr(
+        quality_config, "_ensure_quality_runtime_ready", fake_ready, raising=False
+    )
+    repo, conn = make_repo(tmp_path)
+    job = repo.create_job(CreateJob(
+        directory="C:/quality-video",
+        config_json=json.dumps({
+            "vlm": {
+                "provider": "ollama", "model": "llava:13b",
+                "base_url": "auto", "manage_lifecycle": True,
+                "launch_mode": "wsl",
+            },
+            "embedding": {
+                "base_url": "auto", "manage_lifecycle": True,
+                "launch_mode": "wsl", "text_model": "nomic-embed-text:latest",
+            },
+            "quality_moe": {
+                "judge": {
+                    "model_id": "llava:13b", "base_url": "inherit_vlm",
+                },
+            },
+        }),
+    ))
+
+    stored = json.loads(conn.execute(
+        "SELECT config_json FROM task_jobs WHERE job_id=?", (job.job_id,)
+    ).fetchone()[0])
+    assert len(calls) == 1
+    assert stored["vlm"]["base_url"] == "http://job-frozen.example:11434"
+    assert stored["quality_moe"]["judge"]["base_url"] == (
+        "http://job-frozen.example:11434"
+    )
+    assert "auto" not in json.dumps(stored["quality_moe"]["judge"])
 
 
 def test_second_active_job_on_same_directory_conflicts(tmp_path):

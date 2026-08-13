@@ -832,3 +832,379 @@ class TestVlmLifecycle:
                 "provider": "ollama", "model": "m",
                 "base_url": "http://stub", "launch_mode": "auto",
             }})
+
+
+_LEGACY_OMIT = object()
+
+
+class TestVlmLegacyRelativeArtifactIdRecovery:
+    """Legacy relative-path sample frame IDs must resolve strictly.
+
+    Production evidence: ``_stage_sample`` hashed ``data/task_work``
+    relative frame paths into ``sample_manifest.frame_entries[].artifact_id``
+    while ``task_artifacts`` persisted the same frames under absolute paths.
+    The VLM stage must recover those manifests WITHOUT weakening validation:
+    the legacy ID must be the proven hash of the legacy path and the
+    upstream sample stage id, the absolute-path resolver must be unique,
+    and path/SHA/existence checks still apply.
+    """
+
+    def _make_legacy_inputs(
+        self,
+        work_dir: Path,
+        frame_path: Path,
+        sample_stage_id: str,
+        *,
+        entry_artifact_id: str | None = None,
+        entry_path: str | None = None,
+        resolver_artifact_id: str | None = None,
+        resolver_path: str | None = None,
+        resolver_sha256: str | None = None,
+        resolver_size_bytes: int | None = None,
+        resolver_stage_id=_LEGACY_OMIT,
+        extra_resolver_refs: tuple = (),
+    ) -> dict:
+        mod = _load_stage_module()
+        if entry_path is None:
+            entry_path = str(frame_path.relative_to(Path.cwd()))
+        if entry_artifact_id is None:
+            entry_artifact_id = mod._hash_artifact_id(
+                "sample_frames", entry_path, sample_stage_id
+            )
+        if resolver_artifact_id is None:
+            resolver_artifact_id = mod._hash_artifact_id(
+                "sample_frames", str(frame_path), sample_stage_id
+            )
+        if resolver_path is None:
+            resolver_path = str(frame_path)
+        if resolver_sha256 is None:
+            resolver_sha256 = hashlib.sha256(
+                frame_path.read_bytes()
+            ).hexdigest()
+        if resolver_size_bytes is None:
+            resolver_size_bytes = frame_path.stat().st_size
+
+        sm = {
+            "schema_version": 1, "stage": "sample",
+            "frame_count": 1, "timestamps": [10],
+            "frame_paths": [entry_path],
+            "frame_entries": [
+                {"artifact_id": entry_artifact_id, "timestamp": 10,
+                 "path": entry_path},
+            ],
+        }
+        sm_path = work_dir / "sample_manifest.json"
+        sm_path.write_text(json.dumps(sm))
+
+        resolver_ref = {
+            "artifact_id": resolver_artifact_id,
+            "path": resolver_path,
+            "clip_id": None,
+            "sha256": resolver_sha256,
+            "size_bytes": resolver_size_bytes,
+        }
+        if resolver_stage_id is not _LEGACY_OMIT:
+            resolver_ref["stage_id"] = resolver_stage_id
+
+        return {
+            "sample_manifest": [{"artifact_id": "a", "path": str(sm_path),
+                                 "clip_id": None}],
+            "sample_frames": [resolver_ref, *extra_resolver_refs],
+        }
+
+    @staticmethod
+    def _cfg(mod):
+        return mod.extract_config({"adaptive": {}, "preference_memory": {}})
+
+    @staticmethod
+    def _config_data(base_url: str = "http://127.0.0.1:1",
+                     model: str = "stub-vlm") -> dict:
+        return {
+            "vlm": {
+                "provider": "ollama", "model": model,
+                "base_url": base_url,
+                "manage_lifecycle": False, "launch_mode": "none",
+                "retry_delay_s": 0.0,
+            },
+        }
+
+    def test_legacy_relative_id_resolves_and_vlm_proceeds(
+        self, tmp_path, monkeypatch,
+    ):
+        """A historical relative-path legacy ID resolves to the unique
+        absolute-path artifact and proceeds through cross-reference."""
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            monkeypatch.chdir(tmp_path)
+            work_dir = tmp_path / "vlm_work"
+            frames_dir = work_dir / "frames"
+            frames_dir.mkdir(parents=True)
+            frame_path = frames_dir / "ts_000010.jpg"
+            frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+            sample_stage_id = "sample-legacy-001"
+            legacy_path = str(frame_path.relative_to(tmp_path))
+
+            inputs = self._make_legacy_inputs(
+                work_dir, frame_path, sample_stage_id,
+                entry_path=legacy_path,
+                resolver_stage_id=sample_stage_id,
+            )
+            monkeypatch.setattr(mod.subprocess, "run",
+                                lambda *a, **kw: None)
+            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+
+            result = mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(stub.base_url, "legacy-vlm"),
+            )
+            assert result["output_key"] == "vlm"
+
+            vlm_manifest = json.loads(
+                (work_dir / "vlm_manifest.json").read_text(encoding="utf-8")
+            )
+            assert vlm_manifest["frames"][0]["path"] == str(frame_path)
+            models_seen = [r["model"] for r in stub.requests
+                            if r["path"] == "/api/generate"]
+            assert "legacy-vlm" in models_seen
+        finally:
+            stub.stop()
+
+    @pytest.mark.parametrize("case", [
+        "forged_id_same_path",
+        "forged_id_from_other_path",
+        "unknown_id_different_path",
+        "unknown_id_no_path",
+    ])
+    def test_legacy_fallback_rejects_unproven_ids(
+        self, tmp_path, monkeypatch, case,
+    ):
+        """Forged/unknown IDs are still rejected with the same or a
+        different path."""
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-002"
+        monkeypatch.chdir(tmp_path)
+        legacy_path = str(frame_path.relative_to(tmp_path))
+        other_path = str(Path("vlm_work") / "other" / "ts_000011.jpg")
+
+        if case == "forged_id_same_path":
+            entry_id, entry_path = "0" * 64, legacy_path
+        elif case == "forged_id_from_other_path":
+            entry_id = mod._hash_artifact_id(
+                "sample_frames", other_path, sample_stage_id)
+            entry_path = legacy_path
+        elif case == "unknown_id_different_path":
+            entry_id = mod._hash_artifact_id(
+                "sample_frames", other_path, sample_stage_id)
+            entry_path = other_path
+        else:
+            entry_id = mod._hash_artifact_id(
+                "sample_frames", legacy_path, sample_stage_id)
+            entry_path = ""
+
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=entry_path,
+            entry_artifact_id=entry_id,
+            resolver_stage_id=sample_stage_id,
+        )
+        with pytest.raises(
+            ValueError, match="no corresponding sample_frames entry"
+        ):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )
+
+    def test_legacy_fallback_rejects_ambiguous_absolute_path(
+        self, tmp_path, monkeypatch,
+    ):
+        """Two resolver entries for the same absolute path are ambiguous
+        and must be rejected even when the legacy ID proves one of them."""
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-003"
+        monkeypatch.chdir(tmp_path)
+        legacy_path = str(frame_path.relative_to(tmp_path))
+
+        extra_ref = {
+            "artifact_id": mod._hash_artifact_id(
+                "sample_frames", str(frame_path), "other-sample-stage"),
+            "path": str(frame_path),
+            "clip_id": None,
+            "stage_id": "other-sample-stage",
+            "sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
+            "size_bytes": frame_path.stat().st_size,
+        }
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=legacy_path,
+            resolver_stage_id=sample_stage_id,
+            extra_resolver_refs=(extra_ref,),
+        )
+        with pytest.raises(
+            ValueError, match="no corresponding sample_frames entry"
+        ):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )
+
+    def test_legacy_fallback_requires_upstream_stage_id(
+        self, tmp_path, monkeypatch,
+    ):
+        """Without the upstream sample stage id the legacy ID relationship
+        cannot be proven, so the fallback must reject."""
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-004"
+        monkeypatch.chdir(tmp_path)
+        legacy_path = str(frame_path.relative_to(tmp_path))
+
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=legacy_path,
+            resolver_stage_id=_LEGACY_OMIT,  # omit stage_id entirely
+        )
+        with pytest.raises(
+            ValueError, match="no corresponding sample_frames entry"
+        ):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )
+
+    def test_legacy_fallback_still_enforces_sha256(
+        self, tmp_path, monkeypatch,
+    ):
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-005"
+        monkeypatch.chdir(tmp_path)
+        legacy_path = str(frame_path.relative_to(tmp_path))
+
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=legacy_path,
+            resolver_sha256="0" * 64,
+            resolver_stage_id=sample_stage_id,
+        )
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )
+
+    def test_legacy_fallback_still_enforces_file_existence(
+        self, tmp_path, monkeypatch,
+    ):
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-006"
+        monkeypatch.chdir(tmp_path)
+        legacy_path = str(frame_path.relative_to(tmp_path))
+        sha = hashlib.sha256(frame_path.read_bytes()).hexdigest()
+        size = frame_path.stat().st_size
+        frame_path.unlink()
+
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=legacy_path,
+            resolver_sha256=sha,
+            resolver_size_bytes=size,
+            resolver_stage_id=sample_stage_id,
+        )
+        with pytest.raises(FileNotFoundError, match="sample_frames file not found"):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )
+
+    def test_legacy_fallback_still_rejects_duplicate_resolver_ids(
+        self, tmp_path, monkeypatch,
+    ):
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-007"
+        monkeypatch.chdir(tmp_path)
+        legacy_path = str(frame_path.relative_to(tmp_path))
+
+        duplicate_id = mod._hash_artifact_id(
+            "sample_frames", str(frame_path), sample_stage_id)
+        extra_ref = {
+            "artifact_id": duplicate_id,
+            "path": str(work_dir / "other.jpg"),
+            "clip_id": None,
+            "stage_id": sample_stage_id,
+            "sha256": "0" * 64,
+            "size_bytes": 0,
+        }
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=legacy_path,
+            resolver_stage_id=sample_stage_id,
+            extra_resolver_refs=(extra_ref,),
+        )
+        with pytest.raises(ValueError, match="Duplicate artifact_ids"):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )
+
+    def test_direct_match_still_rejects_path_mismatch(
+        self, tmp_path, monkeypatch,
+    ):
+        """A canonical ID that matches a resolver but points at a different
+        path remains a hard path-mismatch rejection (no legacy leniency)."""
+        mod = _load_stage_module()
+        work_dir = tmp_path / "vlm_work"
+        frames_dir = work_dir / "frames"
+        frames_dir.mkdir(parents=True)
+        frame_path = frames_dir / "ts_000010.jpg"
+        frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+        sample_stage_id = "sample-legacy-008"
+        monkeypatch.chdir(tmp_path)
+
+        canonical_id = mod._hash_artifact_id(
+            "sample_frames", str(frame_path), sample_stage_id)
+        wrong_entry_path = str(
+            Path("vlm_work") / "frames" / "other.jpg"
+        )
+        inputs = self._make_legacy_inputs(
+            work_dir, frame_path, sample_stage_id,
+            entry_path=wrong_entry_path,
+            entry_artifact_id=canonical_id,
+            resolver_artifact_id=canonical_id,
+            resolver_stage_id=sample_stage_id,
+        )
+        with pytest.raises(ValueError, match="Path mismatch"):
+            mod._stage_vlm(
+                str(frames_dir), str(work_dir), self._cfg(mod), inputs,
+                self._config_data(),
+            )

@@ -196,6 +196,24 @@ RATING_ICON = {
 }
 
 
+def _build_candidate_gallery(candidates: list[dict]) -> tuple[list, list[dict]]:
+    """Build gallery tuples and page items with the shared path/label logic."""
+    gallery = []
+    page_items = []
+    for candidate in candidates:
+        path = _candidate_display_path(candidate)
+        cid = candidate.get("candidate_id", "")
+        status = candidate.get("status", "candidate")
+        icon = RATING_ICON.get(status, "?")
+        start_s = _safe_float(candidate.get("start_sec"), 0.0)
+        end_s = _safe_float(candidate.get("end_sec"), 0.0)
+        label = f"{icon} [{status}] {start_s:.0f}s-{end_s:.0f}s | {cid[:16]}"
+        if path:
+            gallery.append((path, label))
+        page_items.append(candidate)
+    return gallery, page_items
+
+
 def load_candidate_page(
     page: int,
     page_size: int = PAGE_SIZE,
@@ -225,10 +243,7 @@ def load_candidate_page(
         or "no candidates"
     )
 
-    page_items = []
-    for candidate in candidates:
-        page_items.append(candidate)
-
+    page_items = list(candidates)
     gallery = _candidate_gallery(page_items)
 
     folder_name = os.path.basename(folder.rstrip("\\/")) or folder
@@ -454,11 +469,18 @@ def rate_and_advance(
     previous_folders: list[dict],
     page_items: list[dict] | None = None,
     *,
+    page_items_state: list[dict] | None = None,
     _submit_action=None,
     _load_page=None,
     _load_folders=None,
 ):
-    """Rate a GIF, select the next item, and advance folders when necessary."""
+    """Rate a GIF, select the next item, and advance folders when necessary.
+
+    When ``page_items`` / ``page_items_state`` is a valid list containing the
+    rated candidate, the current page is updated locally and the successor is
+    selected without a server reload.  The API is consulted again only when
+    this local queue becomes empty.
+    """
     submit_action = _submit_action or submit_review_action
     load_page = _load_page or load_candidate_page
     load_folders = _load_folders or load_folder_choices
@@ -474,11 +496,13 @@ def rate_and_advance(
     # Keep the current page responsive. The rating has already been durably
     # written by ``submit_action``; only the small in-memory page is changed
     # here. The API is consulted again once this local queue is exhausted.
-    if page_items is not None and any(
-        item.get("candidate_id") == candidate_id for item in page_items
+    items = page_items_state if page_items_state is not None else page_items
+    if isinstance(items, list) and any(
+        isinstance(item, dict) and item.get("candidate_id") == candidate_id
+        for item in items
     ):
         remaining_items, next_item = _apply_local_rating(
-            page_items, candidate_id, rating, filter_status
+            items, candidate_id, rating, filter_status
         )
         if remaining_items:
             cid, label, preview, artifact_path = selection_values(next_item)
@@ -639,8 +663,8 @@ def build_review_tab() -> dict:
         All Gradio components keyed by name so the caller can attach
         additional event handlers if needed.
     """
-    with gr.Row():
-        with gr.Column(scale=1):
+    with gr.Row(elem_classes=["ga-review-layout"]):
+        with gr.Column(scale=2, elem_classes=["ga-review-preview"]):
             with gr.Row():
                 review_root_input = gr.Textbox(
                     label="Data Folder",
@@ -666,15 +690,16 @@ def build_review_tab() -> dict:
                 )
             gallery = gr.Gallery(
                 label="Candidate GIFs - liked | disliked | unrated - click to select",
-                columns=2, height=600, object_fit="contain", allow_preview=True,
-                elem_id="candidate-gallery")
+                columns=None, object_fit="contain", allow_preview=True,
+                elem_id="candidate-gallery",
+                elem_classes=["ga-review-gallery"])
             with gr.Row():
                 filter_dropdown = gr.Dropdown(
                     choices=["candidate", "favorited", "all", "liked", "disliked", "neutral", "rejected"],
                     value="candidate", label="Filter by status")
                 page_slider = gr.Slider(minimum=0, maximum=1, value=0, step=1, label="Page")
 
-        with gr.Column(scale=3):
+        with gr.Column(scale=3, elem_classes=["ga-review-controls"]):
             gr.Markdown("## Rate")
             selected_label = gr.Textbox(label="Selected", interactive=False)
             candidate_id_input = gr.Textbox(label="Candidate ID", placeholder="Click GIF to select...")
@@ -682,8 +707,8 @@ def build_review_tab() -> dict:
                 label="Selected GIF",
                 interactive=False,
                 type="filepath",
-                height=300,
                 elem_id="selected-gif-preview",
+                elem_classes=["ga-selected-preview"],
             )
             # One hidden full-GIF image keeps the next item in the browser's
             # cache while the current item is being reviewed. Only one item is

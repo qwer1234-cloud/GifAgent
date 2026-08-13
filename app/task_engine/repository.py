@@ -102,6 +102,12 @@ class TaskRepository:
 
         # Compute the scope key from normalized video paths.
         new_config = json.loads(command.config_json) if command.config_json else {}
+        from app.quality_moe.config import freeze_quality_runtime_config
+
+        new_config = freeze_quality_runtime_config(new_config)
+        resolved_config_json = json.dumps(
+            new_config, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
         new_video_paths_list: list[str] | None = new_config.get("video_paths")
         new_scope = _scope_key(command.directory, new_video_paths_list)
 
@@ -134,7 +140,7 @@ class TaskRepository:
                         job_id,
                         command.directory,
                         directory_key,
-                        command.config_json,
+                        resolved_config_json,
                         command.limit,
                         command.extensions,
                         now,

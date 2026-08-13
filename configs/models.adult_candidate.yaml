@@ -9,7 +9,19 @@ adaptive:
   refine_threshold: 0.55
   refine_radius: 15
   refine_interval: 5
-  max_duration: 10
+  min_duration: 2
+  max_duration: 20
+  action_guard_enabled: true
+  action_vlm_verify_enabled: true
+  action_analysis_version: 1
+  action_analysis_window_s: 30
+  action_preferred_min_duration_s: 4
+  action_preferred_max_duration_s: 12
+  action_scan_fps: 4
+  action_boundary_confidence_threshold: 0.65
+  action_loop_adjust_s: 0.75
+  action_vlm_min_worthiness: 0.60
+  action_fallback_mode: fixed_window
   min_brightness: 10
   output_ratio: 0.45
   max_output: 35
@@ -24,3 +36,14 @@ adaptive:
   embedding_dedup_threshold: 0.88
   temporal_dedup_enabled: true
   temporal_dedup_min_gap_s: 15
+  transition_guard_enabled: true
+  transition_min_duration_s: 2.0
+  transition_boundary_margin_s: 0.25
+  transition_scan_fps: 8
+  transition_scan_width: 320
+  transition_motion_compensation: true
+  transition_hard_threshold: 0.65
+  transition_soft_threshold: 0.40
+  transition_soft_run_frames: 3
+  transition_rescore_split_segments: true
+  score_prompt_mode: adult

@@ -19,6 +19,8 @@ from app.task_engine.stages import StageAdapter, StageContext, StageResult
 
 _RESULT_FILE = ".stage_result.json"
 
+_MAX_CHILD_OUTPUT_CHARS = 4096
+
 
 def _iso(dt: datetime) -> str:
     if dt.tzinfo is None:
@@ -28,6 +30,32 @@ def _iso(dt: datetime) -> str:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _decode_child_output(value: bytes | str | None) -> str:
+    """Decode captured subprocess output without raising on invalid bytes."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _child_output_excerpt(exc: subprocess.CalledProcessError) -> str:
+    """Return a bounded, readable excerpt of a failed child's output.
+
+    Prefers stderr and falls back to stdout only when stderr is empty.
+    The returned tail is capped so failure diagnostics stored in task DB
+    rows cannot grow without limit.
+    """
+    text = _decode_child_output(getattr(exc, "stderr", None)).strip()
+    if not text:
+        text = _decode_child_output(getattr(exc, "stdout", None)).strip()
+    if not text:
+        return ""
+    if len(text) <= _MAX_CHILD_OUTPUT_CHARS:
+        return text
+    return f"[child output truncated] {text[-_MAX_CHILD_OUTPUT_CHARS:]}"
 
 
 def classify_error(exc: Exception, stage_name: StageName) -> StageError:
@@ -66,9 +94,13 @@ def classify_error(exc: Exception, stage_name: StageName) -> StageError:
             if isinstance(exc.cmd, (list, tuple))
             else str(exc.cmd)
         )
+        message = str(exc)
+        excerpt = _child_output_excerpt(exc)
+        if excerpt:
+            message = f"{message}\n[child output]\n{excerpt}"
         if "ffmpeg" in cmd_str.lower():
-            return StageError("ffmpeg_error", str(exc), transient=False)
-        return StageError("process_error", str(exc), transient=True)
+            return StageError("ffmpeg_error", message, transient=False)
+        return StageError("process_error", message, transient=True)
 
     # ------------------------------------------------------------------
     # OSError (incl. FileNotFoundError, PermissionError) — classify by
@@ -177,9 +209,13 @@ class TaskWorker:
 
         Also checks for pending jobs that need initialisation (directory
         scanning, video + stage creation) before trying to claim stages.
+        When no stage is claimable, consumes pending retry/cancel commands
+        so jobs stuck in ``needs_attention`` (or another terminal state)
+        can still be reset by the normal worker loop.
 
-        Returns ``True`` if a stage was processed (regardless of success
-        or failure), or ``False`` if no work was available.
+        Returns ``True`` if a stage was processed or a pending job command
+        was consumed (regardless of success or failure), or ``False`` if no
+        work was available.
         """
         now = now or _utcnow()
 
@@ -191,6 +227,11 @@ class TaskWorker:
         # 1. Claim a stage.  ``None`` means the queue is empty.
         stage = self._repo.claim_stage(self._worker_id, now, lease_seconds=self._lease_seconds)
         if stage is None:
+            # 1b. No stage is claimable -- consume pending retry/cancel
+            # commands.  The orchestrator owns every state transition, so
+            # command semantics stay centralized in ``advance_job``.
+            if self._consume_pending_commands() > 0:
+                return True
             return False
 
         # 2-8 as before...
@@ -630,6 +671,30 @@ class TaskWorker:
                 )
                 self._repo.conn.commit()
         return count
+
+    def _consume_pending_commands(self) -> int:
+        """Consume pending retry/cancel commands via the orchestrator.
+
+        Finds distinct jobs with pending ``retry``/``cancel`` commands and
+        delegates every transition to ``advance_job`` so retry/cancel
+        semantics stay centralized.  Returns the number of jobs whose
+        pending command was handled; jobs that raise are skipped and will
+        be retried on a later worker iteration.
+        """
+        from app.task_engine.orchestrator import advance_job
+
+        rows = self._repo.conn.execute(
+            """SELECT DISTINCT job_id FROM task_commands
+               WHERE kind IN ('retry', 'cancel') AND status='pending'"""
+        ).fetchall()
+        handled = 0
+        for row in rows:
+            try:
+                advance_job(self._repo, row["job_id"])
+            except Exception:
+                continue
+            handled += 1
+        return handled
 
     def _run_stage(self, stage, now: datetime) -> bool:
         """Execute one stage: cancel check → adapter lookup → run → persist."""

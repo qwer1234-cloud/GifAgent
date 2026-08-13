@@ -14,6 +14,12 @@ import shutil
 
 import uvicorn
 
+from app.services.desktop_export_sync import (
+    start_background_sync,
+    stop_background_sync,
+)
+from app.services import ollama_runtime
+
 
 def _setup_runtime_files(exe_dir):
     """Copy bundled read-only config to a writable location, create data dir."""
@@ -85,6 +91,24 @@ def _init_database():
     apply_preference_schema(conn)
     conn.close()
     print("Database initialized with preference schema.")
+
+
+def _run_startup_sync():
+    """Run one full desktop reconciliation after DB init and before workers.
+
+    Startup must continue with a warning if synchronization fails.
+    """
+    from app.services.desktop_export_sync import run_reconciliation
+
+    try:
+        report = run_reconciliation()
+        print(report.log_line(), flush=True)
+    except Exception as exc:
+        print(
+            f"WARNING: desktop export synchronization failed: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
 
 def start_api_server():
@@ -196,6 +220,55 @@ def _stop_worker(stop_event, thread):
         thread.join(timeout=3.0)
 
 
+def _register_window_shutdown(
+    window,
+    graceful_shutdown,
+    *,
+    force_timeout=12.0,
+    exit_process=None,
+):
+    """Exit even if pywebview or a server cleanup call never returns.
+
+    pywebview dispatches ``closed`` callbacks independently of its GUI loop.
+    Registering here therefore keeps process shutdown reachable when
+    ``webview.start()`` does not return. A watchdog also bounds synchronous
+    cleanup such as ``gradio_app.close()``.
+    """
+    if exit_process is None:
+        exit_process = os._exit
+
+    state_lock = threading.Lock()
+    shutdown_complete = threading.Event()
+    shutdown_started = False
+
+    def shutdown():
+        nonlocal shutdown_started
+        with state_lock:
+            if shutdown_started:
+                return
+            shutdown_started = True
+
+        def force_exit_watchdog():
+            if not shutdown_complete.wait(force_timeout):
+                print("Shutdown timed out; forcing process exit.", flush=True)
+                exit_process(0)
+
+        threading.Thread(
+            target=force_exit_watchdog,
+            daemon=True,
+            name="shutdown-watchdog",
+        ).start()
+
+        try:
+            graceful_shutdown()
+        finally:
+            shutdown_complete.set()
+            exit_process(0)
+
+    window.events.closed += shutdown
+    return shutdown
+
+
 def _run_script_mode():
     """When invoked as `GifAgentUI.exe --run-script <path> [args...]`,
     run the given .py script via runpy instead of starting the GUI.
@@ -245,6 +318,17 @@ def main():
     except Exception as e:
         print(f"WARNING: DB init failed: {e}")
 
+    # Initial full desktop reconciliation (after DB init, before task worker).
+    # Startup must continue with a warning if synchronization fails.
+    try:
+        _run_startup_sync()
+    except Exception as e:
+        print(f"WARNING: desktop export synchronization failed: {e}")
+
+    # Background scheduler for post-completion incremental reconciliations.
+    sync_stop_event = threading.Event()
+    start_background_sync(sync_stop_event)
+
     # Start API server in background thread
     api_thread = threading.Thread(target=start_api_server, daemon=True)
     api_thread.start()
@@ -270,6 +354,7 @@ def main():
     except Exception as e:
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
         os._exit(1)
     print("Starting Gradio on http://127.0.0.1:7861 ...")
 
@@ -278,6 +363,7 @@ def main():
     if not _wait_for_url("http://127.0.0.1:7861", "Gradio", timeout=30):
         print("ERROR: Gradio did not become ready, exiting.", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
         try:
             gradio_app.close()
         except Exception:
@@ -288,7 +374,31 @@ def main():
     # until the user closes the window. On Windows the GUI message loop must run
     # on the main thread, so this has to be the last thing main() does.
     import webview
-    webview.create_window("GifAgent", "http://127.0.0.1:7861", width=1400, height=900)
+    window = webview.create_window(
+        "GifAgent",
+        "http://127.0.0.1:7861",
+        width=1400,
+        height=900,
+        min_size=(1024, 680),
+    )
+
+    def graceful_shutdown():
+        print("Window closed, shutting down servers...", flush=True)
+        _stop_worker(worker_stop_event, worker_thread)
+        stop_background_sync(sync_stop_event)
+        try:
+            gradio_app.close()
+        except Exception:
+            pass
+        try:
+            ollama_runtime.shutdown_runtime()
+        except Exception as exc:
+            print(
+                f"WARNING: Ollama runtime shutdown failed: {exc}",
+                flush=True,
+            )
+
+    shutdown = _register_window_shutdown(window, graceful_shutdown)
     try:
         webview.start()
     except Exception as e:
@@ -298,13 +408,7 @@ def main():
         # then exit. FastAPI runs in a daemon thread and is killed when the
         # process exits. os._exit() avoids hanging on Gradio's non-daemon
         # internal threads.
-        print("Window closed, shutting down servers...", flush=True)
-        _stop_worker(worker_stop_event, worker_thread)
-        try:
-            gradio_app.close()
-        except Exception:
-            pass
-        os._exit(0)
+        shutdown()
 
 
 if __name__ == "__main__":

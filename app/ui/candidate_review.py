@@ -46,6 +46,7 @@ import httpx  # noqa: F401 — re-export for legacy tests
 from app.db import get_connection  # noqa: F401 — re-export for legacy tests
 from app.services.candidate_vectors import backfill_candidate_vectors  # noqa: F401
 from app.services.embedding import compute_text_embedding  # noqa: F401
+from app.services.embedding import compute_text_embeddings_batch  # noqa: F401
 
 from app.ui.tabs.review import build_review_tab
 from app.ui.tabs.review import (  # noqa: F401
@@ -135,6 +136,7 @@ def backfill_profile_vectors():
         result = backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
+            batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
         )
         return json.dumps(result, indent=2)

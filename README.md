@@ -11,8 +11,8 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 - **自动打标**：VLM（llava:13b）逐帧分析审美特征 → LLM（DeepSeek-V4-Flash）综合生成标签，所有输出经过质量门禁校验
 - **质量门禁**：统一的 JSON 解析器 + placeholder 检测 + Pydantic 模型校验，placeholder 率从 89% 降至 <1%
 - **向量索引**：基于 nomic-embed-text 的 FAISS 语义向量库，支持文本到 GIF 的跨模态检索（8109 向量 / 9221 媒体）
-- **RAG 增强**：两阶段自适应 GIF 提取，per-frame VLM 评分 + 时域 clip 合并 + FAISS 相似 GIF 检索
-- **智能采样**：7s 粗采样 → 高分区域 5s 细采样；区域 merge（`max_merge_span_s=24`）+ embedding/时域去重后导出
+- **自适应提取**：两阶段 GIF 提取，per-frame VLM 严格评分 + 时域 clip 合并 + embedding/时域去重；库内 FAISS 检索不注入打分或合成
+- **智能采样**：7s 粗采样 → 高分区域细采样；区域 merge + embedding/时域去重 → Quality MoE 评估全量候选 → 再按 `output_ratio` / `max_output` 截断导出
 - **断点恢复**：VLM 处理循环自动恢复、per-frame DB commit、每 50 batch 模型重启防降速
 - **Preference Memory**：候选 GIF 物化 → 人工反馈收集 → 偏好画像构建 → 重排序，含 holdout 评估门禁
 - **批量处理**：视频目录批量处理 + checkpoint 断点续跑，支持 200+ 视频无人值守处理
@@ -29,7 +29,7 @@ E:\data\originals\（8000+ GIF）
   → json_guard 统一解析 → quality 门禁校验
   → DeepSeek-V4-Flash 综合标注（tags + emotional_core + aesthetic_notes）
   → nomic-embed-text 向量化 → FAISS 索引
-  → 新视频：I-frame → VLM 裸分析 → 每帧 caption FAISS 检索 → RAG 增强合成
+  → 新视频：粗采样 → VLM 裸评分 → 细采样 / merge / 去重 → LLM 合成标签（非致命）
   → 导出候选 GIF（ffmpeg palette 二段式）
 ```
 
@@ -94,9 +94,21 @@ llm:
 embedding:
   provider: "ollama"
   text_model: "nomic-embed-text:latest"
+  base_url: "auto"                    # auto = discover current WSL address at runtime
+  manage_lifecycle: true              # keep WSL/Ollama resident with an owned keeper
+  launch_mode: "wsl"                  # none | native | wsl
+  wsl_distro: "Ubuntu-20.04"
+  startup_timeout_s: 120              # wait for /api/version after launch
+  request_timeout_s: 60
+  retry_attempts: 3                   # total attempts for transient failures
+  retry_backoff_s: 2
+  keep_alive: "30m"
 
 preference_memory:
   enabled: false                      # 偏好记忆功能开关
+
+adaptive:
+  score_prompt_mode: adult            # default = 影视向；adult = 成人向中性 GIF 潜力（写入任务快照）
 
 database:
   path: "data/library.db"
@@ -147,7 +159,7 @@ uv run python scripts/process_representatives.py --status
 uv run python scripts/inherit_and_index.py
 ```
 
-### 第三步：自适应 GIF 提取（RAG 增强）
+### 第三步：自适应 GIF 提取
 
 ```bash
 # 单视频处理：7s 粗采样 → VLM 评分 → 细采样 → 区域 merge → 去重导出
@@ -218,6 +230,10 @@ uv run python app/ui/candidate_review.py
 - `GET /api/candidates` now supports server-side pagination and filtering:
   `status`, `limit`, `offset`, and optional exact `folder`. The default status
   is `candidate`.
+- When `folder` is set, the complete filtered candidate set is ordered by
+  descending GIF file modification time (newest first), with equal-mtime ties
+  broken by case-insensitive artifact path then candidate ID, before
+  pagination. Calls without `folder` keep `candidate_gifs.created_at DESC`.
 - `GET /api/candidates/folders` discovers recursive candidate folders below a
   selected root directory and returns per-folder counts/status counts. It also
   includes folders that contain `.gif` files not yet materialized into
@@ -245,7 +261,9 @@ both `dist/GifAgentUI/data/` and the writable
 `dist/GifAgentUI/configs/models.yaml`, so rebuilding does not reset the task
 history, GIF exports, labels, Preference Memory, databases, or settings edited
 through the UI. Do not replace only `GifAgentUI.exe`; the matching `_internal/`
-runtime must be released with it.
+runtime must be released with it. For task-engine releases, smoke-test at least
+one real queued video through `discover`/`sample`; UI and API startup alone do
+not exercise the bundled stage-script imports.
 
 ### Adaptive duplicate reduction tuning (2026-07-05 / 2026-07-25)
 
@@ -260,9 +278,39 @@ runtime must be released with it.
   demotion) so dense high-score timelines do not collapse into one mega-clip.
 - Embedding dedup uses `embedding_dedup_threshold=0.88`, then temporal dedup
   keeps the highest-scored clip within a 15s peak-time window.
-- Optional adult VLM scoring prompt: `GIFAGENT_SCORE_PROMPT_MODE=adult`.
+- Optional adult VLM scoring prompt: set `adaptive.score_prompt_mode: adult` in `configs/models.yaml` or the Settings dropdown. The value is frozen into the job snapshot and result JSON; scoring does not read environment variables.
 - Result JSON records both `embedding_deduped_clips` and final `deduped_clips`
   so each run shows how much was removed.
+
+### 转场保护（Transition Guard）
+
+在设置页可配置 `adaptive.transition_guard_enabled`、
+`adaptive.transition_min_duration_s`（切分后最短可导出时长）和
+`adaptive.transition_boundary_margin_s`（转场边界安全间隔）；更细的扫描、
+运动补偿和阈值仍保留在 YAML 与任务快照中。保护器会在去重和导出前检测硬切与
+软转场：可安全的窗口会保留或修边，跨转场的窗口会切分，边界余量不足或锚点落在
+安全区内时会丢弃。连贯的慢速镜头运动会被识别为 `coherent_camera_motion`，不会仅因
+画面运动而切分或丢弃。
+
+结果 JSON 的 `transition_guard` 汇总 `input`、`split`、`trim`、`drop`、
+`unverified`、`hard_cut`、`soft_transition` 和 `motion`，每个导出结果也记录
+`transition_action`、风险和原因。验证命令：
+
+```powershell
+uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_config.py tests/test_tasks_api.py
+```
+
+关闭保护只影响之后创建的新运行；已生成 GIF、历史任务和结果数据不会被删除。
+
+### 待办：动作完整性深度模型增强
+
+第一版动作完整性保护按
+[`docs/superpowers/specs/2026-07-29-action-completeness-design.md`](docs/superpowers/specs/2026-07-29-action-completeness-design.md)
+采用运动补偿、动作曲线和受限 VLM 时序复核。以下能力作为后续增强，不进入第一版范围：
+
+- [ ] 引入姿态识别，辅助判断人物动作的准备、高潮和收势阶段。
+- [ ] 引入目标跟踪，在镜头运动、遮挡和多人场景中持续锁定动作主体。
+- [ ] 评估并引入深度动作识别模型，用于复杂、低运动或长时序动作的语义分段。
 
 ### PotPlayer bookmark export (2026-07-08)
 
@@ -299,13 +347,13 @@ runtime must be released with it.
 | POST | `/api/preference/profiles/build` | 构建新的偏好画像 |
 | POST | `/api/preference/profiles/{version}/publish` | 发布指定版本的偏好画像 |
 | POST | `/api/preference/evaluate` | 偏好画像发布门禁评估（holdout 评估） |
-| POST | `/api/tasks/commands` | (Phase 1) 任务引擎：下发控制命令（cancel/pause/resume） |
-| GET | `/api/tasks/commands/pending` | (Phase 1) 轮询待处理命令 |
+| POST | `/api/tasks/jobs` | (Phase 1) 创建目录处理任务 |
+| POST | `/api/tasks/jobs/{job_id}/cancel` | (Phase 1) 请求取消任务 |
+| POST | `/api/tasks/jobs/{job_id}/retry` | (Phase 1) 重试失败或 `needs_attention` 任务 |
 | GET | `/api/tasks/jobs` | (Phase 1) 列出所有任务及其状态统计 |
-| GET | `/api/tasks/jobs/{job_id}` | (Phase 1) 查看任务详情（含视频和阶段） |
-| GET | `/api/tasks/stages` | (Phase 1) 按状态/工作者/视频查询阶段 |
-| POST | `/api/tasks/export-candidates` | (Phase 1) 打包候选 GIF |
-| POST | `/api/tasks/import-legacy` | (Phase 1) 导入旧版队列/检查点状态 |
+| GET | `/api/tasks/jobs/{job_id}` | (Phase 1) 查看任务详情、视频列表和阶段统计 |
+| GET | `/api/tasks/events` | (Phase 1) 按事件 ID 增量读取任务事件 |
+| GET | `/api/tasks/attention` | (Phase 1) 列出需要人工关注的任务 |
 
 ---
 
@@ -325,16 +373,17 @@ runtime must be released with it.
 
 ### RAG 两阶段流水线
 
-v2 架构采用两阶段设计避免 RAG 回音壁效应：
+自适应提取（`test_video_adaptive.py`，direct 与 staged 行为一致）：
+- 7s 间隔粗采样全片 → per-frame VLM 严格评分（可配置 `min_brightness` 暗场预过滤）
+- 高分区域（≥ `refine_threshold`）±`refine_radius` 内按 `refine_interval` 细采样
+- 区域 merge：双端门槛 + `max_merge_span_s` 硬封顶 + 弱峰值降级为单帧
+- Embedding 去重 + 时域去重后评估 Quality MoE，再按 `output_ratio` / `max_output` 截断导出
+- 当前**不**把 FAISS 相似收藏注入打分或 LLM 合成；库内 RAG 检索仍用于收藏索引与 Preference Memory
+
+库内两阶段 RAG（`test_video_rag_v2.py` 等实验脚本）仍采用：
 
 1. **Pass 1**：VLM 裸分析（无 RAG 上下文）→ 生成每帧的 caption + emotional_core
 2. **Pass 2**：每帧 caption → nomic-embed-text 向量化 → FAISS 检索 top-5 相似收藏 → 作为 RAG 上下文注入 LLM 综合
-
-自适应提取扩展（`test_video_adaptive.py`）：
-- 7s 间隔粗采样全片 → per-frame VLM 评分（可配置 `min_brightness` 暗场预过滤）
-- 高分区域（≥ `refine_threshold`，默认 0.55）±`refine_radius` 内按 `refine_interval` 细采样
-- 区域 merge：双端门槛 + `max_merge_span_s` 硬封顶 + 弱峰值降级为单帧
-- Embedding 去重（默认 cosine ≥ 0.88）+ 时域去重（默认峰值间隔 15s）后按 `output_ratio` 导出
 
 ### 断点恢复机制
 
@@ -384,6 +433,7 @@ GifAgent/
 │   │   ├── scenario.py               # 场景标签管理
 │   │   ├── video_fingerprint.py      # 视频指纹（时长+关键帧pHash，去重用）
 │   │   ├── clip_merge.py             # 自适应区域 merge（span 封顶 + 峰值降级）
+│   │   ├── score_prompt.py           # 冻结 VLM 打分提示词模式（default / adult）
 │   │   ├── candidates.py             # 候选 GIF 物化服务
 │   │   ├── preference_schema.py      # Preference Memory 数据库 DDL
 │   │   ├── preference_events.py      # 反馈事件记录服务
@@ -627,6 +677,32 @@ uv run python scripts/preference_memory.py build
 # Backfill candidate vectors required by profile builds.
 # Default scope is effective like/dislike feedback targets.
 uv run python scripts/backfill_candidate_vectors.py --db dist/GifAgentUI/data/library.db
+```
+
+The backfill embeds missing rows in batches of 32 (`batch_size=32`), commits
+each batch before starting the next, and reports progress as
+`(completed, total)`. On the first batch-level HTTP/validation/insert failure
+it rolls back only the in-flight batch and aborts (`aborted=true`) while
+keeping previously committed batches durable. Rows that already have a
+matching `candidate_vectors` entry are skipped, so rerunning resumes naturally.
+
+The backfill is self-starting for the default `Ubuntu-20.04` WSL/Ollama setup.
+`app/services/ollama_runtime.py` resolves `embedding.base_url` at call time
+with this precedence: `GIFAGENT_OLLAMA_BASE` env override, explicit configured
+URL, then automatic discovery. In automatic mode with
+`embedding.manage_lifecycle: true`, it starts an owned hidden keeper
+(`wsl.exe -d Ubuntu-20.04 --exec sleep infinity`), discovers the current WSL
+address (`wsl.exe -d Ubuntu-20.04 -- hostname -I`) instead of using a
+hard-coded IP, waits up to `embedding.startup_timeout_s` for `/api/version`,
+and pre-warms `nomic-embed-text:latest` (768-dim) before the first request.
+Transient failures (timeouts, network errors, HTTP 408/429/5xx) are retried
+with exponential backoff; a failed batch rolls back and aborts with structured
+`phase`/`attempts`/`base_url`/`retryable` fields, and rerunning resumes from
+the first missing row. Endpoint failures are never recorded as candidate
+exclusions. The desktop launcher shuts down the owned keeper idempotently on
+window close.
+
+```
 
 Profile 页面中的 `Backfill Missing Vectors` 会在后台以单个任务运行，并每两秒刷新
 `Vector Backfill` 状态。任务开始前会检查 Ollama 端点和配置的 embedding 模型；服务不可用时
@@ -748,17 +824,17 @@ The packaged EXE SHA-256 is
 Production `data/` and writable `configs/models.yaml` were restored byte-for-byte
 after the build and were not used for the startup smoke test.
 
-### Task API Endpoints (7 new)
+### Task API Endpoints (7)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/tasks/commands` | Enqueue a command (cancel/pause/resume) |
-| GET | `/api/tasks/commands/pending` | Poll pending commands |
+| POST | `/api/tasks/jobs` | Create a directory-processing job |
+| POST | `/api/tasks/jobs/{job_id}/cancel` | Request job cancellation |
+| POST | `/api/tasks/jobs/{job_id}/retry` | Retry a failed or `needs_attention` job |
 | GET | `/api/tasks/jobs` | List all jobs with status counts |
-| GET | `/api/tasks/jobs/{job_id}` | Job detail with videos and stages |
-| GET | `/api/tasks/stages` | Query stages by status/worker/video |
-| POST | `/api/tasks/export-candidates` | Package candidate GIFs for export |
-| POST | `/api/tasks/import-legacy` | Import legacy queue/checkpoint state |
+| GET | `/api/tasks/jobs/{job_id}` | Job detail, video list, and stage counts |
+| GET | `/api/tasks/events` | Read task events using stable ID-based paging |
+| GET | `/api/tasks/attention` | List jobs that require attention |
 
 ### New Scripts
 
@@ -789,6 +865,29 @@ directories are canonicalized and deduplicated, processed serially under a
 single-worker lease, and recovered across launch, handoff, cleanup, or PID
 failures. Status output includes every video and every attempted GIF; failed or
 empty GIF exports make the video fail instead of being counted as successful.
+
+### Packaged Worker Recovery (2026-08-01)
+
+- Frozen builds execute adaptive stage scripts through
+  `GifAgentUI.exe --run-script <script>`; source runs continue to use the
+  current Python interpreter directly. This prevents a stage subprocess from
+  opening a second GUI instead of processing the claimed stage.
+- `build_exe.spec` explicitly includes the service modules imported by the
+  bundled stage script, because PyInstaller does not statically analyze scripts
+  stored as package data.
+- A failed child process records a bounded tail of stderr (stdout fallback) in
+  the stage error. `ModuleNotFoundError`, ffmpeg output, and other real child
+  failures are therefore visible instead of only a generic exit code.
+- When no stage is currently claimable, the worker still consumes pending
+  `retry` and `cancel` commands. Retrying a `needs_attention` job resets its
+  failed stages through the orchestrator; the next worker iteration can claim
+  and resume them without restarting the application.
+
+Regression tests:
+
+```powershell
+uv run pytest -q tests/task_engine/test_packaged_stage_imports.py tests/task_engine/test_stage_adapter.py tests/task_engine/test_worker.py
+```
 
 ### Config
 
@@ -1103,7 +1202,7 @@ app/services/
 | 搜索 (Search) | `tabs/search.py` | Semantic + filtered search: full-text, tags, folder, duration, status, date ranges |
 | 合集 (Collections) | `tabs/collections.py` | Smart collections: generate, refresh, freeze, export (JSON manifest + PBF) |
 | 实验室 (Lab) | `tabs/lab.py` | Quality Lab: benchmark runs, blind A/B, champion promotion/rollback |
-| 设置 (Settings) | `tabs/settings.py` | Config editor + profile management + publish controls |
+| 设置 (Settings) | `tabs/settings.py` | Config editor（含 `score_prompt_mode` 下拉框）+ profile management + publish controls |
 
 ### New Services
 
@@ -1252,6 +1351,81 @@ tests/test_workbench_performance.py   # 10k-row performance, 60-thumbnail cap, U
 ## License
 
 MIT
+
+## Desktop Export Synchronization (Favorite GIFs + PBF)
+
+The desktop sync service keeps flat desktop copies of your Favorite GIFs and
+PotPlayer PBF bookmark files in sync with the adaptive export directory.
+
+### Defaults
+
+| Item | Default path |
+|------|--------------|
+| Adaptive source root | `data/exports/adaptive_test` (CWD-relative; resolves under the packaged EXE directory at runtime) |
+| Favorite GIF destination | `~/Desktop/entertainment/favorite_gifs` |
+| PBF destination | `~/Desktop/entertainment/bookmarks/PBF` |
+| Library database | `data/library.db` |
+
+All four roots can be overridden with environment variables:
+
+- `GIFAGENT_LIBRARY_DB`
+- `GIFAGENT_ADAPTIVE_SOURCE_ROOT`
+- `GIFAGENT_FAVORITE_GIF_DEST`
+- `GIFAGENT_PBF_DEST`
+
+### Behavior
+
+- Favorite GIF rows in `library.db` are exported only when the stored `.gif`
+  actually exists under the adaptive source root. Files are copied into the
+  Favorite destination as a flat directory using their original basename.
+  If a packaged database still contains an absolute path from an older
+  checkout, the service safely relocates the suffix below `adaptive_test`
+  into the configured adaptive source root.
+- Every `.pbf` under the adaptive source root (recursive) is copied into the
+  PBF destination as a flat directory using its original basename.
+- Synchronization is copy-only: source and destination files are never
+  deleted.
+- Unchanged destinations are skipped (size + mtime fast path); changed
+  sources are updated with `shutil.copy2` plus an atomic `os.replace`.
+- Case-insensitive basename collisions are reported and never silently
+  overwrite each other; unrelated files still sync.
+- Missing sources and per-file copy errors are collected in a structured
+  report and do not abort the rest of the run.
+- The per-video PBF files stay in their adaptive output directories for
+  pipeline manifests/recovery; the flat PBF directory is the synchronized copy.
+
+### Startup and completion triggers
+
+- On UI startup, one full reconciliation runs after database/schema
+  initialization and before the task worker starts. A sync failure logs a
+  warning and startup continues.
+- After every successfully completed folder/job (serial legacy queue or
+  task-engine job first transitioning to `succeeded`), a full incremental
+  reconciliation is scheduled in the background. Runs are serialized and
+  triggers are coalesced; sync failures never change a successful processing
+  result. The legacy queue worker runs its own scheduler thread, so later
+  folders continue while the reconciliation runs, and queue shutdown waits
+  for the final requested run to finish cleanly. Direct one-folder
+  `--dir` processing honors `--sync-on-success` the same way.
+
+### One-time / manual sync
+
+```bash
+uv run python scripts/sync_desktop_exports.py
+uv run python scripts/sync_desktop_exports.py --json
+```
+
+The CLI accepts `--library-db`, `--source-root`, `--favorite-dest`,
+`--pbf-dest`, and `--json`. It exits nonzero only for top-level fatal
+failures; per-file missing/conflict entries are printed in the report.
+
+### Tests
+
+```bash
+uv run pytest -q tests/test_desktop_export_sync.py
+```
+
+All sync tests use temporary directories and temporary SQLite databases.
 
 ## Links
 

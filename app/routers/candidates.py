@@ -335,7 +335,7 @@ def list_candidates(
     if folder:
         folder_path = _resolve_user_folder(folder)
         _materialize_filesystem_candidates_for_folder(conn, folder_path)
-        rows = []
+        rows: list[tuple[object, Path, int]] = []
         status_counts: dict[str, int] = {}
         moved_errors: list[dict] = []
         for row in _candidate_rows(conn, status="all", folder=folder_path):
@@ -344,7 +344,18 @@ def list_candidates(
                 continue
 
             artifact_path = _resolve_artifact_path(row["artifact_path"])
-            if artifact_path is None or not artifact_path.exists():
+            if artifact_path is None:
+                moved_errors.append(
+                    {
+                        "candidate_id": row["candidate_id"],
+                        "artifact_path": row["artifact_path"],
+                        "expected_folder": str(folder_path),
+                    }
+                )
+                continue
+            try:
+                stat_result = artifact_path.stat()
+            except (OSError, ValueError):
                 moved_errors.append(
                     {
                         "candidate_id": row["candidate_id"],
@@ -357,7 +368,7 @@ def list_candidates(
             row_status = row["status"]
             status_counts[row_status] = status_counts.get(row_status, 0) + 1
             if status == "all" or row_status == status:
-                rows.append(row)
+                rows.append((row, artifact_path, stat_result.st_mtime_ns))
 
         if moved_errors:
             raise HTTPException(
@@ -373,8 +384,18 @@ def list_candidates(
                 },
             )
 
+        # Newest modified GIF first; equal mtimes tie-break by
+        # case-insensitive artifact path, then candidate ID. Ordering is
+        # applied to the complete filtered set before pagination.
+        rows.sort(
+            key=lambda item: (
+                -item[2],
+                os.path.normcase(str(item[1])).lower(),
+                item[0]["candidate_id"],
+            )
+        )
         total = len(rows)
-        page_rows = rows[offset : offset + limit]
+        page_rows = [item[0] for item in rows[offset : offset + limit]]
         return {
             "total": total,
             "limit": limit,

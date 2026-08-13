@@ -151,12 +151,27 @@ def _make_full_config(work_base: Path, export_base: Path, vlm_port: int,
         },
         "adaptive": {
             "sample_interval": kw.get("sample_interval", 2),
-            "max_duration": 1, "refine_threshold": 0.6,
+            "max_duration": 20, "refine_threshold": 0.6,
             "refine_radius": 1, "refine_interval": 1,
             "worthiness_threshold": 0.5, "merge_gap": 2,
             "merge_score_threshold": 0.55, "gif_fps": 24,
             "gif_max_width": 720, "output_ratio": 1.0,
-            "max_output": 60, "min_duration": 0.5,
+            "max_output": 60, "min_duration": 2.0,
+            # Staged rank/dedup now runs the shared action guard.  Keep this
+            # tiny deterministic fixture within the production 2-20s range.
+            "transition_min_duration_s": 2.0,
+            "transition_boundary_margin_s": 0.1,
+            "action_guard_enabled": True,
+            "action_vlm_verify_enabled": False,
+            "action_analysis_version": 1,
+            "action_analysis_window_s": 30.0,
+            "action_preferred_min_duration_s": 4.0,
+            "action_preferred_max_duration_s": 12.0,
+            "action_scan_fps": 4.0,
+            "action_boundary_confidence_threshold": 0.65,
+            "action_loop_adjust_s": 0.75,
+            "action_vlm_min_worthiness": 0.60,
+            "action_fallback_mode": "fixed_window",
             "potplayer_pbf_enabled": True,
             "embedding_dedup_enabled": False,
             "temporal_dedup_enabled": True,
@@ -205,6 +220,141 @@ def _timestamp_to_ms(ts: str) -> int:
     if len(parts) == 3:
         return int(parts[0]) * 3600000 + int(parts[1]) * 60000 + int(parts[2]) * 1000
     return int(parts[0]) * 60000 + int(parts[1]) * 1000
+
+
+def _create_hard_cut_and_pan_video(tmp_path: Path) -> Path:
+    """Create a two-shot fixture: static red then moving test pattern."""
+    video_path = tmp_path / "hard-cut-slow-pan.mp4"
+    result = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", "color=c=red:s=128x128:r=12:d=3",
+            "-f", "lavfi", "-i", "color=c=blue:s=128x128:r=12:d=4",
+            "-filter_complex",
+            "[1:v]drawbox=x='20+10*t':y=44:w=24:h=24:c=white:t=fill[m];"
+            "[0:v][m]concat=n=2:v=1:a=0,format=yuv420p[v]",
+            "-map", "[v]", "-c:v", "libx264", str(video_path),
+        ],
+        capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0 or not video_path.exists():
+        pytest.skip(f"ffmpeg unavailable: {result.stderr[:200]}")
+    return video_path
+
+
+def test_rank_dedup_transition_guard_and_gif_max_duration(tmp_path):
+    """The staged path splits a hard cut and retains a moving later shot."""
+    from scripts.test_video_adaptive import _stage_gif_clip, _stage_rank_dedup
+
+    video_path = _create_hard_cut_and_pan_video(tmp_path)
+    work_dir = tmp_path / "work"
+    export_dir = tmp_path / "exports"
+    work_dir.mkdir()
+    export_dir.mkdir()
+    max_duration = 3.0
+    scored_frames = [
+        {"timestamp": 2.0, "path": "before.jpg", "gif_worthiness": 0.90,
+         "caption": "red shot", "emotional_core": "calm"},
+        {"timestamp": 4.0, "path": "after.jpg", "gif_worthiness": 0.92,
+         "caption": "moving pan", "emotional_core": "energy"},
+        {"timestamp": 5.0, "path": "pan.jpg", "gif_worthiness": 0.95,
+         "caption": "slow pan", "emotional_core": "energy"},
+    ]
+    synth_manifest = {
+        "schema_version": 1, "stage": "synthesize", "output_key": "synthesize",
+        "clips": [
+            {"start_ts": 2.0, "end_ts": 4.0, "best_frame_ts": 3.0,
+             "best_frame_path": "before.jpg", "frame_count": 2,
+             "gif_worthiness": 0.92, "caption": "cut candidate",
+             "emotional_core": "energy"},
+            {"start_ts": 5.0, "end_ts": 5.0, "best_frame_ts": 5.0,
+             "best_frame_path": "pan.jpg", "frame_count": 1,
+             "gif_worthiness": 0.95, "caption": "slow pan",
+             "emotional_core": "energy"},
+        ],
+        "scored_frames_version": 1, "scored_frames": scored_frames,
+    }
+    synth_path = work_dir / "synthesize_manifest.json"
+    synth_path.write_text(json.dumps(synth_manifest), encoding="utf-8")
+    cfg = {
+        "embed_sim_threshold": 0.94, "embed_dedup_enabled": False,
+        "temporal_dedup_enabled": False, "temporal_dedup_min_gap_s": 1,
+        # The guard may accept half-second scan segments, but rank/dedup must
+        # discard them because gif_clip requires this 1.5-second minimum.
+        "output_ratio": 1.0, "max_output": 0, "min_duration": 2.0,
+        "max_duration": max_duration, "worthiness_threshold": 0.5,
+        "vlm_temperature": 0.0, "vlm_top_p": 1.0, "vlm_top_k": 1,
+        "gif_fps": 8, "gif_max_width": 128,
+        "transition_guard_enabled": True, "transition_min_duration_s": 0.5,
+        "transition_boundary_margin_s": 0.1, "transition_scan_fps": 8,
+        "transition_scan_width": 128, "transition_motion_compensation": True,
+        "transition_hard_threshold": 0.40, "transition_soft_threshold": 0.30,
+        "transition_soft_run_frames": 3, "transition_rescore_split_segments": False,
+        "action_guard_enabled": True, "action_vlm_verify_enabled": False,
+        "action_analysis_version": 1, "action_analysis_window_s": 7.0,
+        "action_preferred_min_duration_s": 2.0,
+        "action_preferred_max_duration_s": 3.0, "action_scan_fps": 4.0,
+        "action_boundary_confidence_threshold": 0.65,
+        "action_loop_adjust_s": 0.75, "action_vlm_min_worthiness": 0.60,
+        "action_fallback_mode": "fixed_window",
+        "action_config_hash": "a" * 64,
+    }
+    synth_raw = synth_path.read_bytes()
+    inputs = {"synthesize_manifest": [{
+        "artifact_id": "standalone-synthesize",
+        "stage_id": "standalone-synthesize-stage",
+        "artifact_kind": "synthesize_manifest",
+        "path": str(synth_path),
+        "sha256": hashlib.sha256(synth_raw).hexdigest(),
+        "size_bytes": len(synth_raw),
+    }]}
+    _stage_rank_dedup(str(video_path), str(export_dir), str(work_dir), cfg, inputs, {})
+    rank_path = work_dir / "rank_dedup_manifest.json"
+    rank = json.loads(rank_path.read_text(encoding="utf-8"))
+    ledger_path = work_dir / "rank_candidate_ledger_manifest.json"
+    gif_inputs = {
+        "rank_dedup_manifest": [{"path": str(rank_path)}],
+        "rank_candidate_ledger": [{
+            **rank["quality_moe"]["candidate_ledger"],
+            "path": str(ledger_path),
+        }],
+        "synthesize_manifest": inputs["synthesize_manifest"],
+    }
+
+    assert rank["schema_version"] == 2
+    assert rank["transition_guard"]["split"] >= 1
+    assert rank["action_guard"]["input"] == len(synth_manifest["clips"])
+    assert any(c["caption"] == "slow pan" for c in rank["clips"])
+    assert len({c["clip_id"] for c in rank["clips"]}) == len(rank["clips"])
+    for clip in rank["clips"]:
+        assert clip["end_ts"] - clip["start_ts"] >= cfg["min_duration"] - 1e-6
+        assert clip["end_ts"] - clip["start_ts"] <= max_duration + 1e-6
+        # A clean segment cannot straddle the three-second hard cut.
+        assert not (clip["start_ts"] < 3.0 < clip["end_ts"])
+        _stage_gif_clip(
+            str(video_path), str(work_dir), str(export_dir), str(work_dir), cfg,
+            clip["clip_id"], gif_inputs,
+        )
+
+    gif_manifests = list(work_dir.glob("gif_clip_*_manifest.json"))
+    assert gif_manifests
+    for path in gif_manifests:
+        gif_manifest = json.loads(path.read_text(encoding="utf-8"))
+        rank_clip = next(
+            clip for clip in rank["clips"]
+            if clip["clip_id"] == gif_manifest["clip_id"]
+        )
+        assert gif_manifest["schema_version"] == 2
+        assert gif_manifest["start_ts"] == rank_clip["start_ts"]
+        assert gif_manifest["end_ts"] == rank_clip["end_ts"]
+        assert (
+            gif_manifest["action_boundary_mode"]
+            == rank_clip["action_boundary_mode"]
+        )
+        assert (
+            gif_manifest["end_ts"] - gif_manifest["start_ts"]
+            <= max_duration + 1e-6
+        )
 
 
 # ---------------------------------------------------------------------------

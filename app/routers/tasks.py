@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.config import load_config
 from app.quality_lab.config_builder import deep_merge, normalize_task_config
+from app.services.action_config import freeze_action_config
 from app.task_engine.models import CreateJob, JobStatus
 from app.task_engine.repository import (
     ActiveJobConflictError,
@@ -167,6 +168,10 @@ def create_job(
             "extensions": body.extensions,
         }
         normalized = normalize_task_config(merged_config)
+        _, action_config_hash = freeze_action_config(
+            normalized.get("adaptive", {})
+        )
+        normalized["action_config_hash"] = action_config_hash
         # P1-3 (fourth-review §8): recompute config_hash from the FINAL
         # merged business config AFTER deep-merge + metadata + normalize.
         # Never trust a config_hash carried in the request body - it can

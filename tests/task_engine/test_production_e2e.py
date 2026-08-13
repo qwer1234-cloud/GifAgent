@@ -80,7 +80,7 @@ def _make_config(work_base: Path, tmp_path: Path, **extra) -> dict:
             "worthiness_threshold": 0.2, "merge_gap": 12,
             "merge_score_threshold": 0.55,
             "gif_fps": 24, "gif_max_width": 720, "output_ratio": 1.0,
-            "min_duration": 0.5,
+            "min_duration": 2.0,
             "potplayer_pbf_enabled": True,
             "embedding_dedup_enabled": True, "temporal_dedup_enabled": True,
             "temporal_dedup_min_gap_s": 12, "embedding_dedup_threshold": 0.94,

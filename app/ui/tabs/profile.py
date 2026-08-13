@@ -153,13 +153,17 @@ def _run_backfill_sync(progress_fn=None) -> dict[str, Any]:
 
     from app.db import get_connection
     from app.services.candidate_vectors import backfill_candidate_vectors
-    from app.services.embedding import compute_text_embedding
+    from app.services.embedding import (
+        compute_text_embedding,
+        compute_text_embeddings_batch,
+    )
 
     conn = get_connection()
     try:
         return backfill_candidate_vectors(
             conn,
             embed_fn=compute_text_embedding,
+            batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
             progress_fn=progress_fn,
         )

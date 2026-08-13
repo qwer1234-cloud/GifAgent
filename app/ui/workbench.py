@@ -83,6 +83,14 @@ def get_allowed_paths() -> list[str]:
 # Launch kwargs (used by candidate_review / launcher)
 # ---------------------------------------------------------------------------
 
+_LAYOUT_CSS_PATH = os.path.join(os.path.dirname(__file__), "static", "layout.css")
+
+
+def load_layout_css() -> str:
+    """Read the shared responsive layout CSS as UTF-8 text."""
+    with open(_LAYOUT_CSS_PATH, encoding="utf-8") as f:
+        return f.read()
+
 
 def launch_kwargs() -> dict:
     """Return keyword arguments for ``app.launch(**launch_kwargs())``."""
@@ -95,7 +103,7 @@ def launch_kwargs() -> dict:
         "server_port": 7861,
         "allowed_paths": get_allowed_paths(),
         "theme": gr.themes.Soft(),
-        "css": CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS,
+        "css": CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS + load_layout_css(),
         "js": CONFIG_TOOLTIP_JS + REVIEW_SHORTCUTS_JS,
     }
 

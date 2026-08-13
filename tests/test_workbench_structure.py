@@ -139,3 +139,38 @@ def test_new_tab_modules_exist():
     from app.ui.tabs import search  # noqa: F401
     from app.ui.tabs import collections  # noqa: F401
     from app.ui.tabs import settings  # noqa: F401
+
+
+def test_launch_kwargs_concatenates_shared_layout_css():
+    """launch_kwargs css must include the shared UTF-8 layout.css."""
+    from app.ui import workbench
+    from app.ui.tabs.review import REVIEW_LAYOUT_CSS
+    from app.ui.tabs.settings import CONFIG_TOOLTIP_CSS
+
+    kwargs = workbench.launch_kwargs()
+    shared = workbench.load_layout_css()
+    assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS + shared
+    assert ".ga-review-layout" in kwargs["css"]
+    assert ".ga-settings-layout" in kwargs["css"]
+    assert ".ga-settings-row" in kwargs["css"]
+    assert ".ga-settings-group" in kwargs["css"]
+    assert ".ga-control-layout" in kwargs["css"]
+    assert ".ga-search-gallery" in kwargs["css"]
+    assert ".ga-collections-table" in kwargs["css"]
+    assert "@media (max-width: 1100px)" in kwargs["css"]
+
+
+def test_blocks_does_not_receive_css_paths():
+    """build_workbench must not pass css_paths to gr.Blocks."""
+    from app.ui import workbench
+
+    source = Path(workbench.__file__).read_text(encoding="utf-8")
+    assert "css_paths" not in source
+
+
+def test_pyinstaller_spec_bundles_shared_layout_css():
+    """The namespace-package app assets must be explicit in the frozen bundle."""
+    spec_path = Path(__file__).resolve().parents[1] / "build_exe.spec"
+    source = spec_path.read_text(encoding="utf-8")
+
+    assert '("app/ui/static/layout.css", "app/ui/static")' in source

@@ -11,13 +11,24 @@ from app.ui.candidate_review import (
     config_tooltip_icon,
     launch_kwargs,
 )
+from app.ui.workbench import load_layout_css
 
 
 def test_every_config_field_has_non_empty_chinese_tooltip_label():
     assert set(CONFIG_FIELD_HELP) == set(CONFIG_FIELD_KEYS)
-    assert len(CONFIG_FIELD_KEYS) == 22
+    assert len(CONFIG_FIELD_KEYS) == 28
     assert "preference_memory.base_score_weight" in CONFIG_FIELD_KEYS
     assert "preference_memory.preference_score_weight" in CONFIG_FIELD_KEYS
+    assert "adaptive.score_prompt_mode" in CONFIG_FIELD_KEYS
+    for key in (
+        "adaptive.transition_guard_enabled",
+        "adaptive.transition_min_duration_s",
+        "adaptive.transition_boundary_margin_s",
+        "adaptive.action_guard_enabled",
+        "adaptive.action_vlm_verify_enabled",
+    ):
+        assert key in CONFIG_FIELD_KEYS
+        assert any("\u4e00" <= char <= "\u9fff" for char in CONFIG_FIELD_HELP[key])
 
     for key in CONFIG_FIELD_KEYS:
         if key == "preference_memory.enabled":
@@ -42,9 +53,13 @@ def test_every_config_field_has_non_empty_chinese_tooltip_label():
 
 def test_launch_injects_tooltip_css():
     kwargs = launch_kwargs()
-    assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS
+    assert kwargs["css"] == CONFIG_TOOLTIP_CSS + REVIEW_LAYOUT_CSS + load_layout_css()
     assert ".config-tooltip-icon" in kwargs["css"]
+    assert ".ga-review-layout" in kwargs["css"]
+    assert "--ga-gallery-min-height" in kwargs["css"]
     assert kwargs["js"] == CONFIG_TOOLTIP_JS + REVIEW_SHORTCUTS_JS
     assert "preference-memory-enabled" in kwargs["js"]
+    assert "config-adaptive-action-guard-enabled" in kwargs["js"]
+    assert "config-adaptive-action-vlm-verify-enabled" in kwargs["js"]
     assert kwargs["js"].lstrip().startswith("(() => {")
     assert "setTimeout(attach" in kwargs["js"]

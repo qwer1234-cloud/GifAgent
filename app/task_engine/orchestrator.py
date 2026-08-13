@@ -22,6 +22,7 @@ from pathlib import Path
 from app.task_engine.fingerprints import fingerprint_video
 from app.task_engine.models import StageName
 from app.task_engine.repository import TaskRepository
+from app.services.desktop_export_sync import request_background_sync
 
 # ---------------------------------------------------------------------------
 # Video discovery
@@ -357,12 +358,12 @@ def _ensure_gif_clip_stages(
         ) from exc
 
     # Validate manifest structure.
-    from app.task_engine.artifacts import validate_manifest_json
+    from app.task_engine.artifacts import validate_rank_manifest_with_db_lineage
 
-    validate_manifest_json(
-        json.dumps(manifest).encode("utf-8"),
-        "rank_dedup_manifest",
-        expected_stage="rank_dedup",
+    validate_rank_manifest_with_db_lineage(
+        repo.conn,
+        video_id,
+        manifest_path.read_bytes(),
     )
 
     clips = manifest.get("clips", [])
@@ -600,8 +601,20 @@ def _retry_job(repo: TaskRepository, job_id: str, command_id: str) -> None:
 
 def _set_job_status(repo: TaskRepository, job_id: str, status: str) -> None:
     _ensure_no_open_txn(repo)
-    repo.conn.execute("UPDATE task_jobs SET status=?, updated_at=? WHERE job_id=?", (status, _now_iso(), job_id))
+    old = repo.conn.execute(
+        "SELECT status FROM task_jobs WHERE job_id=?", (job_id,)
+    ).fetchone()
+    old_status = old["status"] if old else None
+    repo.conn.execute(
+        "UPDATE task_jobs SET status=?, updated_at=? WHERE job_id=?",
+        (status, _now_iso(), job_id),
+    )
     repo.conn.commit()
+    if status == "succeeded" and old_status != "succeeded":
+        # Schedule one full desktop export reconciliation exactly on the
+        # first transition to ``succeeded``.  Sync failures are isolated in
+        # the background scheduler and never change job results.
+        request_background_sync()
 
 
 def _write_event(repo: TaskRepository, kind: str, payload: dict) -> None:

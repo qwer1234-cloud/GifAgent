@@ -64,16 +64,35 @@ def test_backfill_profile_vectors_only_embeds_feedback_targets(monkeypatch):
     conn = FakeConnection()
     calls = []
 
-    def fake_backfill(connection, *, embed_fn, only_feedback):
-        calls.append((connection, embed_fn, only_feedback))
-        return {"scanned": 12, "missing": 5, "inserted": 5, "failed": 0}
+    def fake_backfill(connection, *, embed_fn, batch_embed_fn, only_feedback):
+        calls.append((connection, embed_fn, batch_embed_fn, only_feedback))
+        return {
+            "scanned": 12,
+            "missing": 5,
+            "inserted": 5,
+            "failed": 0,
+            "aborted": False,
+            "remaining": 0,
+        }
 
     monkeypatch.setattr(candidate_review, "get_connection", lambda: conn)
     monkeypatch.setattr(candidate_review, "backfill_candidate_vectors", fake_backfill)
     monkeypatch.setattr(candidate_review, "compute_text_embedding", lambda text: [0.0] * 768)
+    monkeypatch.setattr(
+        candidate_review,
+        "compute_text_embeddings_batch",
+        lambda texts: [[0.0] * 768 for _ in texts],
+    )
 
     result = json.loads(candidate_review.backfill_profile_vectors())
 
     assert result["inserted"] == 5
-    assert calls == [(conn, candidate_review.compute_text_embedding, True)]
+    assert calls == [
+        (
+            conn,
+            candidate_review.compute_text_embedding,
+            candidate_review.compute_text_embeddings_batch,
+            True,
+        )
+    ]
     assert conn.closed is True
