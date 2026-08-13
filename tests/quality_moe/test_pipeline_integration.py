@@ -825,7 +825,7 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
     )
     manifest = json.loads(open(result["_artifacts"][0]["path"], encoding="utf-8").read())
 
-    assert [clip["gif_worthiness"] for clip in seen] == [0.9, 0.7]
+    assert [clip["gif_worthiness"] for clip in seen] == [0.7, 0.9]
     assert [clip["gif_worthiness"] for clip in manifest["clips"]] == [0.9, 0.7]
     assert manifest["quality_moe"]["assessed_count"] == 2
     artifacts = {item["artifact_kind"]: item for item in result["_artifacts"]}
@@ -844,6 +844,109 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
         upstream_artifact_ref=_synthesize_lineage_ref(),
     )
     assert validated["quality_moe"]["assessed_count"] == 2
+
+
+def test_staged_rank_evaluates_quality_before_output_truncation(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    clips = [
+        {"start_ts": 2.0, "end_ts": 6.0, "gif_worthiness": 0.7},
+        {"start_ts": 8.0, "end_ts": 12.0, "gif_worthiness": 0.9},
+        {"start_ts": 14.0, "end_ts": 18.0, "gif_worthiness": 0.8},
+    ]
+    monkeypatch.setattr(
+        adaptive,
+        "_read_upstream_manifest",
+        lambda *_a, **_k: {"clips": clips, "scored_frames": []},
+    )
+    monkeypatch.setattr(
+        adaptive.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(stdout="30.0", returncode=0, stderr=""),
+    )
+
+    def fake_materialize(*, clip, **_kwargs):
+        clean = {
+            **clip,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+        }
+        return SimpleNamespace(
+            clips=(clean,), transition_metrics={}, action_metrics={},
+        )
+
+    monkeypatch.setattr(adaptive, "materialize_action_candidates", fake_materialize)
+    seen = []
+
+    def fake_evaluate(values, **kwargs):
+        seen.extend(values)
+        assessments = tuple(
+            replace(
+                _assessment(
+                    value["candidate_id"], kwargs["config"].config_hash,
+                    QualityDecision.KEEP_AS_IS,
+                ),
+                provenance={
+                    "source_file_sha256": source_sha,
+                    "source_video": str(source),
+                },
+            )
+            for value in values
+        )
+        effective = tuple(
+            {**value, "quality_assessment": assessment.to_dict()}
+            for value, assessment in zip(values, assessments)
+        )
+        return QualityBatchResult(assessments, effective, ())
+
+    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    cfg = adaptive.extract_config({
+        "adaptive": {
+            "embedding_dedup_enabled": False,
+            "temporal_dedup_enabled": False,
+            "output_ratio": 1.0,
+            "max_output": 1,
+        },
+        "quality_moe": {"report_only": True},
+    })
+
+    result = adaptive._stage_rank_dedup(
+        str(source), str(tmp_path / "exports"), str(tmp_path), cfg,
+        {"synthesize_manifest": [_synthesize_lineage_ref()]},
+        config_data={"quality_moe": {"report_only": True}},
+    )
+    manifest = json.loads(open(result["_artifacts"][0]["path"], encoding="utf-8").read())
+
+    assert [clip["gif_worthiness"] for clip in seen] == [0.7, 0.9, 0.8]
+    assert manifest["quality_moe"]["input_count"] == 3
+    assert manifest["quality_moe"]["assessed_count"] == 3
+    assert manifest["quality_moe"]["effective_count"] == 3
+    assert [clip["gif_worthiness"] for clip in manifest["clips"]] == [0.9]
+    assert manifest["clip_count"] == 1
+
+    artifacts = {item["artifact_kind"]: item for item in result["_artifacts"]}
+    ledger_ref = {
+        **manifest["quality_moe"]["candidate_ledger"],
+        "path": artifacts["rank_candidate_ledger"]["path"],
+    }
+    from app.task_engine.artifacts import validate_manifest_json
+    validated = validate_manifest_json(
+        Path(artifacts["rank_dedup_manifest"]["path"]).read_bytes(),
+        "rank_dedup_manifest",
+        candidate_ledger_bytes=Path(
+            artifacts["rank_candidate_ledger"]["path"]
+        ).read_bytes(),
+        candidate_ledger_ref=ledger_ref,
+        upstream_artifact_ref=_synthesize_lineage_ref(),
+    )
+    assert validated["quality_moe"]["assessed_count"] == 3
+    assert validated["clip_count"] == 1
 
 
 def test_direct_config_uses_one_loaded_snapshot_not_global_get(monkeypatch):

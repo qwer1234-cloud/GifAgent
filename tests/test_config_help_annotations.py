@@ -16,9 +16,10 @@ from app.ui.workbench import load_layout_css
 
 def test_every_config_field_has_non_empty_chinese_tooltip_label():
     assert set(CONFIG_FIELD_HELP) == set(CONFIG_FIELD_KEYS)
-    assert len(CONFIG_FIELD_KEYS) == 27
+    assert len(CONFIG_FIELD_KEYS) == 28
     assert "preference_memory.base_score_weight" in CONFIG_FIELD_KEYS
     assert "preference_memory.preference_score_weight" in CONFIG_FIELD_KEYS
+    assert "adaptive.score_prompt_mode" in CONFIG_FIELD_KEYS
     for key in (
         "adaptive.transition_guard_enabled",
         "adaptive.transition_min_duration_s",

@@ -905,7 +905,7 @@ class TestManifestValidation:
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
             )
 
-    def test_report_only_rank_manifest_cannot_drop_or_reorder_assessed_clips(self):
+    def test_report_only_rank_manifest_cannot_drop_candidates_via_quality_routing(self):
         from app.task_engine.artifacts import validate_manifest_json
 
         manifest = _valid_quality_rank_manifest()
@@ -939,6 +939,57 @@ class TestManifestValidation:
         )
 
         with pytest.raises(ValueError, match="report_only"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+            )
+
+    def test_report_only_rank_manifest_may_truncate_export_clips_after_assessment(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        second = {
+            **deepcopy(manifest["quality_moe"]["assessments"][0]),
+            "candidate_id": "clip-2",
+        }
+        for item in second["evidence"]:
+            item["candidate_id"] = "clip-2"
+        second["evidence_hashes"] = [
+            _quality_evidence_hash(item) for item in second["evidence"]
+        ]
+        second_candidate = deepcopy(
+            manifest["quality_moe"]["assessed_candidates"][0]
+        )
+        second_candidate["candidate_id"] = "clip-2"
+        manifest["quality_moe"]["assessments"].append(second)
+        manifest["quality_moe"]["assessed_candidates"].append(second_candidate)
+        manifest["quality_moe"]["assessed_candidates_digest"] = (
+            _assessed_candidates_digest(
+                manifest["quality_moe"]["assessed_candidates"]
+            )
+        )
+        manifest["quality_moe"]["input_count"] = 2
+        manifest["quality_moe"]["assessed_count"] = 2
+        manifest["quality_moe"]["effective_count"] = 2
+        manifest["quality_moe"]["decision_counts"] = {"KEEP_AS_IS": 2}
+        manifest["quality_moe"]["top_assessments"].append({
+            "candidate_id": "clip-2",
+            "effective_decision": "KEEP_AS_IS",
+            "confidence": 0.92,
+        })
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
+        )
+        assert [clip["clip_id"] for clip in validated["clips"]] == ["clip-1"]
+        assert validated["quality_moe"]["assessed_count"] == 2
+
+    def test_report_only_rank_manifest_rejects_unassessed_export_clip(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        manifest = _valid_quality_rank_manifest()
+        manifest["clips"][0]["clip_id"] = "clip-unknown"
+
+        with pytest.raises(ValueError, match="unassessed"):
             validate_manifest_json(
                 json.dumps(manifest).encode("utf-8"), "rank_dedup_manifest"
             )

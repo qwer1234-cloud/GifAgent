@@ -15,6 +15,10 @@ import httpx
 import yaml
 
 from app.services.action_config import freeze_action_config
+from app.services.score_prompt import (
+    SCORE_PROMPT_MODES,
+    normalize_score_prompt_mode,
+)
 
 API_BASE = "http://127.0.0.1:8000"
 CONFIG_FILE = "configs/models.yaml"
@@ -48,6 +52,7 @@ CONFIG_FIELD_KEYS = (
     "adaptive.output_ratio",
     "adaptive.max_output",
     "adaptive.gif_fps",
+    "adaptive.score_prompt_mode",
     "preference_memory.enabled",
     "preference_memory.base_score_weight",
     "preference_memory.preference_score_weight",
@@ -78,6 +83,7 @@ CONFIG_FIELD_HELP = {
     "adaptive.output_ratio": "从去重后的候选片段中导出的比例，范围通常为 0 到 1。",
     "adaptive.max_output": "每个视频最多导出的 GIF 数量；填写 0 表示不设上限。",
     "adaptive.gif_fps": "导出 GIF 的播放帧率，单位为每秒帧数。",
+    "adaptive.score_prompt_mode": "VLM 打分提示词；default 为影视向，adult 为成人向中性 GIF 潜力。写入任务快照，运行时不再读取环境变量。",
     "preference_memory.enabled": "是否启用基于用户反馈构建偏好画像并参与后续排序。",
     "preference_memory.base_score_weight": "导出排序中原始 VLM gif_worthiness 评分的权重；与偏好权重按比例归一化。",
     "preference_memory.preference_score_weight": "导出排序中已发布偏好画像评分的权重；与原始评分权重按比例归一化。",
@@ -89,6 +95,7 @@ CONFIG_FIELD_LABELS = {
     "adaptive.max_duration": "max_duration (s)",
     "adaptive.max_output": "max_output (0=no cap)",
     "adaptive.gif_fps": "gif_fps (frames/s)",
+    "adaptive.score_prompt_mode": "score_prompt_mode",
 }
 
 CONFIG_TOOLTIP_CSS = """
@@ -165,6 +172,11 @@ def config_textbox(key: str, **kwargs):
     return gr.Textbox(**config_field_kwargs(key), **kwargs)
 
 
+def config_dropdown(key: str, choices: list[str], **kwargs):
+    gr.HTML(config_field_label(key), sanitize_html=False)
+    return gr.Dropdown(choices=choices, **config_field_kwargs(key), **kwargs)
+
+
 def config_checkbox(key: str, **kwargs):
     return gr.Checkbox(**config_checkbox_kwargs(key), **kwargs)
 
@@ -210,7 +222,7 @@ def load_config():
         return (
             [str(e)] * 7,
             [str(e)] * 2,
-            [str(e)] * 15,
+            [str(e)] * 16,
             [False, "0.50", "0.50"],
             "",
         )
@@ -249,6 +261,9 @@ def load_config():
         str(adaptive.get("output_ratio", 1.0)),
         str(adaptive.get("max_output", 0)),
         str(adaptive.get("gif_fps", 24)),
+        normalize_score_prompt_mode(
+            adaptive.get("score_prompt_mode", "default"), strict=False
+        ),
     ]
     pm_fields = [
         bool(pm.get("enabled", False)),
@@ -270,6 +285,7 @@ def save_config(
     ad_transition_boundary_margin_s,
     ad_action_guard_enabled, ad_action_vlm_verify_enabled,
     ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
+    ad_score_prompt_mode,
     pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_text,
 ):
     """Save edited fields back to configs/models.yaml, preserving other sections."""
@@ -324,6 +340,9 @@ def save_config(
         adaptive["output_ratio"] = float(ad_output_ratio)
         adaptive["max_output"] = int(ad_max_output)
         adaptive["gif_fps"] = int(ad_gif_fps)
+        adaptive["score_prompt_mode"] = normalize_score_prompt_mode(
+            ad_score_prompt_mode
+        )
         freeze_action_config(adaptive)
 
         cfg.setdefault("preference_memory", {})
@@ -434,6 +453,11 @@ def build_settings_tab(context) -> None:
                     with gr.Column(min_width=160):
                         ad_max_output = config_textbox("adaptive.max_output", value="")
                 ad_gif_fps = config_textbox("adaptive.gif_fps", value="")
+                ad_score_prompt_mode = config_dropdown(
+                    "adaptive.score_prompt_mode",
+                    choices=list(SCORE_PROMPT_MODES),
+                    value="default",
+                )
 
             with gr.Accordion("Preference Memory", open=True):
                 gr.Markdown("### Preference Memory")
@@ -466,8 +490,8 @@ def build_settings_tab(context) -> None:
         ad_worthiness_threshold, ad_refine_threshold,
         ad_max_duration, ad_transition_guard_enabled, ad_transition_min_duration_s,
         ad_transition_boundary_margin_s, ad_action_guard_enabled,
-        ad_action_vlm_verify_enabled, ad_vlm_temperature, ad_output_ratio,
-        ad_max_output, ad_gif_fps,
+        ad_action_vlm_verify_enabled,         ad_vlm_temperature, ad_output_ratio,
+        ad_max_output, ad_gif_fps, ad_score_prompt_mode,
         pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_yaml,
     ]
     save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])

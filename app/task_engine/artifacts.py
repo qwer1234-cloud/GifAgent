@@ -1749,19 +1749,33 @@ def _validate_quality_summary(
     ]
     if value["top_assessments"] != expected_top_assessments:
         raise ValueError(f"{context} top_assessments do not match assessments")
-    if value["effective_count"] != len(clips):
-        raise ValueError(f"{context} effective_count must equal len(clips)")
+    if value["enabled"] and value["report_only"] and value["effective_count"] != value["assessed_count"]:
+        raise ValueError(
+            f"{context} report_only must not drop candidates via quality routing"
+        )
+    if len(clips) > value["effective_count"]:
+        raise ValueError(
+            f"{context} exported clip count cannot exceed effective_count"
+        )
     assessment_ids = [assessment["candidate_id"] for assessment in assessments]
     clip_ids = [clip["clip_id"] for clip in clips]
-    if value["enabled"] and value["report_only"] and clip_ids != assessment_ids:
-        raise ValueError(f"{context} report_only must preserve assessed clip count and order")
+    if len(clip_ids) != len(set(clip_ids)):
+        raise ValueError(f"{context} exported clip_ids must be unique")
+    if value["enabled"] and value["report_only"]:
+        assessed_set = set(assessment_ids)
+        if any(clip_id not in assessed_set for clip_id in clip_ids):
+            raise ValueError(
+                f"{context} report_only may truncate assessed clips but cannot export unassessed ids"
+            )
     if value["enabled"] and not value["report_only"]:
-        keep_ids = [
+        keep_ids = {
             assessment["candidate_id"] for assessment in assessments
             if assessment["effective_decision"] in {"KEEP_AS_IS", "KEEP_FOR_REPAIR"}
-        ]
-        if clip_ids != keep_ids:
-            raise ValueError(f"{context} active routing may fan out only effective KEEP clips")
+        }
+        if any(clip_id not in keep_ids for clip_id in clip_ids):
+            raise ValueError(
+                f"{context} active routing may fan out only effective KEEP clips"
+            )
     by_id = {assessment["candidate_id"]: assessment for assessment in assessments}
     for clip in clips:
         if value["enabled"] and clip.get("quality_assessment") != by_id.get(clip["clip_id"]):

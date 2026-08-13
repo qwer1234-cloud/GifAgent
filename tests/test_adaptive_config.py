@@ -159,6 +159,29 @@ def test_settings_action_checkboxes_load_after_transition_fields(
     _, _, adaptive_fields, _, _ = settings.load_config()
 
     assert adaptive_fields[6:11] == [False, "2.5", "0.5", False, True]
+    assert adaptive_fields[-1] == "default"
+
+
+def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"adaptive": {"score_prompt_mode": "default"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "CONFIG_FILE", str(config_path))
+
+    status, _ = settings.save_config(
+        "", "", "", "", "0.3", "2048", "120",
+        "", "",
+        "10", "12", "0.55", "0.2", "0.5", "20",
+        True, "2", "0.25", True, True,
+        "0.65", "1.0", "0", "24", "adult",
+        False, "0.5", "0.5", "",
+    )
+
+    assert status.startswith("Saved")
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["adaptive"]["score_prompt_mode"] == "adult"
 
 
 def test_settings_reject_invalid_action_relationship_without_writing(
@@ -183,7 +206,7 @@ def test_settings_reject_invalid_action_relationship_without_writing(
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "3",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24",
+        "0.65", "1.0", "0", "24", "default",
         False, "0.5", "0.5", "",
     )
 
@@ -213,7 +236,7 @@ def test_settings_reject_malformed_number_without_writing(
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "not-a-number",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24",
+        "0.65", "1.0", "0", "24", "default",
         False, "0.5", "0.5", "",
     )
 
@@ -235,6 +258,37 @@ def test_config_extracts_transition_defaults():
     assert cfg["transition_soft_threshold"] == 0.40
     assert cfg["transition_soft_run_frames"] == 3
     assert cfg["transition_rescore_split_segments"] is True
+    assert cfg["score_prompt_mode"] == "default"
+
+
+def test_extract_config_freezes_score_prompt_mode_from_the_job_snapshot(monkeypatch):
+    monkeypatch.setenv("GIFAGENT_SCORE_PROMPT_MODE", "adult")
+
+    cfg = extract_config({"adaptive": {}})
+    assert cfg["score_prompt_mode"] == "default"
+
+    frozen = extract_config({"adaptive": {"score_prompt_mode": "adult"}})
+    monkeypatch.setenv("GIFAGENT_SCORE_PROMPT_MODE", "default")
+    assert frozen["score_prompt_mode"] == "adult"
+
+    aliased = extract_config({"adaptive": {"score_prompt_mode": "nsfw"}})
+    assert aliased["score_prompt_mode"] == "adult"
+
+    with pytest.raises(ValueError, match="score_prompt_mode"):
+        extract_config({"adaptive": {"score_prompt_mode": "cinematic-v2"}})
+
+
+def test_get_score_prompt_uses_frozen_mode_not_environment(monkeypatch):
+    from scripts.test_video_adaptive import (
+        SCORE_PROMPT,
+        SCORE_PROMPT_ADULT,
+        get_score_prompt,
+    )
+
+    monkeypatch.setenv("GIFAGENT_SCORE_PROMPT_MODE", "adult")
+    assert get_score_prompt("default") == SCORE_PROMPT
+    assert get_score_prompt("adult") == SCORE_PROMPT_ADULT
+    assert get_score_prompt("optimized") == SCORE_PROMPT_ADULT
 
 
 def test_extract_config_freezes_quality_moe_from_the_job_snapshot():
@@ -272,6 +326,7 @@ def test_models_yaml_enables_report_only_quality_moe_by_default():
 
     assert cfg["quality_moe"]["enabled"] is True
     assert cfg["quality_moe"]["report_only"] is True
+    assert cfg["score_prompt_mode"] == "adult"
     assert cfg["quality_moe"]["repairability"]["photometric_mode"] == "clip_global"
     assert config_data["quality_moe"]["judge"]["base_url"] == "inherit_vlm"
     assert config_data["vlm"]["base_url"] == "auto"

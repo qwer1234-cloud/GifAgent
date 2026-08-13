@@ -11,8 +11,8 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 - **自动打标**：VLM（llava:13b）逐帧分析审美特征 → LLM（DeepSeek-V4-Flash）综合生成标签，所有输出经过质量门禁校验
 - **质量门禁**：统一的 JSON 解析器 + placeholder 检测 + Pydantic 模型校验，placeholder 率从 89% 降至 <1%
 - **向量索引**：基于 nomic-embed-text 的 FAISS 语义向量库，支持文本到 GIF 的跨模态检索（8109 向量 / 9221 媒体）
-- **RAG 增强**：两阶段自适应 GIF 提取，per-frame VLM 评分 + 时域 clip 合并 + FAISS 相似 GIF 检索
-- **智能采样**：7s 粗采样 → 高分区域 5s 细采样；区域 merge（`max_merge_span_s=24`）+ embedding/时域去重后导出
+- **自适应提取**：两阶段 GIF 提取，per-frame VLM 严格评分 + 时域 clip 合并 + embedding/时域去重；库内 FAISS 检索不注入打分或合成
+- **智能采样**：7s 粗采样 → 高分区域细采样；区域 merge + embedding/时域去重 → Quality MoE 评估全量候选 → 再按 `output_ratio` / `max_output` 截断导出
 - **断点恢复**：VLM 处理循环自动恢复、per-frame DB commit、每 50 batch 模型重启防降速
 - **Preference Memory**：候选 GIF 物化 → 人工反馈收集 → 偏好画像构建 → 重排序，含 holdout 评估门禁
 - **批量处理**：视频目录批量处理 + checkpoint 断点续跑，支持 200+ 视频无人值守处理
@@ -29,7 +29,7 @@ E:\data\originals\（8000+ GIF）
   → json_guard 统一解析 → quality 门禁校验
   → DeepSeek-V4-Flash 综合标注（tags + emotional_core + aesthetic_notes）
   → nomic-embed-text 向量化 → FAISS 索引
-  → 新视频：I-frame → VLM 裸分析 → 每帧 caption FAISS 检索 → RAG 增强合成
+  → 新视频：粗采样 → VLM 裸评分 → 细采样 / merge / 去重 → LLM 合成标签（非致命）
   → 导出候选 GIF（ffmpeg palette 二段式）
 ```
 
@@ -107,6 +107,9 @@ embedding:
 preference_memory:
   enabled: false                      # 偏好记忆功能开关
 
+adaptive:
+  score_prompt_mode: adult            # default = 影视向；adult = 成人向中性 GIF 潜力（写入任务快照）
+
 database:
   path: "data/library.db"
 
@@ -156,7 +159,7 @@ uv run python scripts/process_representatives.py --status
 uv run python scripts/inherit_and_index.py
 ```
 
-### 第三步：自适应 GIF 提取（RAG 增强）
+### 第三步：自适应 GIF 提取
 
 ```bash
 # 单视频处理：7s 粗采样 → VLM 评分 → 细采样 → 区域 merge → 去重导出
@@ -275,7 +278,7 @@ not exercise the bundled stage-script imports.
   demotion) so dense high-score timelines do not collapse into one mega-clip.
 - Embedding dedup uses `embedding_dedup_threshold=0.88`, then temporal dedup
   keeps the highest-scored clip within a 15s peak-time window.
-- Optional adult VLM scoring prompt: `GIFAGENT_SCORE_PROMPT_MODE=adult`.
+- Optional adult VLM scoring prompt: set `adaptive.score_prompt_mode: adult` in `configs/models.yaml` or the Settings dropdown. The value is frozen into the job snapshot and result JSON; scoring does not read environment variables.
 - Result JSON records both `embedding_deduped_clips` and final `deduped_clips`
   so each run shows how much was removed.
 
@@ -370,16 +373,17 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 
 ### RAG 两阶段流水线
 
-v2 架构采用两阶段设计避免 RAG 回音壁效应：
+自适应提取（`test_video_adaptive.py`，direct 与 staged 行为一致）：
+- 7s 间隔粗采样全片 → per-frame VLM 严格评分（可配置 `min_brightness` 暗场预过滤）
+- 高分区域（≥ `refine_threshold`）±`refine_radius` 内按 `refine_interval` 细采样
+- 区域 merge：双端门槛 + `max_merge_span_s` 硬封顶 + 弱峰值降级为单帧
+- Embedding 去重 + 时域去重后评估 Quality MoE，再按 `output_ratio` / `max_output` 截断导出
+- 当前**不**把 FAISS 相似收藏注入打分或 LLM 合成；库内 RAG 检索仍用于收藏索引与 Preference Memory
+
+库内两阶段 RAG（`test_video_rag_v2.py` 等实验脚本）仍采用：
 
 1. **Pass 1**：VLM 裸分析（无 RAG 上下文）→ 生成每帧的 caption + emotional_core
 2. **Pass 2**：每帧 caption → nomic-embed-text 向量化 → FAISS 检索 top-5 相似收藏 → 作为 RAG 上下文注入 LLM 综合
-
-自适应提取扩展（`test_video_adaptive.py`）：
-- 7s 间隔粗采样全片 → per-frame VLM 评分（可配置 `min_brightness` 暗场预过滤）
-- 高分区域（≥ `refine_threshold`，默认 0.55）±`refine_radius` 内按 `refine_interval` 细采样
-- 区域 merge：双端门槛 + `max_merge_span_s` 硬封顶 + 弱峰值降级为单帧
-- Embedding 去重（默认 cosine ≥ 0.88）+ 时域去重（默认峰值间隔 15s）后按 `output_ratio` 导出
 
 ### 断点恢复机制
 
@@ -429,6 +433,7 @@ GifAgent/
 │   │   ├── scenario.py               # 场景标签管理
 │   │   ├── video_fingerprint.py      # 视频指纹（时长+关键帧pHash，去重用）
 │   │   ├── clip_merge.py             # 自适应区域 merge（span 封顶 + 峰值降级）
+│   │   ├── score_prompt.py           # 冻结 VLM 打分提示词模式（default / adult）
 │   │   ├── candidates.py             # 候选 GIF 物化服务
 │   │   ├── preference_schema.py      # Preference Memory 数据库 DDL
 │   │   ├── preference_events.py      # 反馈事件记录服务
@@ -1173,7 +1178,7 @@ app/services/
 | 搜索 (Search) | `tabs/search.py` | Semantic + filtered search: full-text, tags, folder, duration, status, date ranges |
 | 合集 (Collections) | `tabs/collections.py` | Smart collections: generate, refresh, freeze, export (JSON manifest + PBF) |
 | 实验室 (Lab) | `tabs/lab.py` | Quality Lab: benchmark runs, blind A/B, champion promotion/rollback |
-| 设置 (Settings) | `tabs/settings.py` | Config editor + profile management + publish controls |
+| 设置 (Settings) | `tabs/settings.py` | Config editor（含 `score_prompt_mode` 下拉框）+ profile management + publish controls |
 
 ### New Services
 

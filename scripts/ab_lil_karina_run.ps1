@@ -16,13 +16,8 @@ Set-Location $Root
 $wslIp = (wsl -e hostname -I).Trim().Split()[0]
 $env:GIFAGENT_OLLAMA_BASE = "http://${wslIp}:11434"
 $env:PYTHONUNBUFFERED = "1"
-if ($Phase -like "optimized*") {
-    $env:GIFAGENT_SCORE_PROMPT_MODE = "adult"
-} else {
-    Remove-Item Env:GIFAGENT_SCORE_PROMPT_MODE -ErrorAction SilentlyContinue
-}
 Write-Host "GIFAGENT_OLLAMA_BASE=$($env:GIFAGENT_OLLAMA_BASE)"
-Write-Host "GIFAGENT_SCORE_PROMPT_MODE=$($env:GIFAGENT_SCORE_PROMPT_MODE)"
+Write-Host "score_prompt_mode comes from configs/models.yaml (adaptive.score_prompt_mode)"
 Write-Host "PYTHONUNBUFFERED=$($env:PYTHONUNBUFFERED)"
 
 $VideoDir = "C:\Users\sunhao\Desktop\ToWatch\Lil Karina"

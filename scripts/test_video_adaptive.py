@@ -50,8 +50,8 @@ from app.services.gif_windows import build_export_window
 from app.services.transition_candidates import build_guarded_clips
 from app.services.transition_guard import guard_candidate_window
 from app.services.temporal_evidence import TemporalEvidenceCache
-from app.services.indexer import get_index
 from app.services.json_guard import parse_json_response
+from app.services.score_prompt import normalize_score_prompt_mode
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
@@ -93,8 +93,7 @@ SCORE_PROMPT = (
     "NEVER output 'what you see', '2-3 observations', or pipe-delimited emotions."
 )
 
-# Adult-friendly scoring prompt applied in optimized A/B phase via
-# GIFAGENT_SCORE_PROMPT_MODE=adult (see get_score_prompt()).
+# Adult-friendly scoring prompt selected by frozen adaptive.score_prompt_mode.
 SCORE_PROMPT_ADULT = (
     "Evaluate this video frame for short-GIF potential. Use the full 0.0-1.0 scale.\n"
     "Output ONLY valid JSON with real, specific content. No template text.\n"
@@ -116,33 +115,15 @@ SCORE_PROMPT_ADULT = (
 )
 
 
-def get_score_prompt() -> str:
-    """Return scoring prompt; adult mode via GIFAGENT_SCORE_PROMPT_MODE=adult."""
-    mode = (os.environ.get("GIFAGENT_SCORE_PROMPT_MODE") or "").strip().lower()
-    if mode in ("adult", "optimized", "nsfw"):
+def get_score_prompt(mode: str = "default") -> str:
+    """Return the scoring prompt frozen into the job snapshot.
+
+    ``mode`` is the canonical ``default`` or ``adult`` value from
+    ``extract_config()``. Scoring never reads process environment variables.
+    """
+    if normalize_score_prompt_mode(mode) == "adult":
         return SCORE_PROMPT_ADULT
     return SCORE_PROMPT
-
-
-def safe_worth(value):
-    """Parse gif_worthiness robustly -- VLM sometimes returns text labels instead of numbers."""
-    if isinstance(value, (int, float)):
-        return max(0.0, min(1.0, float(value)))
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        try:
-            return max(0.0, min(1.0, float(lowered)))
-        except ValueError:
-            pass
-        if "excellent" in lowered:
-            return 0.9
-        if "good" in lowered:
-            return 0.7
-        if "average" in lowered:
-            return 0.4
-        if "bad" in lowered:
-            return 0.15
-    return 0.5  # fallback
 
 
 def _temporal_media_duration(duration_s: float, scan_fps: float) -> float:
@@ -600,6 +581,9 @@ def extract_config(config_data: dict) -> dict:
         "vlm_temperature": float(adaptive.get("vlm_temperature", 0.65)),
         "vlm_top_p": float(adaptive.get("vlm_top_p", 0.95)),
         "vlm_top_k": int(adaptive.get("vlm_top_k", 60)),
+        "score_prompt_mode": normalize_score_prompt_mode(
+            adaptive.get("score_prompt_mode", "default")
+        ),
         # 0 disables the dark-frame prefilter. Default 25 preserves legacy behavior.
         "min_brightness": float(adaptive.get("min_brightness", 25)),
         # Transition behavior comes only from this frozen config snapshot.
@@ -643,6 +627,35 @@ def _extract_direct_snapshot_config(config_data: dict) -> dict:
         "preference_memory": config_data.get("preference_memory", {}) or {},
         "quality_moe": config_data.get("quality_moe", {}) or {},
     })
+
+
+def _assign_candidate_identities(clips: list[dict], video_path: str) -> None:
+    """Give every clip a stable identity before the shared quality boundary."""
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    for index, clip in enumerate(clips):
+        candidate_id = clip.get("candidate_id") or clip.get("clip_id")
+        if not isinstance(candidate_id, str) or not candidate_id:
+            identity = (
+                f"{video_name}:{clip.get('start_ts')}:"
+                f"{clip.get('end_ts')}:{index}"
+            )
+            candidate_id = hashlib.sha256(
+                identity.encode("utf-8")
+            ).hexdigest()[:16]
+        clip["candidate_id"] = candidate_id
+        clip.setdefault("clip_id", candidate_id)
+
+
+def _planned_output_count(
+    n: int, output_ratio: float, max_output: int
+) -> int:
+    """Return the export cap after quality routing, matching direct mode."""
+    if n <= 0:
+        return 0
+    output_count = max(1, int(n * float(output_ratio)))
+    if int(max_output) > 0:
+        output_count = min(output_count, int(max_output))
+    return output_count
 
 
 def _quality_config_from_pipeline_cfg(cfg: dict) -> QualityMoeConfig:
@@ -1304,6 +1317,9 @@ def run_pipeline(
         "top_k": cfg["vlm_top_k"],
         "num_think": 0,
     }
+    SCORE_PROMPT_MODE = cfg.get("score_prompt_mode", "default")
+    score_prompt = get_score_prompt(SCORE_PROMPT_MODE)
+    vlm_retry_delay_s = vlm_runtime.retry_delay_s if vlm_runtime else 2.0
 
     VLM_MODEL = vlm_runtime.model if vlm_runtime else "llava:13b"
     VLM_BASE_URL = vlm_runtime.base_url if vlm_runtime else OLLAMA_BASE
@@ -1387,47 +1403,33 @@ def run_pipeline(
         print("ERROR: VLM not responding")
         sys.exit(1)
 
+    def _score_frame_file(frame_path: str, timestamp: float) -> tuple[dict | None, str | None]:
+        with open(frame_path, "rb") as frame_file:
+            return _score_vlm_frame(
+                base_url=VLM_BASE_URL,
+                model=VLM_MODEL,
+                image_bytes=frame_file.read(),
+                prompt=score_prompt,
+                options=VLM_OPTIONS,
+                threshold=WORTHINESS_THRESHOLD,
+                timestamp=timestamp,
+                frame_path=frame_path,
+                retry_delay_s=vlm_retry_delay_s,
+            )
+
     scored = []
     for fi, sf in enumerate(sample_frames):
-        with open(sf["path"], "rb") as f:
-            img_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-        for attempt in range(3):
-            try:
-                resp = httpx.post(
-                    f"{VLM_BASE_URL}/api/generate",
-                    json={
-                        "model": VLM_MODEL,
-                        "prompt": get_score_prompt(),
-                        "images": [img_b64],
-                        "stream": False,
-                        "options": VLM_OPTIONS,
-                    },
-                    timeout=120,
-                )
-                resp.raise_for_status()
-                raw = resp.json().get("response", "")
-                parsed = parse_vlm_response(raw)
-
-                worth = safe_worth(parsed.get("gif_worthiness", 0.5))
-                parsed["gif_worthiness"] = worth
-                parsed["timestamp"] = sf["timestamp"]
-                parsed["path"] = sf["path"]
-
-                if worth >= WORTHINESS_THRESHOLD:
-                    scored.append(parsed)
-
-                if (fi + 1) % 30 == 0:
-                    avg = sum(s["gif_worthiness"] for s in scored) / max(1, len(scored))
-                    print(
-                        f"  [{fi+1}/{len(sample_frames)}] scored={len(scored)} kept, "
-                        f"avg_worth={avg:.2f}"
-                    )
-                break
-            except Exception as e:
-                if attempt == 2:
-                    print(f"  [{fi+1}] FAILED: {e}")
-                time.sleep(2)
+        payload, error = _score_frame_file(sf["path"], sf["timestamp"])
+        if payload is None:
+            print(f"  [{fi+1}] FAILED: {error}")
+        elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+            scored.append(payload)
+        if (fi + 1) % 30 == 0:
+            avg = sum(s["gif_worthiness"] for s in scored) / max(1, len(scored))
+            print(
+                f"  [{fi+1}/{len(sample_frames)}] scored={len(scored)} kept, "
+                f"avg_worth={avg:.2f}"
+            )
 
     print(f"  Scored: {len(scored)} frames kept (threshold={WORTHINESS_THRESHOLD})")
 
@@ -1504,38 +1506,11 @@ def run_pipeline(
         print(f"  Refinement frames after filter: {len(refine_frames)}")
 
         for fi, rf in enumerate(refine_frames):
-            with open(rf["path"], "rb") as f:
-                img_b64 = base64.b64encode(f.read()).decode("utf-8")
-
-            for attempt in range(3):
-                try:
-                    resp = httpx.post(
-                        f"{VLM_BASE_URL}/api/generate",
-                        json={
-                            "model": VLM_MODEL,
-                            "prompt": get_score_prompt(),
-                            "images": [img_b64],
-                            "stream": False,
-                            "options": VLM_OPTIONS,
-                        },
-                        timeout=120,
-                    )
-                    resp.raise_for_status()
-                    raw = resp.json().get("response", "")
-                    parsed = parse_vlm_response(raw)
-
-                    worth = safe_worth(parsed.get("gif_worthiness", 0.5))
-                    parsed["gif_worthiness"] = worth
-                    parsed["timestamp"] = rf["timestamp"]
-                    parsed["path"] = rf["path"]
-
-                    if worth >= WORTHINESS_THRESHOLD:
-                        scored.append(parsed)
-                    break
-                except Exception as e:
-                    if attempt == 2:
-                        print(f"  refine [{fi+1}] FAILED: {e}")
-                    time.sleep(2)
+            payload, error = _score_frame_file(rf["path"], rf["timestamp"])
+            if payload is None:
+                print(f"  refine [{fi+1}] FAILED: {error}")
+            elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                scored.append(payload)
 
             if (fi + 1) % 50 == 0:
                 print(
@@ -1635,20 +1610,7 @@ def run_pipeline(
                 )
                 if extracted.returncode != 0 or not os.path.exists(frame_path):
                     return None
-                with open(frame_path, "rb") as frame_file:
-                    payload, error = _score_vlm_frame(
-                        base_url=VLM_BASE_URL,
-                        model=VLM_MODEL,
-                        image_bytes=frame_file.read(),
-                        prompt=get_score_prompt(),
-                        options=VLM_OPTIONS,
-                        threshold=WORTHINESS_THRESHOLD,
-                        timestamp=timestamp_s,
-                        frame_path=frame_path,
-                        retry_delay_s=(
-                            vlm_runtime.retry_delay_s if vlm_runtime else 2.0
-                        ),
-                    )
+                payload, error = _score_frame_file(frame_path, timestamp_s)
                 if payload is None:
                     print(
                         "  Action rescore dropped segment at "
@@ -1849,19 +1811,7 @@ def run_pipeline(
     # Direct mode has no upstream rank artifact to assign clip identities.
     # Establish stable, real candidate IDs before crossing the strict shared
     # quality boundary; the boundary itself never invents missing identities.
-    video_name = os.path.splitext(os.path.basename(video_path))[0]
-    for index, clip in enumerate(deduped_clips):
-        candidate_id = clip.get("candidate_id") or clip.get("clip_id")
-        if not isinstance(candidate_id, str) or not candidate_id:
-            identity = (
-                f"{video_name}:{clip.get('start_ts')}:"
-                f"{clip.get('end_ts')}:{index}"
-            )
-            candidate_id = hashlib.sha256(
-                identity.encode("utf-8")
-            ).hexdigest()[:16]
-        clip["candidate_id"] = candidate_id
-        clip.setdefault("clip_id", candidate_id)
+    _assign_candidate_identities(deduped_clips, video_path)
 
     deduped_clips, quality_moe = _evaluate_quality_pipeline_candidates(
         list(deduped_clips),
@@ -1870,35 +1820,14 @@ def run_pipeline(
         work_dir=frames_dir,
     )
 
-    # ---- Phase 3: RAG + LLM synthesis -----------------------------------
-    print(f"\n[3/4] RAG + LLM synthesis...")
+    # ---- Phase 3: LLM synthesis (no live RAG retrieval) -----------------
+    print(f"\n[3/4] LLM synthesis...")
 
     stop_model("llava")
     time.sleep(10)
     if not wait_for_llm(timeout_s=180):
         print("WARNING: LLM not responding -- skipping synthesis, proceeding to export")
         synthesis = {"_parse_error": True}
-
-    idx = get_index()
-    for r in scored:
-        caption = r.get("caption", "")
-        if caption and idx.count > 0:
-            try:
-                emb = compute_text_embedding(caption)
-                similar = idx.search(emb, top_k=3)
-                r["rag_similar"] = [
-                    {
-                        "mid": s["media_id"],
-                        "score": s["score"],
-                        "emo": s.get("emotional_core", ""),
-                        "tags": s.get("tags", [])[:3],
-                    }
-                    for s in similar
-                ]
-            except Exception:
-                r["rag_similar"] = []
-        else:
-            r["rag_similar"] = []
 
     top_for_synth = sorted(
         deduped_clips, key=lambda x: x["gif_worthiness"], reverse=True
@@ -2274,7 +2203,7 @@ def run_pipeline(
         "max_output": MAX_OUTPUT,
         "min_brightness": MIN_BRIGHTNESS,
         "dark_dropped": dark_dropped,
-        "score_prompt_mode": (os.environ.get("GIFAGENT_SCORE_PROMPT_MODE") or "default"),
+        "score_prompt_mode": SCORE_PROMPT_MODE,
         "embed_dedup_threshold": EMBED_SIM_THRESHOLD,
         "embed_dedup_enabled": EMBED_DEDUP_ENABLED,
         "temporal_dedup_enabled": TEMPORAL_DEDUP_ENABLED,
@@ -3200,7 +3129,9 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
         attempted_count += 1
         payload, error = _score_vlm_frame(
             base_url=vlm_base_url, model=vlm_model,
-            image_bytes=img_data, prompt=get_score_prompt(),
+            image_bytes=img_data, prompt=get_score_prompt(
+                cfg.get("score_prompt_mode", "default")
+            ),
             options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
             timestamp=ts, frame_path=fpath,
             retry_delay_s=vlm_retry_delay,
@@ -3377,7 +3308,9 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
             refine_attempted += 1
             payload, error = _score_vlm_frame(
                 base_url=vlm_base_url, model=vlm_model,
-                image_bytes=img_data, prompt=get_score_prompt(),
+                image_bytes=img_data, prompt=get_score_prompt(
+                    cfg.get("score_prompt_mode", "default")
+                ),
                 options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
                 timestamp=rf["timestamp"], frame_path=rf["path"],
                 retry_delay_s=vlm_retry_delay,
@@ -3434,7 +3367,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: synthesize — RAG/LLM synthesis + clip merging
+# Stage 5: synthesize — LLM synthesis + clip merging
 # ---------------------------------------------------------------------------
 
 
@@ -3786,7 +3719,9 @@ def _stage_rank_dedup(
                         base_url=provider.get("base_url", OLLAMA_BASE),
                         model=provider.get("model", "llava:13b"),
                         image_bytes=frame_file.read(),
-                        prompt=get_score_prompt(),
+                        prompt=get_score_prompt(
+                            cfg.get("score_prompt_mode", "default")
+                        ),
                         options=vlm_options,
                         threshold=cfg["worthiness_threshold"],
                         timestamp=timestamp_s,
@@ -3898,7 +3833,6 @@ def _stage_rank_dedup(
     )
 
     import numpy as np
-    import hashlib
 
     # Embedding dedup
     deduped_clips = list(clean_clips)
@@ -3953,20 +3887,10 @@ def _stage_rank_dedup(
         deduped_clips = temporal_dedup_clips(deduped_clips, min_gap_s=TEMPORAL_DEDUP_MIN_GAP_S)
         print(f"  Temporal dedup: {len(deduped_clips)} clips remain")
 
-    # Limit output. max_output<=0 means unlimited (same as direct mode).
-    output_count = max(1, int(len(deduped_clips) * OUTPUT_RATIO))
-    if MAX_OUTPUT > 0:
-        output_count = min(output_count, MAX_OUTPUT)
-    deduped_clips = sorted(deduped_clips, key=lambda c: c["gif_worthiness"], reverse=True)
-    deduped_clips = deduped_clips[:output_count]
-
-    # Assign stable clip_ids based on video name + start_ts + end_ts
-    video_name = os.path.splitext(os.path.basename(video_path))[0]
-    for i, clip in enumerate(deduped_clips):
-        raw = f"{video_name}:{clip['start_ts']}:{clip['end_ts']}:{i}"
-        clip["clip_id"] = hashlib.sha256(raw.encode()).hexdigest()[:16]
-        clip["rank"] = i + 1
-
+    # Evaluate quality on the full post-dedup set, then truncate for export.
+    # Direct mode uses the same order so report_only evidence and active
+    # soft-reject share one candidate population across both pipelines.
+    _assign_candidate_identities(deduped_clips, video_path)
     deduped_clips, quality_moe = _evaluate_quality_pipeline_candidates(
         deduped_clips,
         video_path=video_path,
@@ -3979,6 +3903,16 @@ def _stage_rank_dedup(
         source_artifact=source_artifact,
         stage_id=rank_stage_id,
     )
+
+    deduped_clips = sorted(
+        deduped_clips, key=lambda c: c["gif_worthiness"], reverse=True
+    )
+    output_count = _planned_output_count(
+        len(deduped_clips), OUTPUT_RATIO, MAX_OUTPUT
+    )
+    deduped_clips = deduped_clips[:output_count]
+    for i, clip in enumerate(deduped_clips):
+        clip["rank"] = i + 1
 
     print(f"  Final: {len(deduped_clips)} deduped clips")
 

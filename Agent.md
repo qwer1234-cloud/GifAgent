@@ -4,7 +4,7 @@
 
 ## What This Project Does
 
-Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/videos → VLM frame analysis → LLM synthesis → FAISS vector index → RAG-enhanced clip discovery → candidate GIF export → human feedback → preference profile building.
+Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/videos → VLM frame analysis → LLM synthesis → FAISS vector index → adaptive clip discovery (no live RAG injection) → candidate GIF export → human feedback → preference profile building.
 
 ## Current Model Stack
 
@@ -39,6 +39,7 @@ MAX_OUTPUT = 35               # hard cap per video (0 = unlimited in direct mode
 EMBED_SIM_THRESHOLD = 0.88    # text embedding duplicate threshold
 TEMPORAL_DEDUP_MIN_GAP_S = 15 # keep highest score within peak-time window
 POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
+SCORE_PROMPT_MODE = "adult"   # frozen via extract_config(); default|adult
 VLM_OPTIONS = {"temperature": 0.50, "top_p": 0.90, "top_k": 40}
 ```
 
@@ -51,10 +52,11 @@ groups whose peak score is below `MERGE_PEAK_THRESHOLD` demote to a single
 best-frame clip. This prevents dense high-score runs from collapsing into one
 mega-clip.
 
-**Adult scoring prompt**: set `GIFAGENT_SCORE_PROMPT_MODE=adult` to use the
-adult-friendly `SCORE_PROMPT_ADULT` (neutral GIF potential; does not treat
-low-light alone as BAD). Default / unset keeps the cinematic `SCORE_PROMPT`.
-A/B helper: `scripts/ab_lil_karina_run.ps1 -Phase optimized_v3`.
+**Adult scoring prompt**: set `adaptive.score_prompt_mode: adult` in
+`configs/models.yaml` (also exposed on the Settings tab). The value is frozen
+into the job snapshot and result JSON; scoring does not read
+`GIFAGENT_SCORE_PROMPT_MODE`. Default / omitted keeps the cinematic
+`SCORE_PROMPT`. A/B helper: `scripts/ab_lil_karina_run.ps1 -Phase optimized_v3`.
 
 **Dark-frame prefilter**: frames with grayscale mean `<= MIN_BRIGHTNESS` are
 dropped before VLM (configurable; set `0` to disable).
@@ -103,10 +105,13 @@ tolerance, and duplicate removal stay enabled.
 ### Quality MoE evaluation and repair boundary
 
 Quality MoE is enabled in `configs/models.yaml` with `report_only: true` by
-default. In that mode it records expert evidence, the recommended decision,
-and a validated repair recipe, but soft quality decisions do not remove or
-reorder candidates and recommended repairs are not applied to exported pixels.
-Deterministic transition/action hard gates remain authoritative.
+default. Direct and staged both evaluate the full post-dedup candidate set
+**before** `output_ratio` / `max_output` truncation, so `input_count` and
+evidence coverage share one definition. In report_only it records expert
+evidence, the recommended decision, and a validated repair recipe, but soft
+quality decisions do not remove or reorder candidates and recommended repairs
+are not applied to exported pixels. Deterministic transition/action hard gates
+remain authoritative.
 
 The unified visual judge uses the existing Ollama runtime. Its endpoint is
 resolved once when the job/CLI starts and the absolute URL is frozen into the
@@ -531,10 +536,10 @@ logs — state is derived solely from the task client. Key methods:
 ## test_video_adaptive.py — 4 Phases
 
 1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter (`min_brightness`)
-2. **VLM scoring**: llava:13b scores each frame (0.0-1.0) → refinement around high-score regions
-3. **RAG + LLM synthesis**: region-aware merge (`clip_merge`) → FAISS search per clip → DeepSeek synthesizes summary/tags (non-fatal)
+2. **VLM scoring**: shared `_score_vlm_frame` (strict `gif_worthiness`, no 0.5 fallback) → refinement around high-score regions; prompt comes from frozen `score_prompt_mode`
+3. **LLM synthesis**: region-aware merge (`clip_merge`) → DeepSeek synthesizes summary/tags from VLM captions (non-fatal; no live FAISS retrieval)
 3.5. **9-grid thumbnail**: select top-9 scored frames with pHash dedup (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` subfolder
-4. **GIF export**: embedding + temporal dedup → rank by gif_worthiness → ffmpeg palette two-pass
+4. **GIF export**: embedding + temporal dedup → Quality MoE on the full set → truncate by `output_ratio` / `max_output` → ffmpeg palette two-pass
 
 **Non-fatal LLM**: if LLM fails, GIFs still export. Synthesis metadata is skipped.
 
@@ -701,7 +706,7 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
 
 ## Known Gotchas
 
-1. **`safe_worth()` vs `validate_frame_analysis`**: VLM sometimes returns string labels ("AVERAGE - ...") instead of numbers for `gif_worthiness`. `safe_worth()` handles this, but `validate_frame_analysis()` in quality.py tries `float()` first and can raise. The exception is caught (frame skipped after 3 retries), but it's not clean.
+1. **Invalid `gif_worthiness` is a scoring failure**: the live direct/staged path uses `_score_vlm_frame`, which retries then drops the frame instead of coercing labels like `"AVERAGE"` to `0.5`. `validate_frame_analysis()` in quality.py still tries `float()` first for non-score fields.
 
 2. **LLM synthesis was silently failing**: `parse_json(raw)` was a NameError — the function is `parse_json_response(raw)` which returns a `JsonParseResult` object (use `.ok` and `.data`). Fixed 2026-07-04.
 
@@ -842,7 +847,7 @@ Lil Karina A/B (`scripts/ab_lil_karina_run.ps1`) on 3 videos:
 | **optimized v3 (current default)** | **50** | embed 0.88, temporal 15s, ratio 0.45, max 35 |
 
 Also added: configurable `min_brightness`, `SCORE_PROMPT_ADULT` via
-`GIFAGENT_SCORE_PROMPT_MODE=adult`, and `app/services/clip_merge.py`.
+`adaptive.score_prompt_mode: adult`, and `app/services/clip_merge.py`.
 
 ## Production Release Gate (2026-07-18)
 

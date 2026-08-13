@@ -75,7 +75,6 @@ def _run_direct_pipeline_fixture(
     monkeypatch.setattr(test_video_adaptive, "wait_model", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(test_video_adaptive, "wait_for_llm", lambda **_kwargs: False)
     monkeypatch.setattr(test_video_adaptive.time, "sleep", lambda *_args: None)
-    monkeypatch.setattr(test_video_adaptive, "get_index", lambda: SimpleNamespace(count=0))
 
     class FakeResponse:
         def raise_for_status(self):
@@ -124,8 +123,12 @@ def _run_direct_pipeline_fixture(
         raising=False,
     )
     rescore_calls = []
+    real_score = test_video_adaptive._score_vlm_frame
 
     def fake_rescore(**kwargs):
+        frame_name = Path(str(kwargs.get("frame_path", ""))).name
+        if not frame_name.startswith("action_"):
+            return real_score(**kwargs)
         rescore_calls.append(kwargs)
         return ({
             "timestamp": kwargs["timestamp"], "path": kwargs["frame_path"],

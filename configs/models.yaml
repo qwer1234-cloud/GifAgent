@@ -165,8 +165,8 @@ adaptive:
   transition_soft_threshold: 0.40
   transition_soft_run_frames: 3
   transition_rescore_split_segments: true
-  # Scoring prompt: set GIFAGENT_SCORE_PROMPT_MODE=adult (AB runner does this).
-  # Or leave unset to use cinematic default SCORE_PROMPT.
+  # Frozen scoring prompt. default = cinematic; adult = adult-neutral GIF potential.
+  score_prompt_mode: adult
 
 # Previous baseline adaptive (pre-adult A/B):
 #   sample_interval: 10, merge_score_threshold: 0.50, worthiness_threshold: 0.50,

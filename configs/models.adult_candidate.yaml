@@ -46,3 +46,4 @@ adaptive:
   transition_soft_threshold: 0.40
   transition_soft_run_frames: 3
   transition_rescore_split_segments: true
+  score_prompt_mode: adult
