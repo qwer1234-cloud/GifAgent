@@ -1519,6 +1519,106 @@ class TestManifestValidation:
         assert validated["applied_recipe_id"] is None
         assert validated["quality_assessment"]["selected_recipe_id"] == "repair-1"
 
+    @pytest.mark.parametrize("sentinel", ["not_checked", "unavailable"])
+    def test_gif_manifest_accepts_hard_gate_source_sha_sentinels(self, sentinel):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        assessment = deepcopy(
+            _valid_quality_rank_manifest()["clips"][0]["quality_assessment"]
+        )
+        provenance = dict(assessment.get("provenance") or {})
+        provenance["source_file_sha256"] = sentinel
+        assessment["provenance"] = provenance
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "sha256": "a" * 64,
+            "duration_s": 6.0,
+            "size_bytes": 123,
+            "status": "succeeded",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+            "quality_assessment": assessment,
+            "quality_decision": "KEEP_AS_IS",
+            "current_quality": 0.81,
+            "recoverable_quality": 0.81,
+            "repair_applied": False,
+            "recommended_recipe_id": None,
+            "recommended_recipe": None,
+            "applied_recipe_id": None,
+            "applied_recipe": None,
+            "evidence_hashes": assessment["evidence_hashes"],
+            "config_hash": assessment["config_hash"],
+            "parent_source": {
+                "candidate_id": "clip-1",
+                "input_hash": assessment["input_hash"],
+                "source_file_sha256": sentinel,
+                "video_path": "source.mp4",
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+            },
+        }
+
+        validated = validate_manifest_json(
+            json.dumps(manifest).encode("utf-8"), "gif_clip_manifest"
+        )
+        assert validated["parent_source"]["source_file_sha256"] == sentinel
+
+    def test_gif_manifest_rejects_invalid_parent_source_sha(self):
+        from app.task_engine.artifacts import validate_manifest_json
+
+        assessment = deepcopy(
+            _valid_quality_rank_manifest()["clips"][0]["quality_assessment"]
+        )
+        manifest = {
+            "schema_version": 2,
+            "stage": "gif_clip",
+            "clip_id": "clip-1",
+            "gif_path": "clip-1.gif",
+            "sha256": "a" * 64,
+            "duration_s": 6.0,
+            "size_bytes": 123,
+            "status": "succeeded",
+            "start_ts": 2.0,
+            "end_ts": 8.0,
+            "action_boundary_mode": "cv",
+            "action_boundary_confidence": 0.8,
+            "action_vlm_verified": False,
+            "action_analysis_version": 1,
+            "guarded_export_window": True,
+            "quality_assessment": assessment,
+            "quality_decision": "KEEP_AS_IS",
+            "current_quality": 0.81,
+            "recoverable_quality": 0.81,
+            "repair_applied": False,
+            "recommended_recipe_id": None,
+            "recommended_recipe": None,
+            "applied_recipe_id": None,
+            "applied_recipe": None,
+            "evidence_hashes": assessment["evidence_hashes"],
+            "config_hash": assessment["config_hash"],
+            "parent_source": {
+                "candidate_id": "clip-1",
+                "input_hash": assessment["input_hash"],
+                "source_file_sha256": "not-a-real-hash",
+                "video_path": "source.mp4",
+                "start_ts": 2.0,
+                "end_ts": 8.0,
+            },
+        }
+
+        with pytest.raises(ValueError, match="source_file_sha256"):
+            validate_manifest_json(
+                json.dumps(manifest).encode("utf-8"), "gif_clip_manifest"
+            )
+
 
 class TestManifestSchemaVersion:
     """P1-2: ``schema_version`` must be a positive integer in the supported

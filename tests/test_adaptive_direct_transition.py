@@ -275,3 +275,27 @@ def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
     assert exported["applied_recipe_id"] is None
     assert exported["applied_recipe"] is None
     assert exported["repair_applied"] is False
+
+
+def test_hard_gated_quality_sentinel_does_not_abort_export(tmp_path):
+    assessment = {
+        "provenance": {"source_file_sha256": "not_checked"},
+        "evidence_hashes": [],
+        "effective_decision": "KEEP_AS_IS",
+    }
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"not-a-hashable-requirement")
+    assert test_video_adaptive._assert_quality_source_unchanged(
+        str(video), assessment
+    ) is None
+    lineage = test_video_adaptive._quality_export_lineage(
+        assessment,
+        candidate_id="c1",
+        video_path=str(video),
+        start_ts=1.0,
+        end_ts=4.0,
+        config_hash="abc",
+        repair_applied=False,
+    )
+    assert lineage["parent_source"]["source_file_sha256"] == "not_checked"
+    assert lineage["quality_decision"] == "KEEP_AS_IS"

@@ -66,7 +66,7 @@ def _path_display(path: Path) -> str:
 
 def _iter_gif_files(folder: Path, *, recursive: bool) -> list[Path]:
     if recursive:
-        candidates = folder.rglob("*")
+        candidates = folder.rglob(f"*{_GIF_SUFFIX}")
     else:
         candidates = folder.iterdir()
     return sorted(
@@ -277,11 +277,14 @@ def list_candidate_folders(
     """List recursive subfolders under root that have candidate GIF rows or GIF files."""
     root_path = _resolve_user_folder(root)
     conn = get_connection()
-    rows = _candidate_rows(conn, status=status)
+    rows = _candidate_rows(conn, status=status, folder=root_path)
 
     folders: dict[Path, dict] = {}
     known_artifact_paths: set[Path] = set()
-    known_rows = rows if status == "all" else _candidate_rows(conn, status="all")
+    known_rows = (
+        rows if status == "all"
+        else _candidate_rows(conn, status="all", folder=root_path)
+    )
     for known_row in known_rows:
         artifact_path = _resolve_artifact_path(known_row["artifact_path"])
         if artifact_path is not None:

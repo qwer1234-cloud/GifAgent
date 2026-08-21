@@ -127,6 +127,48 @@ def normalize_base_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def is_ephemeral_wsl_endpoint(url: str) -> bool:
+    """Return True for a Windows-side pin of WSL2 NAT Ollama.
+
+    WSL2 Hyper-V typically assigns an address in ``172.16.0.0/12`` that
+    changes every reboot.  Storing that address in ``models.yaml`` is the
+    usual cause of ``timed out`` after restart.  Hostnames, localhost,
+    and other private ranges are left alone so a real remote Ollama is
+    not rewritten.
+    """
+    if os.name != "nt":
+        return False
+    text = (url or "").strip()
+    if not text or text.lower() == "auto":
+        return False
+    try:
+        parsed = httpx.URL(normalize_base_url(text))
+    except Exception:
+        return False
+    host = parsed.host
+    if not host:
+        return False
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    if port != 11434:
+        return False
+    return _is_wsl_nat_ipv4(host)
+
+
+def _is_wsl_nat_ipv4(host: str) -> bool:
+    parts = host.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(part) for part in parts]
+    except ValueError:
+        return False
+    if any(octet < 0 or octet > 255 for octet in octets):
+        return False
+    return octets[0] == 172 and 16 <= octets[1] <= 31
+
+
 class OllamaRuntimeManager:
     """Owns WSL keeper lifecycle and caches only successful runtime state."""
 
@@ -146,7 +188,7 @@ class OllamaRuntimeManager:
         env_url = os.environ.get(ENV_OLLAMA_BASE)
         if env_url and env_url.strip():
             return normalize_base_url(env_url)
-        if config.base_url and config.base_url.strip().lower() != "auto":
+        if self._configured_url_is_explicit(config):
             return normalize_base_url(config.base_url)
         return self._resolve_automatic(config)
 
@@ -157,9 +199,11 @@ class OllamaRuntimeManager:
 
         The environment override is honored first and never launches WSL.
         An explicit configured URL is honored next without lifecycle
-        management.  ``auto`` with ``launch_mode: wsl`` starts an owned
-        hidden keeper, discovers the live WSL address, polls readiness,
-        and pre-warms the text model.
+        management, except a WSL2 NAT ``172.16.0.0/12:11434`` pin which
+        is treated as ``auto``.  ``auto`` with ``launch_mode: wsl``
+        discovers the live WSL address, and with ``manage_lifecycle``
+        also starts an owned hidden keeper, polls readiness, and
+        pre-warms the text model.
         """
         config = config or get_runtime_config()
         with self._lock:
@@ -172,7 +216,7 @@ class OllamaRuntimeManager:
                 return self._ensure_ready_at(
                     config, base_url, keeper=None, source="env"
                 )
-            if config.base_url and config.base_url.strip().lower() != "auto":
+            if self._configured_url_is_explicit(config):
                 base_url = normalize_base_url(config.base_url)
                 cached = self._cached(base_url=base_url, source="explicit")
                 if cached is not None:
@@ -225,16 +269,23 @@ class OllamaRuntimeManager:
     # Internals
     # ------------------------------------------------------------------
     def _wsl_managed(self, config: EmbeddingRuntimeConfig) -> bool:
-        return (
-            os.name == "nt"
-            and bool(config.manage_lifecycle)
-            and str(config.launch_mode).lower() == "wsl"
-        )
+        return bool(config.manage_lifecycle) and self._wsl_discoverable(config)
+
+    def _wsl_discoverable(self, config: EmbeddingRuntimeConfig) -> bool:
+        return os.name == "nt" and str(config.launch_mode).lower() == "wsl"
+
+    def _configured_url_is_explicit(
+        self, config: EmbeddingRuntimeConfig
+    ) -> bool:
+        configured = (config.base_url or "").strip()
+        if not configured or configured.lower() == "auto":
+            return False
+        return not is_ephemeral_wsl_endpoint(configured)
 
     def _resolve_automatic(
         self, config: EmbeddingRuntimeConfig
     ) -> str:
-        if not self._wsl_managed(config):
+        if not self._wsl_discoverable(config):
             return DEFAULT_BASE_URL
         return self._discover_wsl_url(config)
 

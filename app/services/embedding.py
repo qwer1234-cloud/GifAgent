@@ -50,7 +50,10 @@ def check_embedding_service(model: Optional[str] = None) -> dict:
         raise EmbeddingServiceUnavailable("No embedding model is configured")
 
     try:
-        base_url = ollama_runtime.resolve_base_url()
+        # Wake WSL, wait for Ollama, then use the live address. A pinned
+        # 172.x URL times out after reboot; resolve_base_url() alone does
+        # not wait for systemd ollama to come up.
+        base_url = ollama_runtime.ensure_runtime_ready().base_url
     except Exception as exc:
         raise EmbeddingServiceUnavailable(
             f"Embedding service unavailable: {exc}"

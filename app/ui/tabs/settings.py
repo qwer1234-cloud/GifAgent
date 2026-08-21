@@ -67,7 +67,7 @@ CONFIG_FIELD_HELP = {
     "llm.max_tokens": "单次文本生成允许输出的最大 token 数。",
     "llm.timeout_s": "等待语言模型响应的最长时间，单位为秒。",
     "vlm.model": "用于分析视频帧和评分的视觉语言模型名称。",
-    "vlm.base_url": "视觉语言模型服务的访问地址。",
+    "vlm.base_url": "视觉语言模型服务地址。WSL 里的 Ollama 请填 auto，不要写 172.x 地址（重启后会变）。远程服务才写完整 URL。也可用环境变量 GIFAGENT_OLLAMA_BASE 覆盖。",
     "adaptive.sample_interval": "粗采样相邻帧的时间间隔，单位为秒；越小越密集。",
     "adaptive.merge_gap": "相邻高分帧允许合并的最大时间间隔，单位为秒。",
     "adaptive.merge_score_threshold": "只有两帧评分都达到此值时才允许合并。",
@@ -213,6 +213,28 @@ CONFIG_TOOLTIP_JS = f"""
 # ---------------------------------------------------------------------------
 
 
+def _persist_portable_ollama_urls(cfg: dict, *, vlm_base_url: str) -> None:
+    """Keep WSL Ollama endpoints as ``auto`` so reboot-assigned IPs are not saved."""
+    from app.services.ollama_runtime import is_ephemeral_wsl_endpoint
+
+    def normalize_section(section: dict, url: str | None = None) -> None:
+        if url is not None:
+            section["base_url"] = url
+        current = str(section.get("base_url") or "").strip()
+        if is_ephemeral_wsl_endpoint(current):
+            current = "auto"
+            section["base_url"] = current
+        if current.lower() == "auto":
+            section.setdefault("manage_lifecycle", True)
+            section.setdefault("launch_mode", "wsl")
+            section.setdefault("wsl_distro", "Ubuntu-20.04")
+
+    cfg.setdefault("vlm", {})
+    normalize_section(cfg["vlm"], vlm_base_url)
+    cfg.setdefault("embedding", {})
+    normalize_section(cfg["embedding"])
+
+
 def load_config():
     """Load configs/models.yaml, return field tuples + raw YAML."""
     try:
@@ -313,7 +335,7 @@ def save_config(
 
         cfg.setdefault("vlm", {})
         cfg["vlm"]["model"] = vlm_model
-        cfg["vlm"]["base_url"] = vlm_base_url
+        _persist_portable_ollama_urls(cfg, vlm_base_url=vlm_base_url)
 
         cfg.setdefault("adaptive", {})
         adaptive = cfg["adaptive"]

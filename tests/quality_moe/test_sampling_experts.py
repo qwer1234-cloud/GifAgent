@@ -45,6 +45,25 @@ def test_uniform_low_key_clip_is_descriptive_not_technical_negative():
     assert technical.polarity.value == "NEUTRAL"
     assert not any(finding["code"] == "underexposed_subject" for finding in technical.findings)
     assert any(finding["code"] == "low_key_lighting" for finding in cinematic.findings)
+    assert cinematic.polarity.value == "NEUTRAL"
+    assert cinematic.scores["cinematic_score"] >= cinematic.scores["lighting_intent"] * 0.3
+
+
+def test_textured_low_key_outscores_crushed_black_cinematic():
+    low_key = tuple(
+        np.full((90, 160, 3), 40, dtype=np.uint8)
+        + (np.indices((90, 160, 3))[0] % 2 * 50).astype(np.uint8)
+        for _ in range(6)
+    )
+    crushed = tuple(np.zeros((90, 160, 3), dtype=np.uint8) for _ in range(6))
+
+    textured = CinematicExpert().evaluate(sampled_clip(low_key))
+    black = CinematicExpert().evaluate(sampled_clip(crushed))
+
+    assert textured.polarity.value == "NEUTRAL"
+    assert black.polarity.value == "NEUTRAL"
+    assert textured.scores["cinematic_score"] > black.scores["cinematic_score"]
+    assert textured.scores["lighting_intent"] > black.scores["lighting_intent"]
 
 
 def test_near_black_clipping_and_detail_loss_reports_underexposure_negative():

@@ -8,9 +8,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.export_ranking import adult_priority_score
+
 
 def _clip_from_group(group: list[dict[str, Any]]) -> dict[str, Any]:
-    best = max(group, key=lambda x: float(x.get("gif_worthiness", 0.0)))
+    best = max(
+        group,
+        key=lambda item: (
+            adult_priority_score(item),
+            float(item.get("gif_worthiness") or 0.0),
+        ),
+    )
     return {
         "start_ts": group[0]["timestamp"],
         "end_ts": group[-1]["timestamp"],
@@ -19,6 +27,7 @@ def _clip_from_group(group: list[dict[str, Any]]) -> dict[str, Any]:
         "best_frame_path": best.get("path", ""),
         "frame_count": len(group),
         "gif_worthiness": best["gif_worthiness"],
+        "sex_act": best.get("sex_act", 0.0),
         "emotional_core": best.get("emotional_core", "?"),
         "caption": best.get("caption", ""),
     }

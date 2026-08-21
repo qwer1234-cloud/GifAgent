@@ -164,3 +164,21 @@ def test_scan_raises_typed_error_after_two_unreadable_attempts(tmp_path: Path) -
     path.write_text("not media", encoding="utf-8")
     with pytest.raises(TemporalMediaError):
         TemporalEvidenceCache().scan(path, 0.0, 1.0, TemporalScanConfig())
+
+
+def test_ffmpeg_fallback_when_opencv_cannot_open(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    video = _write_cache_video(tmp_path / "ffmpeg-fallback.mp4", hard_cut=False)
+
+    class FailedCapture:
+        def isOpened(self) -> bool:
+            return False
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda *args, **kwargs: FailedCapture())
+    evidence = TemporalEvidenceCache().scan(
+        video, 0.0, 1.0, TemporalScanConfig(fps=8.0, width=160)
+    )
+    assert evidence.frames
+    assert [frame.sample_index for frame in evidence.frames] == list(range(9))

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import subprocess
+import tempfile
 
 import cv2
 import numpy as np
@@ -125,8 +127,6 @@ class TemporalEvidenceCache:
             capture = cv2.VideoCapture(str(path))
             if not capture.isOpened():
                 capture.release()
-                if attempt == 1:
-                    raise TemporalMediaError("OpenCV could not open the source video")
                 continue
             try:
                 source_fps = capture.get(cv2.CAP_PROP_FPS)
@@ -166,11 +166,77 @@ class TemporalEvidenceCache:
                     wanted.remove(sample_index)
                 if not wanted:
                     return
-                if attempt == 1:
-                    raise TemporalMediaError("OpenCV could not decode the requested source video samples")
             finally:
                 capture.release()
+        if self._decode_range_ffmpeg(path, indexes, config):
+            return
         raise TemporalMediaError("OpenCV could not decode the requested source video samples")
+
+    def _decode_range_ffmpeg(
+        self, path: Path, indexes: list[int], config: TemporalScanConfig
+    ) -> bool:
+        """Decode samples with FFmpeg when OpenCV cannot read the source (e.g. HEVC)."""
+        identity = _identity(path)
+        missing = [
+            index
+            for index in indexes
+            if (identity, config.fps, config.width, index) not in self._frames
+        ]
+        if not missing:
+            return True
+        first = min(missing)
+        last = max(missing)
+        start_s = first / config.fps
+        duration_s = (last - first + 1) / config.fps
+        wanted = set(missing)
+        timeout_s = max(60, int(duration_s * 8) + 30)
+        with tempfile.TemporaryDirectory(prefix="gifagent_temporal_") as tmp:
+            pattern = str(Path(tmp) / "f_%06d.jpg")
+            try:
+                completed = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-ss",
+                        f"{start_s:.9f}".rstrip("0").rstrip(".") or "0",
+                        "-i",
+                        str(path),
+                        "-t",
+                        f"{duration_s:.9f}".rstrip("0").rstrip(".") or "0",
+                        "-vf",
+                        f"fps={config.fps},scale={config.width}:-1",
+                        "-q:v",
+                        "3",
+                        pattern,
+                    ],
+                    capture_output=True,
+                    timeout=timeout_s,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return False
+            if completed.returncode != 0:
+                return False
+            files = sorted(Path(tmp).glob("f_*.jpg"))
+            for offset, file in enumerate(files):
+                sample_index = first + offset
+                if sample_index not in wanted:
+                    continue
+                image = cv2.imread(str(file))
+                if image is None:
+                    continue
+                gray, hsv = _resize(image, config.width)
+                key = (identity, config.fps, config.width, sample_index)
+                is_new = key not in self._frames
+                self._frames[key] = TemporalFrame(
+                    sample_index, sample_index / config.fps, gray, hsv
+                )
+                if is_new:
+                    self.decoded_frame_count += 1
+                wanted.remove(sample_index)
+        return not wanted
 
     def scan(self, video_path: str | Path, start_s: float, end_s: float, config: TemporalScanConfig) -> TemporalEvidence:
         if not (math.isfinite(start_s) and math.isfinite(end_s) and end_s >= start_s and math.isfinite(config.fps) and config.fps > 0 and config.width > 0):

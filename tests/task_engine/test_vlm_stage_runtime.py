@@ -661,6 +661,32 @@ def test_synthesize_empty_frames_returns_manifest_artifact(tmp_path):
     assert Path(result["_artifacts"][0]["path"]).exists()
 
 
+def test_score_vlm_frame_accepts_json_wrapped_in_prose(tmp_path):
+    """LLaVA often prefixes JSON with prose; scoring must still succeed."""
+    mod = _load_stage_module()
+    stub = _StubServer({
+        "response": (
+            "Here is the JSON:\n"
+            '{"caption":"x","emotional_core":"awe",'
+            '"gif_worthiness":0.8,"aesthetic_notes":[],"reason":"x"}'
+        ),
+    })
+    stub.start()
+    try:
+        payload, error = mod._score_vlm_frame(
+            base_url=stub.base_url, model="stub-vlm",
+            image_bytes=b"\xff\xd8\xff\xe0" + b"\x00" * 20,
+            prompt="score", options={}, threshold=0.5,
+            timestamp=1.0, frame_path=str(tmp_path / "frame.jpg"),
+            retry_delay_s=0.0,
+        )
+        assert error is None, error
+        assert payload is not None
+        assert payload["gif_worthiness"] == 0.8
+    finally:
+        stub.stop()
+
+
 # Task 2 Step 5: unit-level retry count protection
 def test_score_vlm_frame_retries_exactly_three_times_on_invalid_payload(tmp_path):
     mod = _load_stage_module()

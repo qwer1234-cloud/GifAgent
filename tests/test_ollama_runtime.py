@@ -429,3 +429,93 @@ def test_prewarm_non_object_json_is_not_retried(monkeypatch):
     assert "JSON object" in str(err)
     assert len(posts) == 1
     manager.shutdown()
+
+
+def test_ephemeral_wsl_endpoint_detection(monkeypatch):
+    monkeypatch.setattr(ollama_runtime.os, "name", "nt")
+    assert ollama_runtime.is_ephemeral_wsl_endpoint(
+        "http://172.27.227.98:11434"
+    )
+    assert ollama_runtime.is_ephemeral_wsl_endpoint("172.31.0.1:11434")
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint(
+        "http://172.15.0.1:11434"
+    )
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint(
+        "http://172.32.0.1:11434"
+    )
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint("http://10.0.0.5:11434")
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint(
+        "http://127.0.0.1:11434"
+    )
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint("http://gpu-box:11434")
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint(
+        "http://172.27.227.98:8000"
+    )
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint("auto")
+    monkeypatch.setattr(ollama_runtime.os, "name", "posix")
+    assert not ollama_runtime.is_ephemeral_wsl_endpoint(
+        "http://172.27.227.98:11434"
+    )
+
+
+def test_stale_wsl_nat_url_is_rediscovered_on_windows(monkeypatch):
+    monkeypatch.delenv("GIFAGENT_OLLAMA_BASE", raising=False)
+    monkeypatch.setattr(ollama_runtime.os, "name", "nt")
+    manager = ollama_runtime.OllamaRuntimeManager()
+    procs, runs, gets, posts = _install_success_mocks(monkeypatch)
+
+    url = manager.resolve_base_url(
+        _config(base_url="http://172.16.9.9:11434", manage_lifecycle=False)
+    )
+
+    assert url == "http://172.27.227.98:11434"
+    assert runs == [["wsl.exe", "-d", "Ubuntu-20.04", "--", "hostname", "-I"]]
+    assert procs == []
+    manager.shutdown()
+
+
+def test_explicit_hostname_endpoint_is_not_rediscovered(monkeypatch):
+    monkeypatch.delenv("GIFAGENT_OLLAMA_BASE", raising=False)
+    monkeypatch.setattr(ollama_runtime.os, "name", "nt")
+    manager = ollama_runtime.OllamaRuntimeManager()
+    calls = []
+    monkeypatch.setattr(
+        ollama_runtime.subprocess,
+        "run",
+        lambda *a, **k: calls.append(("run", a, k))
+        or SimpleNamespace(returncode=0, stdout="1.2.3.4\n", stderr=""),
+    )
+
+    assert (
+        manager.resolve_base_url(_config(base_url="http://gpu-box:11434"))
+        == "http://gpu-box:11434"
+    )
+    assert calls == []
+
+
+def test_automatic_mode_discovers_wsl_without_lifecycle(monkeypatch):
+    monkeypatch.delenv("GIFAGENT_OLLAMA_BASE", raising=False)
+    monkeypatch.setattr(ollama_runtime.os, "name", "nt")
+    manager = ollama_runtime.OllamaRuntimeManager()
+    procs, runs, gets, posts = _install_success_mocks(monkeypatch)
+
+    url = manager.resolve_base_url(_config(manage_lifecycle=False))
+
+    assert url == "http://172.27.227.98:11434"
+    assert procs == []
+    assert runs == [["wsl.exe", "-d", "Ubuntu-20.04", "--", "hostname", "-I"]]
+    manager.shutdown()
+
+
+def test_stale_wsl_url_ensure_ready_uses_auto_lifecycle(monkeypatch):
+    monkeypatch.delenv("GIFAGENT_OLLAMA_BASE", raising=False)
+    monkeypatch.setattr(ollama_runtime.os, "name", "nt")
+    manager = ollama_runtime.OllamaRuntimeManager()
+    procs, runs, gets, posts = _install_success_mocks(monkeypatch)
+
+    state = manager.ensure_ready(_config(base_url="http://172.16.1.1:11434"))
+
+    assert state.source == "auto"
+    assert state.base_url == "http://172.27.227.98:11434"
+    assert len(procs) == 1
+    manager.shutdown()

@@ -1000,6 +1000,14 @@ def test_graceful_shutdown_stops_ollama_runtime(monkeypatch, capsys):
         "shutdown_runtime",
         lambda: shutdown_calls.append(1),
     )
+    api_stop_calls = []
+    original_stop = launcher.stop_api_server
+
+    def tracking_stop(*args, **kwargs):
+        api_stop_calls.append(1)
+        return original_stop(*args, **kwargs)
+
+    monkeypatch.setattr(launcher, "stop_api_server", tracking_stop)
     _install_fake_webview(monkeypatch)
     _install_os_exit_guard(monkeypatch)
 
@@ -1007,3 +1015,4 @@ def test_graceful_shutdown_stops_ollama_runtime(monkeypatch, capsys):
         launcher.main()
 
     assert shutdown_calls == [1]
+    assert api_stop_calls == [1]

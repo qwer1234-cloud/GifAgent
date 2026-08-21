@@ -125,6 +125,8 @@ def test_valid_json_sends_both_sheets_with_neutral_prompt_and_traces_hashes(
     assert "topic" in payload["prompt"].lower()
     assert "identity" in payload["prompt"].lower()
     assert "do not award or deduct" in payload["prompt"].lower()
+    assert "low-key intimate lighting" in payload["prompt"].lower()
+    assert "film-emotion" in payload["prompt"].lower() or "film emotion" in payload["prompt"].lower()
 
 
 @pytest.mark.parametrize(

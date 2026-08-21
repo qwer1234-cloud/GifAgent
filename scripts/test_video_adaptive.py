@@ -25,9 +25,17 @@ from pathlib import Path
 import httpx
 from PIL import Image
 
-# Windows console defaults to GBK -- reconfigure to handle Unicode
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+# Windows console defaults to GBK -- reconfigure to handle Unicode.
+# Line buffering keeps refine/VLM progress in stage.log if the process is killed.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+except Exception:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 sys.path.insert(0, ".")
 from app.db import init_db, get_connection
@@ -44,7 +52,11 @@ from app.services.export_cleanup import (
     ExportDirectoryLock,
     cleanup_adaptive_export_dir,
 )
-from app.services.export_ranking import rank_clips_for_export
+from app.services.export_ranking import (
+    make_adult_moe_scorer,
+    rank_clips_for_export,
+    sex_act_score,
+)
 from app.services.gif_naming import build_gif_filename
 from app.services.gif_windows import build_export_window
 from app.services.transition_candidates import build_guarded_clips
@@ -95,19 +107,24 @@ SCORE_PROMPT = (
 
 # Adult-friendly scoring prompt selected by frozen adaptive.score_prompt_mode.
 SCORE_PROMPT_ADULT = (
-    "Evaluate this video frame for short-GIF potential. Use the full 0.0-1.0 scale.\n"
-    "Output ONLY valid JSON with real, specific content. No template text.\n"
-    "Adult intimate content and cinematic content are equally eligible for high scores.\n\n"
-    '{"caption":"describe actual visible subjects, action, lighting, and composition",'
-    '"emotional_core":"one lowercase word","gif_worthiness":0.5,'
-    '"aesthetic_notes":["2-3 concrete visual observations"],'
-    '"reason":"why this specific moment works as a GIF (or why not)"}\n\n'
-    "gif_worthiness scale:\n"
-    "  0.0-0.2: BAD - uniform black/no visible subject, severe blur, empty static shot.\n"
-    "  0.3-0.5: AVERAGE - subject present but weak action/expression or flat framing.\n"
-    "  0.6-0.8: GOOD - clear subject, readable action or expression, strong moment.\n"
-    "  0.9-1.0: EXCELLENT - peak action/expression, clear subject, high GIF appeal.\n"
-    "Moody low-light with a clear subject can score HIGH. Do NOT penalize darkness alone.\n\n"
+    "Evaluate this adult-video frame for short-GIF potential.\n"
+    "Output ONLY valid JSON. No markdown. Be literal; do not euphemize or refuse sex.\n\n"
+    '{"caption":"describe visible bodies, acts, clothing, and camera",'
+    '"emotional_core":"desire","gif_worthiness":0.5,"sex_act":0.0,'
+    '"aesthetic_notes":["concrete visual observation one","concrete visual observation two"],'
+    '"reason":"why this moment is or is not a good sex-action GIF"}\n\n'
+    "sex_act = how much sexual activity is visible in THIS frame:\n"
+    "  0.0: no sexual contact (talking, walking, cooking, clothed portrait, empty room)\n"
+    "  0.2-0.4: kissing, undressing, implied sex, bodies close but no sex act\n"
+    "  0.5-0.7: nude grinding, oral, hands on genitals, clear sexual contact\n"
+    "  0.8-1.0: penetrative sex, peak thrusting, orgasm, explicit sex in motion\n\n"
+    "gif_worthiness = should we export this as a GIF:\n"
+    "  0.0-0.25: SKIP daily life, kitchen, phone, walking, talking-head, no sex.\n"
+    "  0.3-0.5: weak kissing/undressing or static nude with little motion.\n"
+    "  0.6-0.8: GOOD clear sexual contact, readable motion, strong body framing.\n"
+    "  0.9-1.0: EXCELLENT peak sex action, climax, distinctive position, high motion.\n"
+    "Do NOT give high gif_worthiness to cooking, conversation, or walking.\n"
+    "Moody low-light sex can score HIGH. Do not penalize darkness when the act is visible.\n\n"
     "CRITICAL: emotional_core = EXACTLY ONE lowercase word from: "
     "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|"
     "admiration|intimacy|vulnerability|longing|desire|other\n"
@@ -140,6 +157,77 @@ def _ffmpeg_seconds(value: float) -> str:
     """Format seconds without scientific notation (unsupported by FFmpeg)."""
     rendered = f"{float(value):.9f}".rstrip("0").rstrip(".")
     return rendered if rendered and rendered != "-0" else "0"
+
+
+def _video_identity(video_path: str) -> dict[str, object]:
+    stat = os.stat(video_path)
+    return {
+        "path": os.path.abspath(video_path),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def _scored_checkpoint_path(frames_dir: str) -> str:
+    return os.path.join(frames_dir, "scored_checkpoint.json")
+
+
+def _load_scored_checkpoint(
+    frames_dir: str,
+    video_path: str,
+    *,
+    vlm_model: str,
+    score_prompt_mode: str,
+) -> list[dict] | None:
+    path = _scored_checkpoint_path(frames_dir)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data, dict) or data.get("video") != _video_identity(video_path):
+        return None
+    if data.get("vlm_model") != vlm_model or data.get("score_prompt_mode") != score_prompt_mode:
+        return None
+    scored = data.get("scored")
+    if not isinstance(scored, list) or not scored:
+        return None
+    return scored
+
+
+def _save_scored_checkpoint(
+    frames_dir: str,
+    video_path: str,
+    scored: list[dict],
+    *,
+    vlm_model: str,
+    score_prompt_mode: str,
+) -> None:
+    payload = {
+        "video": _video_identity(video_path),
+        "vlm_model": vlm_model,
+        "score_prompt_mode": score_prompt_mode,
+        "scored": [
+            {
+                "timestamp": item.get("timestamp"),
+                "gif_worthiness": item.get("gif_worthiness"),
+                "sex_act": item.get("sex_act"),
+                "path": item.get("path"),
+                "caption": item.get("caption"),
+                "emotional_core": item.get("emotional_core"),
+                "aesthetic_notes": item.get("aesthetic_notes"),
+                "reason": item.get("reason"),
+            }
+            for item in scored
+        ],
+    }
+    path = _scored_checkpoint_path(frames_dir)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    os.replace(tmp_path, path)
 
 
 def _freeze_stage_action_config(
@@ -261,6 +349,8 @@ def _score_vlm_frame(
                 json={
                     "model": model, "prompt": prompt,
                     "images": [img_b64], "stream": False,
+                    "format": "json",
+                    "think": False,
                     "options": options,
                 },
                 timeout=120,
@@ -272,16 +362,21 @@ def _score_vlm_frame(
             # (validate_frame_analysis coerces bool->float, drops unconvertible
             # strings to None, and even raises on float("high") - all of which
             # would hide invalid values from the strict check).
+            # Use parse_json_response so LLaVA prose/markdown wrappers still
+            # yield the JSON object; json.loads(raw) rejects those.
             raw_worthiness: object = None
             parse_error_msg: str | None = None
-            try:
-                raw_parsed = json.loads(raw) if raw else {}
-                if isinstance(raw_parsed, dict):
-                    raw_worthiness = raw_parsed.get("gif_worthiness")
-                else:
-                    parse_error_msg = "response JSON is not an object"
-            except (json.JSONDecodeError, TypeError) as je:
-                parse_error_msg = f"parse_error: {je}"
+            parsed_result = parse_json_response(raw if isinstance(raw, str) else "")
+            raw_parsed = parsed_result.data
+            if isinstance(raw_parsed, list) and raw_parsed and isinstance(raw_parsed[0], dict):
+                raw_parsed = raw_parsed[0]
+            if not parsed_result.ok or not isinstance(raw_parsed, dict):
+                parse_error_msg = (
+                    f"parse_error: {parsed_result.error or 'response JSON is not an object'}"
+                    f"; raw={str(raw)[:120]!r}"
+                )
+            else:
+                raw_worthiness = raw_parsed.get("gif_worthiness")
 
             if parse_error_msg is not None:
                 last_error = (
@@ -324,6 +419,7 @@ def _score_vlm_frame(
                 return None, last_error
 
             parsed["gif_worthiness"] = float(worth)
+            parsed["sex_act"] = sex_act_score(raw_parsed)
             parsed["timestamp"] = timestamp
             parsed["path"] = frame_path
             return parsed, None
@@ -525,6 +621,43 @@ OLLAMA_BASE = os.environ.get("GIFAGENT_OLLAMA_BASE", "http://127.0.0.1:11434")
 
 # ---- Config extraction (shared by direct and stage mode) ----------
 
+DEFAULT_MAX_REFINE_FRAMES = 120
+
+
+def collect_refine_timestamps(
+    high_timestamps,
+    *,
+    radius: int,
+    interval: int,
+    existing_timestamps,
+    duration_s: float,
+    max_frames: int = DEFAULT_MAX_REFINE_FRAMES,
+) -> list[int]:
+    """Build extra refine timestamps around peaks, then cap the set.
+
+    ``max_frames <= 0`` disables the cap.  The cap keeps 35B VLM refine
+    from expanding into thousands of extra calls on dense adult scores.
+    """
+    existing = {int(ts) for ts in existing_timestamps}
+    last = max(0, int(duration_s) - 1)
+    step = max(1, int(interval))
+    rad = max(0, int(radius))
+    refine_ts: set[int] = set()
+    for ts in high_timestamps:
+        center = int(ts)
+        for offset in range(-rad, rad + step, step):
+            new_ts = center + offset
+            if 0 <= new_ts <= last and new_ts not in existing:
+                refine_ts.add(new_ts)
+    ordered = sorted(refine_ts)
+    cap = int(max_frames)
+    if cap <= 0 or len(ordered) <= cap:
+        return ordered
+    n = len(ordered)
+    if cap == 1:
+        return [ordered[n // 2]]
+    return [ordered[(i * (n - 1)) // (cap - 1)] for i in range(cap)]
+
 
 def extract_config(config_data: dict) -> dict:
     """Extract flat pipeline config from the full config dict."""
@@ -537,6 +670,9 @@ def extract_config(config_data: dict) -> dict:
         "refine_interval": int(adaptive.get("refine_interval", 10)),
         "refine_radius": int(adaptive.get("refine_radius", 20)),
         "refine_threshold": float(adaptive.get("refine_threshold", 0.5)),
+        "max_refine_frames": int(
+            adaptive.get("max_refine_frames", DEFAULT_MAX_REFINE_FRAMES)
+        ),
         **normalized_action,
         "worthiness_threshold": float(adaptive.get("worthiness_threshold", 0.2)),
         "merge_gap": int(adaptive.get("merge_gap", 12)),
@@ -567,6 +703,7 @@ def extract_config(config_data: dict) -> dict:
         ),
         "output_ratio": float(adaptive.get("output_ratio", 1.0)),
         "max_output": int(adaptive.get("max_output", 0)),
+        **_quality_ranking_weights(adaptive),
         "gif_fps": int(adaptive.get("gif_fps", 24)),
         "gif_max_width": int(adaptive.get("gif_max_width", 720)),
         "clear_output_dir": bool(adaptive.get("clear_output_dir", True)),
@@ -617,7 +754,45 @@ def extract_config(config_data: dict) -> dict:
         "quality_moe_config_hash": quality_moe.config_hash,
     }
     config["action_config_hash"] = computed_action_hash
+    if config["max_refine_frames"] < 0:
+        raise ValueError("max_refine_frames must be >= 0")
     return config
+
+
+def _quality_ranking_weights(adaptive: dict) -> dict[str, float]:
+    """Freeze the adult/cinematic mix used after quality MoE evaluation."""
+    adult_weight = float(adaptive.get("quality_ranking_adult_weight", 0.80))
+    cinematic_weight = float(adaptive.get("quality_ranking_cinematic_weight", 0.20))
+    if not math.isfinite(adult_weight) or not math.isfinite(cinematic_weight):
+        raise ValueError("quality ranking weights must be finite")
+    if not 0.0 <= adult_weight <= 1.0 or not 0.0 <= cinematic_weight <= 1.0:
+        raise ValueError("quality ranking weights must be in [0, 1]")
+    if abs(adult_weight + cinematic_weight - 1.0) > 1e-6:
+        raise ValueError("quality ranking weights must sum to 1.0")
+    return {
+        "quality_ranking_adult_weight": adult_weight,
+        "quality_ranking_cinematic_weight": cinematic_weight,
+    }
+
+
+def _rank_pipeline_clips(clips: list[dict], cfg: dict) -> list[dict]:
+    """Apply the frozen adult MoE mix, else keep VLM worthiness order."""
+    if cfg.get("score_prompt_mode") == "adult":
+        ranked = rank_clips_for_export(
+            clips,
+            make_adult_moe_scorer(
+                cfg["quality_ranking_adult_weight"],
+                cfg["quality_ranking_cinematic_weight"],
+            ),
+        )
+        print(
+            "Adult MoE ranking: "
+            f"{cfg['quality_ranking_adult_weight']:.2f}*adult"
+            f"({0.40:.2f}*gif_worthiness+{0.60:.2f}*sex_act) + "
+            f"{cfg['quality_ranking_cinematic_weight']:.2f}*cinematic"
+        )
+        return ranked
+    return rank_clips_for_export(clips, lambda _clip: None)
 
 
 def _extract_direct_snapshot_config(config_data: dict) -> dict:
@@ -1145,16 +1320,27 @@ def _stable_source_sha256(video_path: str) -> str:
     return value
 
 
-def _assert_quality_source_unchanged(
-    video_path: str, assessment: object,
-) -> str | None:
+def _quality_source_sha256(assessment: object) -> str | None:
     if not isinstance(assessment, dict):
         return None
     provenance = assessment.get("provenance")
     provenance = provenance if isinstance(provenance, dict) else {}
     expected = provenance.get("source_file_sha256")
     if not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None:
-        raise ValueError("quality assessment lacks a valid source identity")
+        return None
+    return expected
+
+
+def _assert_quality_source_unchanged(
+    video_path: str, assessment: object,
+) -> str | None:
+    if not isinstance(assessment, dict):
+        return None
+    expected = _quality_source_sha256(assessment)
+    if expected is None:
+        # Hard-gated / unavailable assessments use sentinels like
+        # "not_checked" and must not abort GIF export.
+        return None
     actual = _stable_source_sha256(video_path)
     if actual != expected:
         raise ValueError("quality source changed after assessment")
@@ -1176,10 +1362,8 @@ def _quality_export_lineage(
     provenance = assessment.get("provenance")
     provenance = provenance if isinstance(provenance, dict) else {}
     source_file_sha256 = provenance.get("source_file_sha256")
-    if not isinstance(source_file_sha256, str) or re.fullmatch(
-        r"[0-9a-f]{64}", source_file_sha256
-    ) is None:
-        raise ValueError("quality assessment lacks a valid source identity")
+    if not isinstance(source_file_sha256, str):
+        source_file_sha256 = None
     recommended_recipe = assessment.get("repair")
     recommended_recipe_id = assessment.get("selected_recipe_id")
     applied_recipe = recommended_recipe if repair_applied else None
@@ -1286,6 +1470,7 @@ def run_pipeline(
     REFINE_INTERVAL = cfg["refine_interval"]
     REFINE_RADIUS = cfg["refine_radius"]
     REFINE_THRESHOLD = cfg["refine_threshold"]
+    MAX_REFINE_FRAMES = int(cfg.get("max_refine_frames", DEFAULT_MAX_REFINE_FRAMES))
     MAX_DURATION = cfg["max_duration"]
     MIN_DURATION = cfg["min_duration"]
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
@@ -1324,6 +1509,7 @@ def run_pipeline(
     VLM_MODEL = vlm_runtime.model if vlm_runtime else "llava:13b"
     VLM_BASE_URL = vlm_runtime.base_url if vlm_runtime else OLLAMA_BASE
     LLM_MODEL = llm_model_name()
+    print(f"  VLM: {VLM_MODEL}  prompt={SCORE_PROMPT_MODE}")
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     os.makedirs(frames_dir, exist_ok=True)
@@ -1349,132 +1535,23 @@ def run_pipeline(
     total_duration = float(probe.stdout.strip())
     print(f"  Duration: {total_duration:.0f}s ({total_duration/60:.0f} min)")
 
-    timestamps = list(range(SAMPLE_INTERVAL, int(total_duration), SAMPLE_INTERVAL))
-    print(f"  Sampling {len(timestamps)} timestamps")
-
+    resumed_scored = _load_scored_checkpoint(
+        frames_dir,
+        video_path,
+        vlm_model=VLM_MODEL,
+        score_prompt_mode=SCORE_PROMPT_MODE,
+    )
     sample_frames = []
     dark_dropped = 0
-    for i, ts in enumerate(timestamps):
-        out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-ss",
-                str(ts),
-                "-i",
-                video_path,
-                "-vf",
-                "scale=640:-1",
-                "-vframes",
-                "1",
-                out_path,
-            ],
-            capture_output=True,
-            timeout=15,
+    if resumed_scored:
+        print(
+            f"  Sampling skipped ({len(resumed_scored)} scored frames from checkpoint)"
         )
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
-            try:
-                img = Image.open(out_path).convert("L")
-                brightness = sum(img.getdata()) / max(1, img.width * img.height)
-                img.close()
-                if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
-                    sample_frames.append({"path": out_path, "timestamp": ts})
-                else:
-                    dark_dropped += 1
-            except Exception:
-                pass
-        if (i + 1) % 50 == 0:
-            print(f"  [{i+1}/{len(timestamps)}] extracted, {len(sample_frames)} kept")
+    else:
+        timestamps = list(range(SAMPLE_INTERVAL, int(total_duration), SAMPLE_INTERVAL))
+        print(f"  Sampling {len(timestamps)} timestamps")
 
-    print(
-        f"  Frames after dark filter: {len(sample_frames)} "
-        f"(min_brightness={MIN_BRIGHTNESS}, dropped={dark_dropped})"
-    )
-
-    # ---- Phase 2: VLM scoring ------------------------------------------
-    print(f"\n[2/4] VLM scoring ({len(sample_frames)} frames)...")
-
-    if is_local_llm():
-        stop_model(LLM_MODEL.split("/")[-1].split(":")[0], vlm_runtime)
-    stop_model("nomic-embed-text", vlm_runtime)
-    time.sleep(5)
-    if not wait_model(VLM_MODEL, vlm_runtime):
-        print("ERROR: VLM not responding")
-        sys.exit(1)
-
-    def _score_frame_file(frame_path: str, timestamp: float) -> tuple[dict | None, str | None]:
-        with open(frame_path, "rb") as frame_file:
-            return _score_vlm_frame(
-                base_url=VLM_BASE_URL,
-                model=VLM_MODEL,
-                image_bytes=frame_file.read(),
-                prompt=score_prompt,
-                options=VLM_OPTIONS,
-                threshold=WORTHINESS_THRESHOLD,
-                timestamp=timestamp,
-                frame_path=frame_path,
-                retry_delay_s=vlm_retry_delay_s,
-            )
-
-    scored = []
-    for fi, sf in enumerate(sample_frames):
-        payload, error = _score_frame_file(sf["path"], sf["timestamp"])
-        if payload is None:
-            print(f"  [{fi+1}] FAILED: {error}")
-        elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
-            scored.append(payload)
-        if (fi + 1) % 30 == 0:
-            avg = sum(s["gif_worthiness"] for s in scored) / max(1, len(scored))
-            print(
-                f"  [{fi+1}/{len(sample_frames)}] scored={len(scored)} kept, "
-                f"avg_worth={avg:.2f}"
-            )
-
-    print(f"  Scored: {len(scored)} frames kept (threshold={WORTHINESS_THRESHOLD})")
-
-    bins = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, "0.9-1.0": 0}
-    for s in scored:
-        w = s["gif_worthiness"]
-        if w < 0.3:
-            bins["0.0-0.3"] += 1
-        elif w < 0.5:
-            bins["0.3-0.5"] += 1
-        elif w < 0.7:
-            bins["0.5-0.7"] += 1
-        elif w < 0.9:
-            bins["0.7-0.9"] += 1
-        else:
-            bins["0.9-1.0"] += 1
-    print(f"  Worthiness distribution: {bins}")
-
-    # ---- Phase 2.5: Boundary refinement ---------------------------------
-    print(f"\n[2.5/4] Boundary refinement around high-score regions...")
-
-    high_ts = {r["timestamp"] for r in scored if r["gif_worthiness"] >= REFINE_THRESHOLD}
-    refine_ts = set()
-
-    for ts in high_ts:
-        for offset in range(
-            -REFINE_RADIUS, REFINE_RADIUS + REFINE_INTERVAL, REFINE_INTERVAL
-        ):
-            new_ts = ts + offset
-            if (
-                0 <= new_ts <= total_duration - 1
-                and new_ts not in {r["timestamp"] for r in scored}
-            ):
-                refine_ts.add(new_ts)
-
-    existing_ts = {r["timestamp"] for r in scored}
-    refine_ts -= existing_ts
-
-    print(
-        f"  High-score regions: {len(high_ts)}, new frames to sample: {len(refine_ts)}"
-    )
-
-    if refine_ts:
-        refine_frames = []
-        for ts in sorted(refine_ts):
+        for i, ts in enumerate(timestamps):
             out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
             subprocess.run(
                 [
@@ -1499,26 +1576,169 @@ def run_pipeline(
                     brightness = sum(img.getdata()) / max(1, img.width * img.height)
                     img.close()
                     if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
-                        refine_frames.append({"path": out_path, "timestamp": ts})
+                        sample_frames.append({"path": out_path, "timestamp": ts})
+                    else:
+                        dark_dropped += 1
                 except Exception:
                     pass
+            if (i + 1) % 50 == 0:
+                print(f"  [{i+1}/{len(timestamps)}] extracted, {len(sample_frames)} kept")
 
-        print(f"  Refinement frames after filter: {len(refine_frames)}")
+        print(
+            f"  Frames after dark filter: {len(sample_frames)} "
+            f"(min_brightness={MIN_BRIGHTNESS}, dropped={dark_dropped})"
+        )
 
-        for fi, rf in enumerate(refine_frames):
-            payload, error = _score_frame_file(rf["path"], rf["timestamp"])
+    # ---- Phase 2: VLM scoring ------------------------------------------
+    print(f"\n[2/4] VLM scoring ({len(sample_frames)} frames)...")
+
+    if is_local_llm():
+        stop_model(LLM_MODEL.split("/")[-1].split(":")[0], vlm_runtime)
+    stop_model("nomic-embed-text", vlm_runtime)
+    time.sleep(5)
+    if not wait_model(VLM_MODEL, vlm_runtime, timeout_s=300):
+        print("ERROR: VLM not responding")
+        sys.exit(1)
+
+    def _score_frame_file(frame_path: str, timestamp: float) -> tuple[dict | None, str | None]:
+        with open(frame_path, "rb") as frame_file:
+            return _score_vlm_frame(
+                base_url=VLM_BASE_URL,
+                model=VLM_MODEL,
+                image_bytes=frame_file.read(),
+                prompt=score_prompt,
+                options=VLM_OPTIONS,
+                threshold=WORTHINESS_THRESHOLD,
+                timestamp=timestamp,
+                frame_path=frame_path,
+                retry_delay_s=vlm_retry_delay_s,
+            )
+
+    scored = list(resumed_scored or [])
+    if resumed_scored:
+        before = len(scored)
+        scored = [
+            item
+            for item in scored
+            if float(item.get("gif_worthiness") or 0) >= WORTHINESS_THRESHOLD
+        ]
+        print(
+            f"  Resumed {before} checkpoint frames, "
+            f"{len(scored)} kept at threshold={WORTHINESS_THRESHOLD}"
+        )
+    else:
+        for fi, sf in enumerate(sample_frames):
+            payload, error = _score_frame_file(sf["path"], sf["timestamp"])
             if payload is None:
-                print(f"  refine [{fi+1}] FAILED: {error}")
+                print(f"  [{fi+1}] FAILED: {error}")
             elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
                 scored.append(payload)
-
-            if (fi + 1) % 50 == 0:
+            if (fi + 1) % 30 == 0:
+                avg = sum(s["gif_worthiness"] for s in scored) / max(1, len(scored))
                 print(
-                    f"  refine [{fi+1}/{len(refine_frames)}] done, "
-                    f"scored={len(scored)}"
+                    f"  [{fi+1}/{len(sample_frames)}] scored={len(scored)} kept, "
+                    f"avg_worth={avg:.2f}"
                 )
 
-        print(f"  After refinement: {len(scored)} total scored frames")
+    print(f"  Scored: {len(scored)} frames kept (threshold={WORTHINESS_THRESHOLD})")
+
+    bins = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, "0.9-1.0": 0}
+    for s in scored:
+        w = s["gif_worthiness"]
+        if w < 0.3:
+            bins["0.0-0.3"] += 1
+        elif w < 0.5:
+            bins["0.3-0.5"] += 1
+        elif w < 0.7:
+            bins["0.5-0.7"] += 1
+        elif w < 0.9:
+            bins["0.7-0.9"] += 1
+        else:
+            bins["0.9-1.0"] += 1
+    print(f"  Worthiness distribution: {bins}")
+
+    # ---- Phase 2.5: Boundary refinement ---------------------------------
+    if resumed_scored:
+        print("\n[2.5/4] Boundary refinement skipped (checkpoint)")
+    else:
+        print(f"\n[2.5/4] Boundary refinement around high-score regions...")
+
+        high_ts = {r["timestamp"] for r in scored if r["gif_worthiness"] >= REFINE_THRESHOLD}
+        existing_ts = {r["timestamp"] for r in scored}
+        refine_ts = collect_refine_timestamps(
+            high_ts,
+            radius=REFINE_RADIUS,
+            interval=REFINE_INTERVAL,
+            existing_timestamps=existing_ts,
+            duration_s=total_duration,
+            max_frames=MAX_REFINE_FRAMES,
+        )
+
+        print(
+            f"  High-score regions: {len(high_ts)}, "
+            f"new frames to sample: {len(refine_ts)} "
+            f"(interval={REFINE_INTERVAL}s, radius={REFINE_RADIUS}s, "
+            f"cap={MAX_REFINE_FRAMES})",
+            flush=True,
+        )
+
+        if refine_ts:
+            refine_frames = []
+            for ts in sorted(refine_ts):
+                out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-ss",
+                        str(ts),
+                        "-i",
+                        video_path,
+                        "-vf",
+                        "scale=640:-1",
+                        "-vframes",
+                        "1",
+                        out_path,
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
+                    try:
+                        img = Image.open(out_path).convert("L")
+                        brightness = sum(img.getdata()) / max(1, img.width * img.height)
+                        img.close()
+                        if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
+                            refine_frames.append({"path": out_path, "timestamp": ts})
+                    except Exception:
+                        pass
+
+            print(f"  Refinement frames after filter: {len(refine_frames)}", flush=True)
+
+            for fi, rf in enumerate(refine_frames):
+                payload, error = _score_frame_file(rf["path"], rf["timestamp"])
+                if payload is None:
+                    print(f"  refine [{fi+1}] FAILED: {error}", flush=True)
+                elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                    scored.append(payload)
+
+                if (fi + 1) % 10 == 0 or (fi + 1) == len(refine_frames):
+                    print(
+                        f"  refine [{fi+1}/{len(refine_frames)}] done, "
+                        f"scored={len(scored)}",
+                        flush=True,
+                    )
+
+            print(f"  After refinement: {len(scored)} total scored frames")
+
+        _save_scored_checkpoint(
+            frames_dir,
+            video_path,
+            scored,
+            vlm_model=VLM_MODEL,
+            score_prompt_mode=SCORE_PROMPT_MODE,
+        )
+        print(f"  Wrote scored checkpoint ({len(scored)} frames)")
 
     # ---- Phase 2.6: Merge adjacent frames into clip groups --------------
     print(f"\n[2.6/4] Merging adjacent frames into clips...")
@@ -2001,6 +2221,8 @@ def run_pipeline(
             "Preference Memory: ranked all candidates with "
             f"base={BASE_SCORE_WEIGHT:.2f}, preference={PREFERENCE_SCORE_WEIGHT:.2f}"
         )
+    elif SCORE_PROMPT_MODE == "adult":
+        all_ranked_clips = _rank_pipeline_clips(deduped_clips, cfg)
     else:
         all_ranked_clips = rank_clips_for_export(deduped_clips, lambda _clip: None)
 
@@ -2238,6 +2460,7 @@ def run_pipeline(
                 "start_ts": gif_export_results[i]["start_ts"],
                 "end_ts": gif_export_results[i]["end_ts"],
                 "gif_worthiness": clip["gif_worthiness"],
+                "sex_act": clip.get("sex_act", clip["best_frame"].get("sex_act")),
                 "final_score": clip.get("final_score", clip["gif_worthiness"]),
                 "profile_score": clip.get("profile_score"),
                 "score_profile_version": clip.get("score_profile_version"),
@@ -2404,6 +2627,29 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
 # ---- Stage mode ---------------------------------------------------
 
 
+class _TeeIO:
+    """Write the same text to a log file and the original stream, flushing both."""
+
+    def __init__(self, log_file, original):
+        self._log = log_file
+        self._original = original
+
+    def write(self, data):
+        self._log.write(data)
+        self._log.flush()
+        self._original.write(data)
+        self._original.flush()
+
+    def flush(self):
+        self._log.flush()
+        self._original.flush()
+
+    def reconfigure(self, **kwargs):
+        reconfigure = getattr(self._original, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(**kwargs)
+
+
 def run_stage_mode(
     *,
     stage: str,
@@ -2468,13 +2714,13 @@ def run_stage_mode(
         with open(input_manifest_path, "r", encoding="utf-8") as f:
             input_manifest = json.load(f)
 
-    # Redirect prints to a log file inside the work dir
+    # Redirect prints to a line-buffered log and keep the console copy.
     log_path = os.path.join(work_dir, "stage.log")
-    log_file = open(log_path, "w", encoding="utf-8")
+    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
     old_stdout = sys.stdout
     old_stderr = sys.stderr
-    sys.stdout = log_file
-    sys.stderr = log_file
+    sys.stdout = _TeeIO(log_file, old_stdout)
+    sys.stderr = _TeeIO(log_file, old_stderr)
 
     try:
         output = _run_stage(
@@ -3214,6 +3460,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     REFINE_THRESHOLD = cfg["refine_threshold"]
     REFINE_RADIUS = cfg["refine_radius"]
     REFINE_INTERVAL = cfg["refine_interval"]
+    MAX_REFINE_FRAMES = int(cfg.get("max_refine_frames", DEFAULT_MAX_REFINE_FRAMES))
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
     MIN_BRIGHTNESS = float(cfg.get("min_brightness", 25))
 
@@ -3230,20 +3477,36 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
         "top_k": cfg["vlm_top_k"],
         "num_think": 0,
     }
+    vlm_rt = _resolve_vlm_runtime(config_data)
+    if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
+        print(
+            f"  [refine] waiting for VLM {vlm_model} at {vlm_rt.base_url}",
+            flush=True,
+        )
+        if not wait_model(vlm_model, vlm_rt, timeout_s=300):
+            raise RuntimeError(
+                f"VLM not responding at refine start: {vlm_model} "
+                f"{vlm_rt.base_url}"
+            )
 
     high_ts = {r["timestamp"] for r in scored_frames if r["gif_worthiness"] >= REFINE_THRESHOLD}
-    refine_ts = set()
-
-    for ts in high_ts:
-        for offset in range(-REFINE_RADIUS, REFINE_RADIUS + REFINE_INTERVAL, REFINE_INTERVAL):
-            new_ts = ts + offset
-            if 0 <= new_ts <= total_duration - 1 and new_ts not in {r["timestamp"] for r in scored_frames}:
-                refine_ts.add(new_ts)
-
     existing_ts = {r["timestamp"] for r in scored_frames}
-    refine_ts -= existing_ts
+    refine_ts = collect_refine_timestamps(
+        high_ts,
+        radius=REFINE_RADIUS,
+        interval=REFINE_INTERVAL,
+        existing_timestamps=existing_ts,
+        duration_s=total_duration,
+        max_frames=MAX_REFINE_FRAMES,
+    )
 
-    print(f"  High-score regions: {len(high_ts)}, new frames to sample: {len(refine_ts)}")
+    print(
+        f"  High-score regions: {len(high_ts)}, "
+        f"new frames to sample: {len(refine_ts)} "
+        f"(interval={REFINE_INTERVAL}s, radius={REFINE_RADIUS}s, "
+        f"cap={MAX_REFINE_FRAMES})",
+        flush=True,
+    )
 
     # Task 3 Step 1: initialize ALL counters before any conditional branch
     # so an empty refine_ts path still produces a valid manifest (no
@@ -3321,15 +3584,22 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 worth = payload.get("gif_worthiness", 0.0)
                 if worth >= WORTHINESS_THRESHOLD:
                     scored_frames.append(payload)
-                    print(f"  refine[{fi + 1}] score={worth:.2f} KEPT")
+                    print(f"  refine[{fi + 1}] score={worth:.2f} KEPT", flush=True)
                 else:
-                    print(f"  refine[{fi + 1}] score={worth:.2f} below threshold")
+                    print(
+                        f"  refine[{fi + 1}] score={worth:.2f} below threshold",
+                        flush=True,
+                    )
             else:
                 refine_failed += 1
-                print(f"  refine[{fi + 1}] FAILED: {error}")
+                print(f"  refine[{fi + 1}] FAILED: {error}", flush=True)
 
-            if (fi + 1) % 50 == 0:
-                print(f"  refine [{fi + 1}/{len(refine_frames)}] done, scored={len(scored_frames)}")
+            if (fi + 1) % 10 == 0 or (fi + 1) == len(refine_frames):
+                print(
+                    f"  refine [{fi + 1}/{len(refine_frames)}] done, "
+                    f"scored={len(scored_frames)}",
+                    flush=True,
+                )
 
         # Task 2 Step 3: all-score-failed refine is a hard error too
         # (consistent with _stage_vlm).  Partial failure keeps going.
@@ -3904,9 +4174,7 @@ def _stage_rank_dedup(
         stage_id=rank_stage_id,
     )
 
-    deduped_clips = sorted(
-        deduped_clips, key=lambda c: c["gif_worthiness"], reverse=True
-    )
+    deduped_clips = _rank_pipeline_clips(deduped_clips, cfg)
     output_count = _planned_output_count(
         len(deduped_clips), OUTPUT_RATIO, MAX_OUTPUT
     )

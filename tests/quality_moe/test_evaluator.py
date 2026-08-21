@@ -40,14 +40,23 @@ class _CountingSampler:
 
 
 class _Expert:
-    def __init__(self, config: QualityMoeConfig, family: str, expert_id: str, *, negative: bool = False) -> None:
+    def __init__(
+        self,
+        config: QualityMoeConfig,
+        family: str,
+        expert_id: str,
+        *,
+        negative: bool = False,
+        score: float | None = None,
+    ) -> None:
         self.config, self.family, self.expert_id, self.negative = config, family, expert_id, negative
+        self.score = 0.30 if negative else (0.92 if score is None else score)
 
     def evaluate(self, sample: SampledClip) -> ExpertEvidence:
         return ExpertEvidence(
             candidate_id=sample.candidate_id, evaluation_version=self.config.evaluation_version,
             expert_id=self.expert_id, expert_version="test-v1", signal_family=self.family,
-            status=EvidenceStatus.AVAILABLE, scores={"quality": 0.30 if self.negative else 0.92},
+            status=EvidenceStatus.AVAILABLE, scores={"quality": self.score},
             input_hash=sample.input_hash, config_hash=self.config.config_hash,
             polarity=EvidencePolarity.NEGATIVE if self.negative else EvidencePolarity.NEUTRAL,
         )
@@ -148,6 +157,35 @@ def test_active_routing_keeps_only_effective_keep_and_sends_review_to_humans(tmp
     assert batch.effective_clips == ()
     assert batch.human_review_clips[0]["candidate_id"] == "c1"
     assert batch.assessments[0].effective_decision is QualityDecision.REVIEW
+
+
+def test_neutral_low_scores_keep_without_repair_or_judge(tmp_path):
+    from app.quality_moe.evaluator import evaluate_candidate
+
+    config = _config(report_only=False)
+    candidate = _candidate(tmp_path)
+    sample = _sample(video_path=str(candidate["video_path"]))
+
+    def _fail_repair(*_args, **_kwargs):
+        raise AssertionError("repair must not run for neutral low-key scores")
+
+    assessment = evaluate_candidate(
+        candidate,
+        config=config,
+        work_dir=tmp_path,
+        sampler=_CountingSampler(sample),
+        experts=(
+            _Expert(config, "nr_vqa", "technical", score=0.30),
+            _Expert(config, "cinematic_classifier", "cinematic", score=0.40),
+            _Expert(config, "deterministic_temporal", "temporal", score=0.50),
+        ),
+        repair_search=_fail_repair,
+        judge=object(),
+    )
+
+    assert assessment.effective_decision is QualityDecision.KEEP_AS_IS
+    assert assessment.provenance["latency_ms"]["repair"] == 0
+    assert assessment.provenance["latency_ms"]["judge"] == 0
 
 
 def test_hard_gate_short_circuits_sampling_and_judge(tmp_path):

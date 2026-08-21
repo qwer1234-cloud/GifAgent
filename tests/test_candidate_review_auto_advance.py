@@ -61,6 +61,45 @@ def test_load_folder_choices_reports_remaining_reviewable_folder_count(monkeypat
     result = review.load_folder_choices("D:/exports")
 
     assert result[3] == 2
+    assert result[2] == [
+        {"folder": "A", "status_counts": {"candidate": 2}},
+        {"folder": "C", "status_counts": {"candidate": 1}},
+    ]
+
+
+def test_load_folder_choices_shows_fully_rated_folder_when_none_unrated(monkeypatch):
+    from app.ui.tabs import review
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "root": r"D:\exports\BBCPOVD",
+                "folders": [
+                    {
+                        "folder": r"D:\exports\BBCPOVD",
+                        "relative_folder": ".",
+                        "count": 32,
+                        "status_counts": {
+                            "liked": 15,
+                            "disliked": 9,
+                            "neutral": 5,
+                            "favorited": 3,
+                        },
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(review.httpx, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    result = review.load_folder_choices(r"D:\exports\BBCPOVD")
+
+    assert result[3] == 0
+    assert result[2][0]["folder"] == r"D:\exports\BBCPOVD"
+    assert result[0]["value"] == r"D:\exports\BBCPOVD"
+    assert "already rated" in result[1]
 
 
 def test_rate_and_advance_selects_next_gif_in_current_folder(monkeypatch):

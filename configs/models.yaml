@@ -7,8 +7,9 @@ media:
 
 vlm:
   provider: "ollama"
-  model: "llava:13b"
+  model: "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M"
   # Resolved once through the lifecycle-aware Ollama runtime when a job starts.
+  # Use "auto" for WSL Ollama. Never pin a 172.x address; it changes every reboot.
   base_url: "auto"
   batch_size: 50
   max_batch_size: 100
@@ -35,7 +36,7 @@ embedding:
   image_model: "llava:13b"
   text_model: "nomic-embed-text:latest"
   # Portable runtime: "auto" resolves the live WSL address at call time.
-  # Set GIFAGENT_OLLAMA_BASE to pin a deterministic/remote endpoint.
+  # Never pin a 172.x WSL IP. Set GIFAGENT_OLLAMA_BASE to pin a remote endpoint.
   base_url: "auto"
   manage_lifecycle: true
   launch_mode: "wsl"
@@ -79,9 +80,10 @@ preference_memory:
 
 quality_moe:
   enabled: true
-  # Until calibrated against human review, quality evidence is append-only and
-  # does not change candidate count or export order.
-  report_only: true
+  # Active selector: hard REJECT and negative-expert repair can change the
+  # export set. Ranking still uses 80% adult / 20% cinematic so film mood
+  # cannot veto a readable sex clip.
+  report_only: false
   evaluation_version: quality-moe-v1
   soft_reject:
     min_judge_confidence: 0.80
@@ -97,7 +99,8 @@ quality_moe:
       enabled: true
       version: builtin-v1
   judge:
-    model_id: llava:13b
+    # Same uncensored vision model as scoring; llava refuses NSFW sheets.
+    model_id: "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M"
     temperature: 0
     timeout_seconds: 120
     base_url: inherit_vlm
@@ -111,9 +114,8 @@ quality_moe:
     geometric_mode: fixed_or_validated_smooth
 
 adaptive:
-  # Balanced quality-first preset (2026-08-11): keep dense discovery, then
-  # demand stronger evidence. Output count is not itself minimized; qualified,
-  # deduplicated candidates retain a generous ratio and cap.
+  # Adult sex-clip selector (2026-08-15): denser peaks, shorter action
+  # windows, export every unique qualified clip up to 100.
   # Baseline values preserved in data/backups/before_adult_opt_* .
   sample_interval: 7
   merge_gap: 15
@@ -121,19 +123,21 @@ adaptive:
   # Prevent dense high-score runs from collapsing into one mega-clip.
   max_merge_span_s: 18
   # Multi-frame groups must contain a peak at/above this (else demote to single).
-  merge_peak_threshold: 0.65
-  worthiness_threshold: 0.55
-  refine_threshold: 0.65
-  refine_radius: 12
-  refine_interval: 5
+  merge_peak_threshold: 0.70
+  worthiness_threshold: 0.62
+  refine_threshold: 0.70
+  refine_radius: 8
+  refine_interval: 8
+  # Hard cap so dense adult scores cannot explode 35B refine past one hour.
+  max_refine_frames: 120
   min_duration: 2
   max_duration: 20
   action_guard_enabled: true
   action_vlm_verify_enabled: true
   action_analysis_version: 1
   action_analysis_window_s: 30
-  action_preferred_min_duration_s: 4
-  action_preferred_max_duration_s: 12
+  action_preferred_min_duration_s: 5
+  action_preferred_max_duration_s: 8
   action_scan_fps: 4
   action_boundary_confidence_threshold: 0.65
   action_loop_adjust_s: 0.75
@@ -141,9 +145,12 @@ adaptive:
   action_fallback_mode: fixed_window
   # Dark-frame prefilter (grayscale mean). 0 = disable. Legacy default was 25.
   min_brightness: 10
-  # v3: cut near-duplicate / near-time clips after denser adult scoring.
-  output_ratio: 0.75
-  max_output: 50
+  output_ratio: 1.0
+  max_output: 100
+  # MoE ranking mix after quality eval. Adult (worthiness+sex_act) cannot
+  # be vetoed by cinematic; cinematic only breaks ties among sex clips.
+  quality_ranking_adult_weight: 0.80
+  quality_ranking_cinematic_weight: 0.20
   vlm_temperature: 0.25
   vlm_top_p: 0.90
   vlm_top_k: 40
@@ -165,7 +172,7 @@ adaptive:
   transition_soft_threshold: 0.40
   transition_soft_run_frames: 3
   transition_rescore_split_segments: true
-  # Frozen scoring prompt. default = cinematic; adult = adult-neutral GIF potential.
+  # Frozen scoring prompt. default = cinematic; adult = sex-action GIF potential.
   score_prompt_mode: adult
 
 # Previous baseline adaptive (pre-adult A/B):

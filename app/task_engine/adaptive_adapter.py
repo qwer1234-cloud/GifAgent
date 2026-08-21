@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,17 @@ from app.task_engine.stages import StageAdapter, StageContext, StageResult
 _ADAPTIVE_SCRIPT = (
     Path(__file__).resolve().parents[2] / "scripts" / "test_video_adaptive.py"
 )
+
+DEFAULT_STAGE_TIMEOUT_S = 3600
+STAGE_TIMEOUT_S = {
+    "vlm": 4 * 3600,
+    "refine": 6 * 3600,
+}
+
+
+def stage_timeout_seconds(stage_name: str) -> int:
+    """Return the wall-clock budget for one adaptive stage subprocess."""
+    return int(STAGE_TIMEOUT_S.get(stage_name, DEFAULT_STAGE_TIMEOUT_S))
 
 
 def _stage_script_invocation(script_path: Path) -> list[str]:
@@ -90,7 +102,15 @@ def run_adaptive_stage(
     if clip_id:
         cmd.extend(["--clip-id", clip_id])
 
-    _runner(cmd, check=True, capture_output=True, timeout=3600)
+    timeout_s = stage_timeout_seconds(stage_name)
+    if _runner is subprocess.run:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        # Inherit stdout/stderr so the packaged console shows live progress.
+        # The stage script also tees prints into work_dir/stage.log.
+        _runner(cmd, check=True, timeout=timeout_s, env=env)
+    else:
+        _runner(cmd, check=True, capture_output=True, timeout=timeout_s)
 
     if not result_file.exists():
         raise FileNotFoundError(

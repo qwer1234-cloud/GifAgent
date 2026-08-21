@@ -166,6 +166,41 @@ def test_candidate_folders_are_discovered_recursively(monkeypatch, tmp_path):
     assert rels == {"JUR-639": 1, "A/B": 1}
 
 
+def test_candidate_folders_query_only_the_requested_root(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    root = tmp_path / "adaptive_test"
+    keep = root / "KeepMe"
+    skip = root / "SkipMe"
+    keep.mkdir(parents=True)
+    skip.mkdir(parents=True)
+    keep_gif = keep / "keep.gif"
+    skip_gif = skip / "skip.gif"
+    keep_gif.write_bytes(b"gif")
+    skip_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(conn, "cand-keep", artifact_path=str(keep_gif), preview_path=str(keep_gif))
+    _insert_candidate(conn, "cand-skip", artifact_path=str(skip_gif), preview_path=str(skip_gif))
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    seen: list[object] = []
+    real_rows = candidates_router._candidate_rows
+
+    def spy(conn, *, status, folder=None):
+        seen.append(folder)
+        return real_rows(conn, status=status, folder=folder)
+
+    monkeypatch.setattr(candidates_router, "_candidate_rows", spy)
+
+    payload = candidates_router.list_candidate_folders(root=str(keep), status="all")
+    rels = {folder["relative_folder"]: folder["count"] for folder in payload["folders"]}
+
+    assert seen
+    assert all(folder == keep.resolve() for folder in seen)
+    assert rels == {".": 1}
+
+
 def test_candidate_folders_include_unmaterialized_gif_folders(monkeypatch, tmp_path):
     from app.routers import candidates as candidates_router
 
