@@ -8,11 +8,11 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 
 ### 核心能力
 
-- **自动打标**：VLM（llava:13b）逐帧分析审美特征 → LLM（DeepSeek-V4-Flash）综合生成标签，所有输出经过质量门禁校验
+- **自动打标**：VLM（默认 `Qwen3.6-35B-A3B-Uncensored` IQ2_M，经 Ollama）逐帧分析 → LLM（`deepseek-v4-flash`）综合生成标签，所有输出经过质量门禁校验
 - **质量门禁**：统一的 JSON 解析器 + placeholder 检测 + Pydantic 模型校验，placeholder 率从 89% 降至 <1%
 - **向量索引**：基于 nomic-embed-text 的 FAISS 语义向量库，支持文本到 GIF 的跨模态检索（8109 向量 / 9221 媒体）
 - **自适应提取**：两阶段 GIF 提取，per-frame VLM 严格评分 + 时域 clip 合并 + embedding/时域去重；库内 FAISS 检索不注入打分或合成
-- **智能采样**：7s 粗采样 → 高分区域细采样；区域 merge + embedding/时域去重 → Quality MoE 评估全量候选 → 再按 `output_ratio` / `max_output` 截断导出
+- **智能采样**：7s 粗采样 → 高分区域细采样（默认最多 120 帧）→ 区域 merge + embedding/时域去重 → Quality MoE 评估全量候选 → 再按 `output_ratio` / `max_output` 截断导出
 - **断点恢复**：VLM 处理循环自动恢复、per-frame DB commit、每 50 batch 模型重启防降速
 - **Preference Memory**：候选 GIF 物化 → 人工反馈收集 → 偏好画像构建 → 重排序，含 holdout 评估门禁
 - **批量处理**：视频目录批量处理 + checkpoint 断点续跑，支持 200+ 视频无人值守处理
@@ -25,13 +25,33 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 E:\data\originals\（8000+ GIF）
   → SHA256 + pHash 去重 → SQLite 入库
   → ffmpeg GIF 抽帧（6-12 帧/张）
-  → llava:13b 逐帧审美分析（~4.7s/帧）
+  → 本地 VLM 逐帧审美分析（默认 uncensored Qwen 35B A3B IQ2_M）
   → json_guard 统一解析 → quality 门禁校验
-  → DeepSeek-V4-Flash 综合标注（tags + emotional_core + aesthetic_notes）
+  → deepseek-v4-flash 综合标注（tags + emotional_core + aesthetic_notes）
   → nomic-embed-text 向量化 → FAISS 索引
-  → 新视频：粗采样 → VLM 裸评分 → 细采样 / merge / 去重 → LLM 合成标签（非致命）
+  → 新视频（任务引擎 8 阶段）：
+      discover → sample → vlm → refine → synthesize → rank_dedup → gif_clip → materialize
   → 导出候选 GIF（ffmpeg palette 二段式）
 ```
+
+### 当前生产约定（2026-08）
+
+以下默认值以源码 `configs/models.yaml` 为准，创建任务时冻结进 `task_jobs.config_json`。之后改 YAML **不会**改变已在跑或已失败待 Retry 的任务。
+
+| 项 | 当前默认 |
+|----|----------|
+| VLM / Quality 视觉裁判 | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M` |
+| VLM `base_url` | `auto`（运行时发现 WSL 地址，禁止写死 `172.x`） |
+| LLM | `openai_compatible` / `deepseek-v4-flash`（`DEEPSEEK_API_KEY`） |
+| 打分提示 | `adaptive.score_prompt_mode: adult` |
+| 粗采样 / 细采样 | `sample_interval=7`，`refine_interval=8`，`refine_radius=8`，`max_refine_frames=120` |
+| 准入 | `worthiness_threshold=0.62`，`refine_threshold=0.70` |
+| Merge | `merge_score_threshold=0.58`，`max_merge_span_s=18`，`merge_peak_threshold=0.70` |
+| 导出 | `output_ratio=1.0`，`max_output=100` |
+| Quality MoE | `enabled: true`，`report_only: false`；排序 80% adult（0.4×worthiness + 0.6×sex_act）+ 20% cinematic |
+| Preference Memory | 若 `enabled: true`，**用 caption embedding 替代** adult 排序 |
+| 阶段超时 | 默认 1h；`vlm` 4h；`refine` 6h |
+| 打包入口 | `dist/GifAgentUI/GifAgentUI.exe`（API `8000` + Gradio `7861`） |
 
 ---
 
@@ -44,13 +64,14 @@ E:\data\originals\（8000+ GIF）
 | Python | 3.11+ | uv 自动管理 |
 | uv | 最新版 | `powershell -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
 | ffmpeg | 任意版本 | PATH 中可用 |
-| Ollama | 最新版 | WSL 或 Windows，监听 localhost:11434 |
-| GPU | 16GB+ VRAM | 本地运行 llava:13b；LLM 文本合成走云端 DeepSeek-V4-Flash |
+| Ollama | 最新版 | 推荐 WSL distro `Ubuntu-20.04`，Windows 经 WSL IP 访问 `11434` |
+| GPU | 12GB+ VRAM | 默认 IQ2_M 约 12GB；LLM 文本合成走云端 `deepseek-v4-flash` |
 
 ### 必需模型
 
 ```bash
-ollama pull llava:13b                                    # VLM 视觉分析
+# 视觉打分 / Quality 裁判（与 configs/models.yaml 一致）
+ollama pull hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M
 ollama pull nomic-embed-text:latest                      # Embedding 向量化
 ```
 
@@ -77,17 +98,17 @@ media:
 
 vlm:
   provider: "ollama"
-  model: "llava:13b"                  # 视觉模型
-  base_url: "http://127.0.0.1:11434"
+  model: "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M"
+  base_url: "auto"                    # auto = 运行时发现 WSL 地址；不要写死 172.x
   manage_lifecycle: true              # 启动/停止模型（true/false）
   launch_mode: "wsl"                  # none（不管理）| native（ollama）| wsl（wsl ollama）
   # 注意：launch_mode 不根据 URL 推断，必须显式设置。
 
 llm:
-  provider: "anthropic_compatible"
-  model: "DeepSeek-V4-Flash"          # 云端文本模型
-  api_key_env: "ANTHROPIC_API_KEY"
-  base_url: ""                        # 默认使用 ANTHROPIC_BASE_URL 或 Anthropic-compatible /v1/messages
+  provider: "openai_compatible"
+  model: "deepseek-v4-flash"          # 必须小写；DeepSeek-V4-Flash 会 400
+  api_key_env: "DEEPSEEK_API_KEY"
+  base_url: "https://api.deepseek.com/v1"
   temperature: 0.3
   max_tokens: 2048
 
@@ -252,28 +273,37 @@ uv run python app/ui/candidate_review.py
 - Candidate display and feedback now validate that the GIF file still exists at
   the original `artifact_path`; moved or missing files return a path-integrity
   error instead of silently reviewing stale data.
-- The Windows GUI bundle was rebuilt with:
-  `uv run pyinstaller --noconfirm build_exe.spec`.
-  Output: `dist/GifAgentUI/GifAgentUI.exe`.
+- Load Folders (`GET /api/candidates/folders`) only scans the selected root
+  (SQL path prefix + `*.gif` walk), with a 60s UI timeout. If every GIF under
+  that root is already rated/favorited, the dropdown still lists the folder so
+  you can re-review via the status filter (`all` / `liked` / `favorited`).
+- The Windows GUI bundle is `dist/GifAgentUI/GifAgentUI.exe`. Rebuild in-place
+  with Git Bash, not WSL bash:
 
-For an in-place release, use `bash scripts/rebuild_exe.sh`. The script preserves
-both `dist/GifAgentUI/data/` and the writable
-`dist/GifAgentUI/configs/models.yaml`, so rebuilding does not reset the task
-history, GIF exports, labels, Preference Memory, databases, or settings edited
-through the UI. Do not replace only `GifAgentUI.exe`; the matching `_internal/`
-runtime must be released with it. For task-engine releases, smoke-test at least
-one real queued video through `discover`/`sample`; UI and API startup alone do
-not exercise the bundled stage-script imports.
+```bash
+"C:\Program Files\Git\bin\bash.exe" scripts/rebuild_exe.sh
+```
+
+The script preserves `dist/GifAgentUI/data/` and writable
+`dist/GifAgentUI/configs/models.yaml`. Frozen startup reclaims port 8000 only
+from leftover `GifAgentUI.exe` processes; it never kills a foreign holder
+(for example Afterlow on 8000). WSL `sleep infinity` keepers whose CWD is
+`dist/GifAgentUI` can block `rm -rf` during rebuild — stop those keepers
+first (this also drops the WSL VM / Ollama). Do not replace only
+`GifAgentUI.exe`; ship the matching `_internal/` tree. Smoke-test at least
+one real queued video through `discover`/`sample`.
 
 ### Adaptive duplicate reduction tuning (2026-07-05 / 2026-07-25)
 
 - Adaptive export now clears generated artifacts in the target video output
   folder before reprocessing, preventing stale GIFs from earlier runs from
   mixing with the new run.
-- Current adult-candidate defaults (`configs/models.yaml`):
-  `sample_interval=7`, `worthiness_threshold=0.42`, `refine_threshold=0.55`,
-  `max_merge_span_s=24`, `merge_peak_threshold=0.55`, `output_ratio=0.45`,
-  `max_output=35`, `min_brightness=10`.
+- Current adult-candidate defaults (`configs/models.yaml`, 2026-08):
+  `sample_interval=7`, `worthiness_threshold=0.62`, `refine_threshold=0.70`,
+  `refine_interval=8`, `refine_radius=8`, `max_refine_frames=120`,
+  `max_merge_span_s=18`, `merge_peak_threshold=0.70`,
+  `merge_score_threshold=0.58`, `output_ratio=1.0`, `max_output=100`,
+  `min_brightness=10`.
 - Region-aware merge lives in `app/services/clip_merge.py` (span cap + peak
   demotion) so dense high-score timelines do not collapse into one mega-clip.
 - Embedding dedup uses `embedding_dedup_threshold=0.88`, then temporal dedup
@@ -340,7 +370,7 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 | GET | `/api/review/next` | 获取下一条待审核媒体 |
 | GET | `/api/review/{id}` | 获取指定媒体审核数据 |
 | POST | `/api/feedback` | 提交人工反馈（like/dislike/neutral） |
-| GET | `/api/candidates/folders` | 递归列出指定根目录下包含候选 GIF 的文件夹，返回数量、缺失数和状态计数 |
+| GET | `/api/candidates/folders` | 只扫描所选 `root` 下的候选行与 `.gif`；返回数量、缺失数、未物化数和状态计数 |
 | GET | `/api/candidates` | 分页列出候选 GIF，支持 `status` / `limit` / `offset` / `folder`，返回状态计数 |
 | POST | `/api/candidates/{candidate_id}/feedback` | 提交候选 GIF 评分（like/neutral/dislike/skip） |
 | GET | `/api/preference/profiles` | 获取偏好画像列表及当前生效版本 |
@@ -349,7 +379,7 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 | POST | `/api/preference/evaluate` | 偏好画像发布门禁评估（holdout 评估） |
 | POST | `/api/tasks/jobs` | (Phase 1) 创建目录处理任务 |
 | POST | `/api/tasks/jobs/{job_id}/cancel` | (Phase 1) 请求取消任务 |
-| POST | `/api/tasks/jobs/{job_id}/retry` | (Phase 1) 重试失败或 `needs_attention` 任务 |
+| POST | `/api/tasks/jobs/{job_id}/retry` | (Phase 1) 重试失败或 `needs_attention` 阶段；不改写冻结 `config_json` |
 | GET | `/api/tasks/jobs` | (Phase 1) 列出所有任务及其状态统计 |
 | GET | `/api/tasks/jobs/{job_id}` | (Phase 1) 查看任务详情、视频列表和阶段统计 |
 | GET | `/api/tasks/events` | (Phase 1) 按事件 ID 增量读取任务事件 |
@@ -391,7 +421,7 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 
 - 每批 200 帧，per-frame DB commit 保证进度不丢失
 - 所有进度写入 `data/vlm_loop.log`（带时间戳）
-- 每 50 batch 自动重启 llava:13b 模型，防止推理速度衰减
+- 每 50 batch 自动重启当前 VLM，防止推理速度衰减
 - 连续 3 batch 零处理量自动终止
 - 重启后从 `frames.vlm_status='pending'` 自动恢复
 
@@ -421,7 +451,7 @@ GifAgent/
 │   │   ├── scanner.py                # 文件扫描、SHA256/pHash 去重
 │   │   ├── preprocess.py             # ffmpeg GIF 抽帧、缩略图
 │   │   ├── scheduler.py              # Ollama 模型切换调度
-│   │   ├── vision.py                 # llava:13b 逐帧审美分析
+│   │   ├── vision.py                 # VLM 逐帧审美分析
 │   │   ├── llm.py                    # LLM 综合标注（含 think 标签处理）
 │   │   ├── embedding.py              # Ollama Embedding API
 │   │   ├── indexer.py                # FAISS 索引管理（余弦相似）
@@ -464,6 +494,8 @@ GifAgent/
 │   │   ├── adaptive_adapter.py       # 自适应适配器
 │   │   └── worker.py                 # 单写入者工作循环
 │   └── ui/
+│       ├── launcher.py               # 打包入口：FastAPI 8000 + Gradio 7861 + 任务 worker
+│       ├── local_port.py             # 仅回收本进程名占用的 8000（不杀 Afterlow 等）
 │       ├── review.py                 # Gradio 原始 GIF 审核界面（port 7860）
 │       ├── candidate_review.py       # 候选 GIF 评分 + 批量控制面板（port 7861）
 │       └── quality_lab_tab.py        # 质量实验室标签页（盲测 A/B、晋级、回滚）
@@ -583,8 +615,8 @@ uv run python scripts/preference_memory.py status --json
 
 ```bash
 uv run pytest tests/ -v
-# Current suite: 400+ tests.
-# 400+ tests: JSON 解析、placeholder 检测、emotional_core 归一化、
+# Current suite: 1551 collected tests (2026-08).
+# Covers: JSON 解析、placeholder 检测、emotional_core 归一化、
 # FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序、
 # 质量实验室 API、盲测 A/B、晋级/回滚
 ```
@@ -595,8 +627,8 @@ uv run pytest tests/ -v
 
 | 角色 | 模型 | 说明 |
 |------|------|------|
-| VLM | `llava:13b` | 逐帧视觉分析，~5.9s/帧 |
-| LLM | `DeepSeek-V4-Flash` | 云端 Anthropic-compatible 综合标注 + 标签生成 |
+| VLM | `Qwen3.6-35B-A3B-Uncensored` IQ2_M | 逐帧视觉分析 + Quality 裁判；`llava:13b` 会拒成人内容 |
+| LLM | `deepseek-v4-flash` | 云端 OpenAI-compatible 综合标注 + 标签生成 |
 | Embedding | `nomic-embed-text:latest` | 文本/帧向量化（FAISS 索引） |
 
 ---
@@ -658,7 +690,9 @@ Source-grouped 评估（Phase 3）:
 
 ### 功能开关
 
-在 `configs/models.yaml` 中通过 `preference_memory.enabled` 控制：
+在 `configs/models.yaml` 中通过 `preference_memory.enabled` 控制。为 `true` 时，
+自适应导出用 caption embedding 对收藏质心打分，**并替代** adult `sex_act` 排序。
+要按成人动作强度导出时请关闭 Preference Memory。
 
 ```yaml
 preference_memory:
@@ -793,17 +827,22 @@ Phase 1 adds a production-grade task processing engine for adaptive GIF extracti
 ### Production Eight-Stage Pipeline
 
 Every video advances through real, independently leased stages:
-`discover -> sample -> vlm -> refine -> rank_dedup -> synthesize -> gif_clip -> materialize`.
+`discover -> sample -> vlm -> refine -> synthesize -> rank_dedup -> gif_clip -> materialize`.
 Each stage reads immutable upstream artifacts and atomically commits its own
-versioned manifest. `gif_clip` fans out to one stage per clip, so a failed GIF
-can be retried without repeating successful GIFs or earlier video stages.
-`materialize` starts only after all clip stages are terminal and reports partial
-output as `needs_attention` instead of silently marking the video successful.
+versioned manifest. The worker claims globally FIFO by `created_at`, so a
+directory job typically finishes all `vlm` stages before any `refine`, which
+can look “stuck” for hours while later videos are still scoring. `gif_clip`
+fans out to one stage per clip, so a failed GIF can be retried without
+repeating successful GIFs or earlier video stages. `materialize` starts only
+after all clip stages are terminal and reports partial output as
+`needs_attention` instead of silently marking the video successful.
+`source_file_sha256` sentinels `not_checked` / `unavailable` are accepted at
+materialize so packaged publishes are not rejected solely for skipped hashing.
 
 The full production-path release gate covers success, VLM outage, invalid VLM
 payload, valid zero-clip execution, and the persistent serial folder queue. The
-2026-07-23 baseline is `1014 passed, 2 skipped, 3 warnings`; the warnings are
-dependency deprecations.
+2026-08 working tree collects **1551** tests (`uv run pytest --collect-only -q`).
+Re-run `uv run pytest -q` before a release.
 
 ### Packaged Startup Fix (2026-07-23)
 

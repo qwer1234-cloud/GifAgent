@@ -10,37 +10,43 @@ Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/video
 
 | Role | Model | Provider | Endpoint |
 |------|-------|----------|----------|
-| VLM | `llava:13b` | Ollama (local) | `http://localhost:11434` |
-| LLM | `deepseek-v4-flash` | DeepSeek (cloud) | `https://api.deepseek.com/v1` |
-| Embedding | `nomic-embed-text:latest` | Ollama (local) | `http://localhost:11434` |
+| VLM | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M` | Ollama (WSL) | `vlm.base_url: auto` (never pin `172.x`) |
+| Quality judge | same uncensored VLM | Ollama | `quality_moe.judge.base_url: inherit_vlm` |
+| LLM | `deepseek-v4-flash` (lowercase) | DeepSeek (cloud) | `https://api.deepseek.com/v1` |
+| Embedding | `nomic-embed-text:latest` | Ollama (WSL) | `embedding.base_url: auto` |
 
-- **LLM is cloud-based, handles NSFW content without rejection** (tested 3/3 success on adult content)
-- API key env var: `DEEPSEEK_API_KEY` (sk- prefix, DeepSeek native key)
-- LLM provider is `openai_compatible` (NOT anthropic_compatible — that was the old Ark setup)
+- **Do not use `llava:13b` for adult scoring** — it G-rates captions and refuses NSFW judge sheets.
+- LLM provider is `openai_compatible`. Model name must be lowercase (`DeepSeek-V4-Flash` returns 400).
+- API key env var: `DEEPSEEK_API_KEY`
+- GPU: IQ2_M is ~12GB VRAM. Stage subprocess timeouts: default 1h, `vlm` 4h, `refine` 6h (`app/task_engine/adaptive_adapter.py`).
 
 ## Key Parameters (`configs/models.yaml` → `adaptive`)
 
-Defaults below are the **adult-candidate v3** preset used by
-`scripts/test_video_adaptive.py` via `extract_config()`:
+Defaults below are the **2026-08 adult selector** used by
+`scripts/test_video_adaptive.py` via `extract_config()`. They are frozen into
+each job snapshot; Retry does **not** pick up later YAML edits.
 
 ```python
 SAMPLE_INTERVAL = 7           # coarse sampling every N seconds
 MERGE_GAP = 15                # max gap to continue a merge group
-MERGE_SCORE_THRESHOLD = 0.50  # both frames must be >= this to merge
-MAX_MERGE_SPAN_S = 24         # hard cap: flush group before span exceeds this
-MERGE_PEAK_THRESHOLD = 0.55   # multi-frame groups below this demote to best single
-WORTHINESS_THRESHOLD = 0.42   # min score to keep a frame
-REFINE_THRESHOLD = 0.55       # min score to trigger refinement sampling
-REFINE_RADIUS = 15            # seconds around high-score frame
-REFINE_INTERVAL = 5           # fine sampling interval
+MERGE_SCORE_THRESHOLD = 0.58  # both frames must be >= this to merge
+MAX_MERGE_SPAN_S = 18         # hard cap: flush group before span exceeds this
+MERGE_PEAK_THRESHOLD = 0.70   # multi-frame groups below this demote to best single
+WORTHINESS_THRESHOLD = 0.62   # min score to keep a frame
+REFINE_THRESHOLD = 0.70       # min score to trigger refinement sampling
+REFINE_RADIUS = 8             # seconds around high-score frame
+REFINE_INTERVAL = 8           # fine sampling interval
+MAX_REFINE_FRAMES = 120       # cap extra VLM calls (dense adult scores)
 MIN_BRIGHTNESS = 10           # grayscale mean; 0 disables dark prefilter
-OUTPUT_RATIO = 0.45           # fraction of deduped clips to export
-MAX_OUTPUT = 35               # hard cap per video (0 = unlimited in direct mode)
+OUTPUT_RATIO = 1.0            # fraction of deduped clips to export
+MAX_OUTPUT = 100              # hard cap per video (0 = unlimited in direct mode)
 EMBED_SIM_THRESHOLD = 0.88    # text embedding duplicate threshold
 TEMPORAL_DEDUP_MIN_GAP_S = 15 # keep highest score within peak-time window
 POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
 SCORE_PROMPT_MODE = "adult"   # frozen via extract_config(); default|adult
-VLM_OPTIONS = {"temperature": 0.50, "top_p": 0.90, "top_k": 40}
+QUALITY_RANKING_ADULT = 0.80  # 0.4*worthiness + 0.6*sex_act
+QUALITY_RANKING_CINE = 0.20   # cinematic expert; cannot veto a sex clip
+VLM_OPTIONS = {"temperature": 0.25, "top_p": 0.90, "top_k": 40}
 ```
 
 Preset file: `configs/models.adult_candidate.yaml` (mirrors the same values).
@@ -95,7 +101,7 @@ score, merge type, and caption summary.
 
 The default adaptive profile keeps discovery dense (`sample_interval: 7`) and
 raises the evidence required for merging, refinement, and export. It then keeps
-up to 75% of the qualified, deduplicated candidates with a cap of 50 per video.
+every unique qualified clip (`output_ratio: 1.0`) up to `max_output: 100`.
 This makes quality the admission rule without treating low output count as a
 success metric: a video with many strong moments may still produce many GIFs.
 VLM scoring uses `temperature: 0.25` for repeatability; exports remain 24 fps at
@@ -104,14 +110,13 @@ tolerance, and duplicate removal stay enabled.
 
 ### Quality MoE evaluation and repair boundary
 
-Quality MoE is enabled in `configs/models.yaml` with `report_only: true` by
-default. Direct and staged both evaluate the full post-dedup candidate set
-**before** `output_ratio` / `max_output` truncation, so `input_count` and
-evidence coverage share one definition. In report_only it records expert
-evidence, the recommended decision, and a validated repair recipe, but soft
-quality decisions do not remove or reorder candidates and recommended repairs
-are not applied to exported pixels. Deterministic transition/action hard gates
-remain authoritative.
+Quality MoE is enabled in `configs/models.yaml` with `report_only: false`.
+Soft quality decisions can change the export set. Ranking uses
+`0.80 * adult + 0.20 * cinematic` so film mood cannot veto a readable sex clip.
+If `preference_memory.enabled` is true, caption-vs-liked-centroid ranking
+**replaces** the adult mix (it does not blend with pixels). Direct and staged
+both evaluate the full post-dedup candidate set **before** `output_ratio` /
+`max_output` truncation.
 
 The unified visual judge uses the existing Ollama runtime. Its endpoint is
 resolved once when the job/CLI starts and the absolute URL is frozen into the
@@ -151,7 +156,7 @@ remain out of scope.
 
 ### Prerequisites
 ```bash
-ollama pull llava:13b
+ollama pull hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M
 ollama pull nomic-embed-text:latest
 export DEEPSEEK_API_KEY=sk-...     # DeepSeek native API key
 ```
@@ -172,20 +177,24 @@ PotPlayer bookmark file named `{video_name}.pbf`.
 ### Packaged GUI
 
 ```bash
-uv run pyinstaller --noconfirm build_exe.spec
+"C:\Program Files\Git\bin\bash.exe" scripts/rebuild_exe.sh
 ```
 
-Output: `dist/GifAgentUI/GifAgentUI.exe`. If an older packaged GUI is running,
-stop it before rebuilding because it holds `dist/GifAgentUI/data/library.db`.
-Use `bash scripts/rebuild_exe.sh` for an in-place release. It preserves both
-`dist/GifAgentUI/data/` and the writable `dist/GifAgentUI/configs/` directory.
-These contain the runtime databases, history, exports junction, labels,
-Preference Memory, and settings edited through the UI. Never replace only the
-EXE: release the matching `_internal/` tree as well. Before and after building,
-compare hashes for the writable config, databases, and checkpoints. A full
-historical queue rerun is optional; prefer a small new-video smoke test that
+Output: `dist/GifAgentUI/GifAgentUI.exe`. Stop a running packaged GUI first
+(it holds `dist/GifAgentUI/data/library.db` and port 8000). Use Git Bash, not
+WSL bash. The script preserves `dist/GifAgentUI/data/` and writable
+`dist/GifAgentUI/configs/`. Frozen startup (`app/ui/local_port.py`) reclaims
+port 8000 only from leftover `GifAgentUI.exe`; never kill a foreign listener
+such as Afterlow. WSL `sleep infinity` keepers whose CWD is `dist/GifAgentUI`
+block `rm -rf` during rebuild and should be killed first (this also drops
+Ollama). Never replace only the EXE: release the matching `_internal/` tree.
+A full historical queue rerun is optional; prefer a small smoke test that
 reaches at least `discover`/`sample`. UI/API startup does not exercise the
 bundled stage-script import closure.
+
+Writable `dist/GifAgentUI/configs/models.yaml` is restored on rebuild and
+**does not** pick up source YAML defaults automatically. The launcher copies
+the bundled yaml only when the writable file is missing.
 
 ### Services
 ```bash
@@ -222,6 +231,8 @@ app/
 ├── quality_lab/               # Phase 2: Quality Lab benchmarking (see below)
 ├── task_engine/               # Phase 1: Reliable task processing engine (see below)
 ├── ui/
+│   ├── launcher.py            # Packaged entry (API 8000 + Gradio 7861 + worker)
+│   ├── local_port.py          # Reclaim port 8000 from leftover GifAgentUI.exe only
 │   ├── candidate_review.py    # Gradio UI: review + batch control (port 7861)
 │   ├── review.py              # Gradio UI: original GIF review (port 7860)
 │   ├── control_tab.py         # Control tab (now API-backed; legacy mode via GIFAGENT_LEGACY_QUEUE_UI=1)
@@ -279,20 +290,20 @@ system for adaptive GIF extraction and pipeline stages.
 ### Production Stage Contract (2026-07-18)
 
 The production adapter executes eight independent stages:
-`discover -> sample -> vlm -> refine -> rank_dedup -> synthesize -> gif_clip -> materialize`.
+`discover -> sample -> vlm -> refine -> synthesize -> rank_dedup -> gif_clip -> materialize`.
 Stages exchange versioned manifests through `task_artifacts`; they must not
 re-run the full adaptive pipeline or infer success from missing artifacts.
-`rank_dedup` fans out one `gif_clip` stage per clip. Each GIF is independently
-retryable, and `materialize` is created only after every clip reaches a terminal
-state. Partial output uses `StageResult.outcome=needs_attention` and preserves
-successfully published GIFs.
+The worker claims globally FIFO by `created_at`, so all `vlm` rows typically
+complete before any `refine`. `rank_dedup` fans out one `gif_clip` stage per
+clip. Each GIF is independently retryable, and `materialize` is created only
+after every clip reaches a terminal state. Partial output uses
+`StageResult.outcome=needs_attention` and preserves successfully published GIFs.
+Materialize accepts `source_file_sha256` sentinels `not_checked` / `unavailable`.
 
 Release gate: compileall, the complete pytest suite, and `git diff --check`.
-The 2026-07-23 verified baseline is `1014 passed, 2 skipped, 3 warnings`,
-covering the persistent serial folder queue plus four deterministic production
-E2E scenarios: success, VLM outage, invalid VLM payload, and valid zero-clip.
-Tests must use temporary data and must not mutate historical databases, exports,
-labels, checkpoints, or writable configuration.
+The 2026-08 working tree collects **1551** tests. Tests must use temporary data
+and must not mutate historical databases, exports, labels, checkpoints, or
+writable configuration.
 
 ### Packaged Startup Compatibility (2026-07-23)
 
@@ -706,10 +717,11 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
   GIF file mtime (newest first), with equal-mtime ties broken by
   case-insensitive artifact path then candidate ID, before `offset`/`limit`.
   Without `folder`, ordering stays `candidate_gifs.created_at DESC`.
-- `GET /api/candidates/folders` discovers recursive candidate folders under a
-  selected root directory and returns per-folder totals, missing counts, and
-  status counts. Folders with `.gif` files but no `candidate_gifs` rows are
-  still listed with `unmaterialized_count` and treated as new candidates.
+- `GET /api/candidates/folders` only queries/walks the selected `root`
+  (SQL `artifact_path` prefix + `*.gif` glob). The Review UI timeout is 60s.
+  Folders with no remaining `candidate` status (everything liked/disliked/
+  favorited) are still shown so the user can re-review via the status filter.
+  Do not hide the only folder under a narrowed root.
 - The Review tab does not auto-load every candidate on open. Users first choose
   a data root, click `Load Folders`, then choose the exact folder to review from
   the recursive folder list.
@@ -736,19 +748,43 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
 
 4. **Export dir nesting**: `test_video_batch.py` now nests output as `adaptive_test/{input_folder}/{video}/`. Old runs have flat `adaptive_test/{video}/` structure.
 
-5. **VLM scoring distribution**: llava:13b tends to score everything 0.5-0.7 regardless of temperature. The `temperature=0.65` setting gives the best balance — lower (0.5) makes it too conservative (0 frames above 0.7), higher (1.0) spreads but doesn't help merge count.
+5. **VLM scoring distribution**: `llava:13b` tends to score everything 0.5-0.7
+   and G-rate adult captions. Production adult scoring uses the uncensored
+   Qwen 35B IQ2_M plus `score_prompt_mode: adult`. Frozen job snapshots keep
+   the VLM that was current at publish time.
 
 6. **Merge count vs threshold**: Lowering `MERGE_SCORE_THRESHOLD` from 0.6 to 0.55 barely increased merges (92→90 clips) because low-score frames (0.3-0.5) interspersed in the timeline break merge chains. The bottleneck is score distribution, not threshold.
 
 7. **Video fingerprint dedup**: `test_video_batch.py` computes a content fingerprint (duration + 5 keyframe pHashes at 10%/30%/50%/70%/90%) for each video before processing. If Hamming distance ≤ 5 vs any already-processed video, it's marked `dedup_skipped` with `duplicate_of` field. Robust to re-encode/container/filename changes; NOT robust to crop/watermark. Stored in `data/batch_checkpoint.json` under each video's `fingerprint` key. Use `--force` to bypass dedup.
+
+8. **Load Folders on a single video folder**: narrowing `root` used to still
+   scan the entire `candidate_gifs` table (~15–33s, UI timeout 15s). Favorited
+   rows are not `candidate`, so a fully-reviewed folder looked “broken”. Now
+   the API is scoped to `root` and the UI lists rated folders for re-review.
+
+9. **Ranking order**: `preference_memory.enabled` caption rerank runs *instead
+   of* adult MoE mix. Adult mix is `0.8*(0.4*worthiness+0.6*sex_act)+0.2*cinematic`.
+
+10. **Refine explosion**: dense adult scores can request thousands of extra
+    frames. `max_refine_frames` (default 120) caps `collect_refine_timestamps`.
+    `_stage_refine` must `wait_model` when `manage_lifecycle` is on.
+
+11. **WSL IP**: never pin `172.x` in frozen `vlm.base_url`. Use `auto`. Rebuild
+    that kills `sleep infinity` keepers also drops Ollama; refine then fails
+    with WinError 10061 until the VM is kept alive again.
+
+12. **Port 8000**: `reclaim_owned_listen_port` only kills leftover
+    `GifAgentUI.exe`. Afterlow / other foreign listeners are warned, not killed.
+
+13. **Retry does not rescore**: `POST /api/tasks/jobs/{id}/retry` resets failed
+    / `needs_attention` stages only. It does not rewrite `config_json`.
 
 ## API Endpoints (26+ total)
 
 Core endpoints (pre-Phase 1):
 
 Key ones (preference/candidate):
-- `GET /api/candidates/folders` - recursive candidate-folder discovery below a
-  selected root directory
+- `GET /api/candidates/folders` — scoped to selected `root`; includes fully rated folders and unmaterialized `.gif` dirs
 - `GET /api/candidates` - paginated candidate list (`status`, `limit`, `offset`,
   optional exact `folder`); defaults to `status=candidate`
 - `POST /api/candidates/{id}/feedback` — rate (like/neutral/dislike/skip)
@@ -760,7 +796,7 @@ Key ones (preference/candidate):
 ## Test Suite
 
 ```bash
-uv run pytest tests/ -v   # 400+ tests across all modules
+uv run pytest tests/ -v   # 1551 collected tests (2026-08)
 ```
 
 Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker, task engine repository, artifacts, legacy import, stage adapters, fault injection, worker, version manifest, smoke script, quality lab API, quality lab UI, metrics, calibration, blind A/B, promotion.
