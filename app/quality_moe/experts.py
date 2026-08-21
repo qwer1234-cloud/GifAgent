@@ -302,8 +302,34 @@ class TemporalExpert(_BaseExpert):
         )
 
 
+def _lighting_intent(median_luma: float, presence: float) -> float:
+    """Score film lighting without punishing intimate low-key.
+
+    Mid-key and textured low-key both read as cinematic. Crushed blacks
+    and blown-out frames stay low. Presence (luma contrast) keeps dark
+    sex scenes with readable bodies above empty underexposure.
+    """
+    if median_luma < 0.08:
+        crushed = _bounded(1.0 - (0.08 - median_luma) / 0.08)
+        return _bounded(0.20 * crushed + 0.15 * presence)
+    if median_luma > 0.88:
+        return _bounded(0.35 + 0.20 * presence)
+    if 0.16 <= median_luma <= 0.62:
+        band = 1.0
+    elif median_luma < 0.16:
+        band = _bounded((median_luma - 0.08) / 0.08)
+    else:
+        band = _bounded((0.88 - median_luma) / 0.26)
+    return _bounded(0.55 * band + 0.45 * presence)
+
+
 class CinematicExpert(_BaseExpert):
-    """Produces descriptive film-style evidence without content or style penalties."""
+    """Produces descriptive film-style evidence without content or style penalties.
+
+    Adult intimate lighting is treated as a valid cinematic register, not a
+    defect. The expert never emits NEGATIVE polarity for nudity, sex, or
+    low-key bedrooms; those attributes stay descriptive.
+    """
 
     expert_id = "cinematic"
     signal_family = "cinematic_classifier"
@@ -313,10 +339,15 @@ class CinematicExpert(_BaseExpert):
             return self._evidence(sampled_clip, scores={}, summary="No cinematic assessment.")
         lumas = np.concatenate([_luma(frame).ravel() for frame in sampled_clip.frames])
         median_luma = float(np.median(lumas))
+        presence = _bounded(float(np.std(lumas)) / 0.22)
         channel_means = np.mean(
             np.concatenate([frame.reshape(-1, 3) for frame in sampled_clip.frames], axis=0), axis=0
         ) / 255.0
         color_balance = _bounded(1.0 - float(np.max(channel_means) - np.min(channel_means)))
+        lighting_intent = _lighting_intent(median_luma, presence)
+        cinematic_score = _bounded(
+            0.40 * color_balance + 0.35 * lighting_intent + 0.25 * presence
+        )
         findings: tuple[dict[str, object], ...] = ()
         if median_luma < 0.35:
             findings = ({
@@ -326,7 +357,15 @@ class CinematicExpert(_BaseExpert):
             },)
         return self._evidence(
             sampled_clip,
-            scores={"color_balance": color_balance},
+            scores={
+                "color_balance": color_balance,
+                "lighting_intent": lighting_intent,
+                "presence": presence,
+                "cinematic_score": cinematic_score,
+            },
             findings=findings,
-            summary="Film-style attributes are descriptive and do not create a negative signal.",
+            summary=(
+                "Film-style attributes are descriptive. Low-key intimate lighting "
+                "is a valid cinematic register and does not create a negative signal."
+            ),
         )

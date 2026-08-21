@@ -373,10 +373,16 @@ def _collect_evidence(experts: Sequence[_Expert], sampled: SampledClip, config: 
 
 
 def _needs_repair(evidence: Sequence[ExpertEvidence]) -> bool:
+    """Repair only on explicit NEGATIVE expert polarity.
+
+    A numeric floor such as min(score) < 0.65 treats readable low-key
+    intimate clips as broken and forces the judge onto almost every sex
+    scene. Cinematic presence/color scores stay ranking signals, not gates.
+    """
     available = [item for item in evidence if item.status is EvidenceStatus.AVAILABLE]
-    scores = [value for item in available for value in item.scores.values()]
-    polarities = {item.polarity for item in available}
-    return bool(available) and (bool({EvidencePolarity.NEGATIVE, EvidencePolarity.POSITIVE} <= polarities) or any(item.polarity is EvidencePolarity.NEGATIVE for item in available) or (bool(scores) and min(scores) < 0.65))
+    return bool(available) and any(
+        item.polarity is EvidencePolarity.NEGATIVE for item in available
+    )
 
 
 def _judge_request(work_dir: str | Path, original: SampledClip, proxy: SampledClip, evidence: Sequence[ExpertEvidence], recipe_id: str) -> JudgeRequest:

@@ -10,6 +10,7 @@ import pytest
 from app.task_engine.adaptive_adapter import (
     AdaptivePipelineAdapter,
     run_adaptive_stage,
+    stage_timeout_seconds,
 )
 from app.task_engine.models import ArtifactRef, StageName
 from app.task_engine.stages import StageAdapter, StageContext, StageResult
@@ -614,3 +615,48 @@ class TestAdaptivePipelineAdapter:
         assert saved.get("vlm", {}).get("model") == "llava:13b"
         assert saved.get("vlm", {}).get("temperature") == 0.7
         assert "_stage_id" in saved  # P1-3: injected by adapter
+
+
+def test_stage_timeout_is_longer_for_vlm_and_refine():
+    assert stage_timeout_seconds("sample") == 3600
+    assert stage_timeout_seconds("gif_clip") == 3600
+    assert stage_timeout_seconds("vlm") == 4 * 3600
+    assert stage_timeout_seconds("refine") == 6 * 3600
+
+
+def test_run_adaptive_stage_passes_stage_timeout(tmp_path):
+    video = tmp_path / "video.mp4"
+    video.write_text("fake")
+    work_dir = tmp_path / "work"
+    config_snap = tmp_path / "config.json"
+    config_snap.write_text("{}")
+    captured: dict = {}
+
+    def fake_runner(cmd, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        captured["capture_output"] = kwargs.get("capture_output")
+        result_path = cmd[cmd.index("--task-result") + 1]
+        Path(result_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(result_path).write_text(
+            json.dumps(
+                {
+                    "stage": "refine",
+                    "output_key": "refine",
+                    "artifacts": [],
+                    "metrics": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, b"", b"")
+
+    run_adaptive_stage(
+        "refine",
+        video=video,
+        work_dir=work_dir,
+        config_snapshot=config_snap,
+        _runner=fake_runner,
+    )
+    assert captured["timeout"] == 6 * 3600
+    assert captured["capture_output"] is True
+

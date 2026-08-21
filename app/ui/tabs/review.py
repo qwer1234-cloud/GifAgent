@@ -121,7 +121,7 @@ def load_folder_choices(root_dir: str):
         resp = httpx.get(
             f"{API_BASE}/api/candidates/folders",
             params={"root": root_dir.strip(), "status": "all"},
-            timeout=15,
+            timeout=60,
         )
         if resp.status_code != 200:
             return (
@@ -139,7 +139,9 @@ def load_folder_choices(root_dir: str):
                 or folder.get("unmaterialized_count", 0) > 0)
         ]
         fully_rated = len(folders) - len(reviewable)
-        choices = [(_folder_label(folder), folder["folder"]) for folder in reviewable]
+        shown = reviewable or folders
+        choices = [(_folder_label(folder), folder["folder"]) for folder in shown]
+        selected = choices[0][1] if len(choices) == 1 else None
         if not choices:
             extra = f" ({fully_rated} folder(s) fully rated, hidden)" if fully_rated else ""
             return (
@@ -148,11 +150,22 @@ def load_folder_choices(root_dir: str):
                 [],
                 0,
             )
-        extra = f" ({fully_rated} fully rated, hidden)" if fully_rated else ""
+        if reviewable:
+            extra = f" ({fully_rated} fully rated, hidden)" if fully_rated else ""
+            message = (
+                f"Found {len(choices)} reviewable folder(s){extra}. "
+                f"Choose a folder to review."
+            )
+        else:
+            message = (
+                f"No unrated GIFs under {data.get('root', root_dir)} "
+                f"({fully_rated} already rated). Showing the folder so you can "
+                f"re-review with the status filter."
+            )
         return (
-            gr.update(choices=choices, value=None),
-            f"Found {len(choices)} reviewable folder(s){extra}. Choose a folder to review.",
-            reviewable,
+            gr.update(choices=choices, value=selected),
+            message,
+            shown,
             len(reviewable),
         )
     except Exception as e:

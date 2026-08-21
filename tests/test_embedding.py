@@ -28,7 +28,9 @@ def test_check_embedding_service_fails_fast_when_endpoint_is_unreachable(monkeyp
     from app.services import embedding
 
     monkeypatch.setattr(
-        embedding.ollama_runtime, "resolve_base_url", lambda: "http://127.0.0.1:11434"
+        embedding.ollama_runtime,
+        "ensure_runtime_ready",
+        lambda: SimpleNamespace(base_url="http://127.0.0.1:11434"),
     )
 
     def fail_request(*_args, **_kwargs):
@@ -44,7 +46,9 @@ def test_check_embedding_service_rejects_missing_configured_model(monkeypatch):
     from app.services import embedding
 
     monkeypatch.setattr(
-        embedding.ollama_runtime, "resolve_base_url", lambda: "http://127.0.0.1:11434"
+        embedding.ollama_runtime,
+        "ensure_runtime_ready",
+        lambda: SimpleNamespace(base_url="http://127.0.0.1:11434"),
     )
     monkeypatch.setattr(
         embedding.httpx,

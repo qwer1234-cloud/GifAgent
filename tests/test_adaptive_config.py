@@ -6,7 +6,11 @@ import pytest
 import yaml
 
 from app.ui.tabs import settings
-from scripts.test_video_adaptive import extract_config
+from scripts.test_video_adaptive import (
+    DEFAULT_MAX_REFINE_FRAMES,
+    collect_refine_timestamps,
+    extract_config,
+)
 
 
 def test_adaptive_action_defaults_are_frozen():
@@ -184,6 +188,39 @@ def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
     assert saved["adaptive"]["score_prompt_mode"] == "adult"
 
 
+def test_settings_save_rewrites_stale_wsl_ollama_urls(tmp_path, monkeypatch):
+    config_path = tmp_path / "models.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "vlm": {"base_url": "http://172.27.227.98:11434"},
+                "embedding": {"base_url": "http://172.27.227.98:11434"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "CONFIG_FILE", str(config_path))
+    monkeypatch.setattr("app.services.ollama_runtime.os.name", "nt")
+
+    status, _ = settings.save_config(
+        "", "", "", "", "0.3", "2048", "120",
+        "llava:13b", "http://172.27.227.98:11434",
+        "10", "12", "0.55", "0.2", "0.5", "20",
+        True, "2", "0.25", True, True,
+        "0.65", "1.0", "0", "24", "adult",
+        False, "0.5", "0.5", "",
+    )
+
+    assert status.startswith("Saved")
+    saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert saved["vlm"]["base_url"] == "auto"
+    assert saved["vlm"]["manage_lifecycle"] is True
+    assert saved["vlm"]["launch_mode"] == "wsl"
+    assert saved["embedding"]["base_url"] == "auto"
+    assert saved["embedding"]["manage_lifecycle"] is True
+    assert saved["embedding"]["launch_mode"] == "wsl"
+
+
 def test_settings_reject_invalid_action_relationship_without_writing(
     tmp_path, monkeypatch,
 ):
@@ -278,6 +315,18 @@ def test_extract_config_freezes_score_prompt_mode_from_the_job_snapshot(monkeypa
         extract_config({"adaptive": {"score_prompt_mode": "cinematic-v2"}})
 
 
+def test_extract_config_rejects_quality_ranking_weights_that_do_not_sum_to_one():
+    with pytest.raises(ValueError, match="quality ranking weights"):
+        extract_config(
+            {
+                "adaptive": {
+                    "quality_ranking_adult_weight": 0.90,
+                    "quality_ranking_cinematic_weight": 0.20,
+                }
+            }
+        )
+
+
 def test_get_score_prompt_uses_frozen_mode_not_environment(monkeypatch):
     from scripts.test_video_adaptive import (
         SCORE_PROMPT,
@@ -289,6 +338,8 @@ def test_get_score_prompt_uses_frozen_mode_not_environment(monkeypatch):
     assert get_score_prompt("default") == SCORE_PROMPT
     assert get_score_prompt("adult") == SCORE_PROMPT_ADULT
     assert get_score_prompt("optimized") == SCORE_PROMPT_ADULT
+    assert "sex_act" in SCORE_PROMPT_ADULT
+    assert "equally eligible" not in SCORE_PROMPT_ADULT
 
 
 def test_extract_config_freezes_quality_moe_from_the_job_snapshot():
@@ -317,18 +368,21 @@ def test_extract_config_freezes_quality_moe_from_the_job_snapshot():
     )["quality_moe_config_hash"]
 
 
-def test_models_yaml_enables_report_only_quality_moe_by_default():
+def test_models_yaml_enables_active_adult_quality_moe_by_default():
     config_path = Path(__file__).resolve().parents[1] / "configs" / "models.yaml"
     config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    assert config_data["quality_moe"]["report_only"] is True
+    assert config_data["quality_moe"]["report_only"] is False
     cfg = extract_config(config_data)
 
     assert cfg["quality_moe"]["enabled"] is True
-    assert cfg["quality_moe"]["report_only"] is True
+    assert cfg["quality_moe"]["report_only"] is False
     assert cfg["score_prompt_mode"] == "adult"
+    assert cfg["quality_ranking_adult_weight"] == 0.80
+    assert cfg["quality_ranking_cinematic_weight"] == 0.20
     assert cfg["quality_moe"]["repairability"]["photometric_mode"] == "clip_global"
     assert config_data["quality_moe"]["judge"]["base_url"] == "inherit_vlm"
+    assert "Uncensored" in str(config_data["quality_moe"]["judge"]["model_id"])
     assert config_data["vlm"]["base_url"] == "auto"
     assert "172.27.227.98" not in config_path.read_text(encoding="utf-8")
 
@@ -343,13 +397,17 @@ def test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity():
     assert cfg["merge_score_threshold"] >= 0.58
     assert cfg["merge_peak_threshold"] >= 0.65
     assert cfg["max_merge_span_s"] <= 18
-    assert cfg["worthiness_threshold"] >= 0.55
-    assert cfg["refine_threshold"] >= 0.65
+    assert cfg["worthiness_threshold"] >= 0.62
+    assert cfg["refine_threshold"] >= 0.70
+    assert cfg["action_preferred_min_duration_s"] == 5.0
+    assert cfg["action_preferred_max_duration_s"] == 8.0
     assert cfg["vlm_temperature"] <= 0.25
     assert cfg["embed_sim_threshold"] <= 0.88
     assert cfg["temporal_dedup_min_gap_s"] >= 15
     assert cfg["gif_fps"] == 24
     assert cfg["gif_max_width"] == 720
+    assert cfg["output_ratio"] == 1.0
+    assert cfg["max_output"] == 100
 
     qualified_candidates = 40
     planned_output = min(
@@ -357,7 +415,7 @@ def test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity():
         cfg["max_output"],
     )
     assert planned_output >= 30
-    assert cfg["quality_moe"]["report_only"] is True
+    assert cfg["quality_moe"]["report_only"] is False
 
 
 def test_quality_runtime_snapshot_resolves_inherit_vlm_once():
@@ -474,3 +532,77 @@ def test_quality_auto_uses_independent_resolver_not_explicit_vlm_endpoint():
     assert frozen["quality_moe"]["judge"]["base_url"] == (
         "http://quality-auto.example:11434"
     )
+
+
+def test_frozen_wsl_nat_vlm_url_is_rediscovered_on_windows(monkeypatch):
+    from types import SimpleNamespace
+    from app.quality_moe.config import freeze_quality_runtime_config
+
+    monkeypatch.setattr("app.services.ollama_runtime.os.name", "nt")
+    seen = []
+
+    def ready(runtime_config):
+        seen.append(runtime_config.base_url)
+        return SimpleNamespace(base_url="http://172.27.228.10:11434")
+
+    frozen = freeze_quality_runtime_config(
+        {
+            "vlm": {
+                "base_url": "http://172.27.227.98:11434",
+                "model": "llava:13b",
+            },
+            "quality_moe": {
+                "judge": {
+                    "base_url": "inherit_vlm",
+                    "model_id": "llava:13b",
+                }
+            },
+        },
+        ready_resolver=ready,
+    )
+
+    assert seen == ["auto"]
+    assert frozen["vlm"]["base_url"] == "http://172.27.228.10:11434"
+    assert frozen["quality_moe"]["judge"]["base_url"] == (
+        "http://172.27.228.10:11434"
+    )
+
+
+def test_max_refine_frames_default_caps_dense_adult_scores():
+    cfg = extract_config({"adaptive": {}})
+    assert cfg["max_refine_frames"] == DEFAULT_MAX_REFINE_FRAMES
+
+
+def test_max_refine_frames_rejects_negative():
+    with pytest.raises(ValueError, match="max_refine_frames"):
+        extract_config({"adaptive": {"max_refine_frames": -1}})
+
+
+def test_collect_refine_timestamps_respects_interval_and_existing():
+    timestamps = collect_refine_timestamps(
+        {10},
+        radius=4,
+        interval=2,
+        existing_timestamps={10},
+        duration_s=30,
+        max_frames=0,
+    )
+    assert timestamps == [6, 8, 12, 14]
+
+
+def test_collect_refine_timestamps_caps_evenly():
+    peaks = set(range(0, 400, 10))
+    timestamps = collect_refine_timestamps(
+        peaks,
+        radius=6,
+        interval=3,
+        existing_timestamps=(),
+        duration_s=400,
+        max_frames=20,
+    )
+    assert len(timestamps) == 20
+    assert timestamps[0] == min(timestamps)
+    assert timestamps[-1] == max(timestamps)
+    assert timestamps == sorted(timestamps)
+    assert len(set(timestamps)) == 20
+

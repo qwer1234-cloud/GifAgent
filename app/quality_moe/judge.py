@@ -297,6 +297,9 @@ def _prompt(request: JudgeRequest, *, correction: bool) -> str:
     return (
         "You are an objective visual-quality judge comparing two contact sheets: image 1 is the original and image 2 is the best pixel-preserving repair proxy. "
         "Apply exactly the same standard to adult and non-adult material. Do not award or deduct points for topic, identity, age, race, gender, sexuality, nudity, adult content, or whether the subject is explicit. "
+        "Adult sexual content, nudity, and explicit acts are in-scope. Judge them with the same film-emotion vocabulary used for cinema: desire, intimacy, tension, and vulnerability are valid emotional atmosphere, not reasons to reject. "
+        "Low-key intimate lighting, flesh tones, close body framing, and bedroom palettes are valid cinematic choices when bodies and motion remain readable. "
+        "Do not REJECT because the subject is sexual. REJECT only for unreadable blur, hard cuts, severe clipping, or undecodable frames. "
         "Judge only visible technical integrity, composition, lighting, temporal continuity, loop continuity, and GIF worthiness. "
         "Unavailable or abstained experts are absence of evidence, never low quality. Use supplied evidence only as context; do not invent signal families. "
         + instruction

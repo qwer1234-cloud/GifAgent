@@ -78,3 +78,19 @@ def test_boundary_breaks_high_score_merge():
         shot_boundaries=[7.0],
     )
     assert [clip["frame_count"] for clip in clips] == [2, 1]
+
+
+def test_merge_picks_higher_sex_act_as_best_frame():
+    frames = [
+        {**_f(0, 0.70), "sex_act": 0.0, "caption": "kitchen"},
+        {**_f(5, 0.62), "sex_act": 0.90, "caption": "sex"},
+    ]
+    clips = merge_scored_frames_into_clips(
+        frames,
+        merge_gap=15,
+        merge_score_threshold=0.50,
+        max_merge_span_s=24,
+    )
+    assert len(clips) == 1
+    assert clips[0]["caption"] == "sex"
+    assert clips[0]["sex_act"] == 0.90

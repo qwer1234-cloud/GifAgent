@@ -74,6 +74,7 @@ def freeze_quality_runtime_config(
 
     from app.services.ollama_runtime import (
         EmbeddingRuntimeConfig,
+        is_ephemeral_wsl_endpoint,
         normalize_base_url,
     )
 
@@ -120,10 +121,14 @@ def freeze_quality_runtime_config(
             raise ValueError(f"resolved {name} base_url must be absolute")
         return resolved
 
+    def should_resolve_auto(url: str) -> bool:
+        text = (url or "").strip()
+        return text.lower() == "auto" or is_ephemeral_wsl_endpoint(text)
+
     vlm_mapping = vlm if isinstance(vlm, dict) else {}
     configured_vlm = str(vlm_mapping.get("base_url", "") or "").strip()
     resolved_vlm = ""
-    if configured_vlm.lower() == "auto":
+    if should_resolve_auto(configured_vlm):
         resolved_vlm = resolve_auto(vlm_mapping, name="VLM")
         vlm_mapping["base_url"] = resolved_vlm
     elif configured_vlm:
@@ -140,7 +145,7 @@ def freeze_quality_runtime_config(
             if isinstance(vlm, dict):
                 vlm["base_url"] = resolved_vlm
         judge["base_url"] = resolved_vlm
-    elif judge_state == "auto":
+    elif should_resolve_auto(configured_judge):
         judge["base_url"] = resolve_auto(judge, name="quality judge")
     elif configured_judge:
         judge["base_url"] = normalize_base_url(configured_judge)

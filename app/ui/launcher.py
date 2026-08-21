@@ -7,10 +7,12 @@ Use as the PyInstaller entry point, or run directly:
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import threading
 import time
 import shutil
+from typing import Optional
 
 import uvicorn
 
@@ -19,6 +21,12 @@ from app.services.desktop_export_sync import (
     stop_background_sync,
 )
 from app.services import ollama_runtime
+from app.ui.local_port import reclaim_owned_listen_port
+
+API_HOST = "127.0.0.1"
+API_PORT = 8000
+_api_server: Optional[uvicorn.Server] = None
+_api_thread: Optional[threading.Thread] = None
 
 
 def _setup_runtime_files(exe_dir):
@@ -114,14 +122,32 @@ def _run_startup_sync():
 def start_api_server():
     """Run uvicorn in a background thread (daemon). Import app object directly
     to avoid string-based import which fails in PyInstaller frozen exe."""
+    global _api_server
     from app.main import app as fastapi_app
-    uvicorn.run(
+
+    config = uvicorn.Config(
         fastapi_app,
-        host="127.0.0.1",
-        port=8000,
+        host=API_HOST,
+        port=API_PORT,
         log_level="warning",
         access_log=False,
+        timeout_graceful_shutdown=1,
     )
+    server = uvicorn.Server(config)
+    _api_server = server
+    server.run()
+
+
+def stop_api_server(timeout_s: float = 2.0) -> None:
+    """Ask uvicorn to leave port 8000, then wait briefly for the thread."""
+    server = _api_server
+    if server is not None:
+        server.should_exit = True
+        server.force_exit = True
+        print(f"Stopping API on {API_HOST}:{API_PORT} ...", flush=True)
+    thread = _api_thread
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=timeout_s)
 
 
 def _wait_for_url(url, label, timeout=30, thread=None):
@@ -241,7 +267,7 @@ def _register_window_shutdown(
     shutdown_complete = threading.Event()
     shutdown_started = False
 
-    def shutdown():
+    def shutdown(*_args, **_kwargs):
         nonlocal shutdown_started
         with state_lock:
             if shutdown_started:
@@ -265,8 +291,24 @@ def _register_window_shutdown(
             shutdown_complete.set()
             exit_process(0)
 
-    window.events.closed += shutdown
+    events = getattr(window, "events", None)
+    for event_name in ("closing", "closed"):
+        event = getattr(events, event_name, None)
+        if event is None:
+            continue
+        event += shutdown
     return shutdown
+
+
+def _install_exit_signals(shutdown) -> None:
+    """Map console Ctrl+C / close to the same shutdown path as the window X."""
+
+    def _handle(*_args):
+        shutdown()
+
+    signal.signal(signal.SIGINT, _handle)
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _handle)
 
 
 def _run_script_mode():
@@ -329,15 +371,19 @@ def main():
     sync_stop_event = threading.Event()
     start_background_sync(sync_stop_event)
 
+    reclaim_owned_listen_port(API_PORT)
+
     # Start API server in background thread
-    api_thread = threading.Thread(target=start_api_server, daemon=True)
+    global _api_thread
+    api_thread = threading.Thread(target=start_api_server, daemon=True, name="api-server")
+    _api_thread = api_thread
     api_thread.start()
-    print("Starting FastAPI on http://127.0.0.1:8000 ...")
+    print(f"Starting FastAPI on http://{API_HOST}:{API_PORT} ...")
 
     # Wait for API to be ready (max 30s). Exit fast if the thread dies —
     # uvicorn won't come up if its thread crashed (port in use, missing dep, etc.).
     _wait_for_url(
-        "http://127.0.0.1:8000/api/status",
+        f"http://{API_HOST}:{API_PORT}/api/status",
         "API",
         timeout=30,
         thread=api_thread,
@@ -355,6 +401,7 @@ def main():
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
         stop_background_sync(sync_stop_event)
+        stop_api_server()
         os._exit(1)
     print("Starting Gradio on http://127.0.0.1:7861 ...")
 
@@ -368,6 +415,7 @@ def main():
             gradio_app.close()
         except Exception:
             pass
+        stop_api_server()
         os._exit(1)
 
     # Open a pywebview desktop window in the main thread. webview.start() blocks
@@ -387,6 +435,10 @@ def main():
         _stop_worker(worker_stop_event, worker_thread)
         stop_background_sync(sync_stop_event)
         try:
+            stop_api_server()
+        except Exception as exc:
+            print(f"WARNING: API shutdown failed: {exc}", flush=True)
+        try:
             gradio_app.close()
         except Exception:
             pass
@@ -399,14 +451,18 @@ def main():
             )
 
     shutdown = _register_window_shutdown(window, graceful_shutdown)
+    if getattr(sys, "frozen", False):
+        try:
+            _install_exit_signals(shutdown)
+        except Exception:
+            pass
     try:
         webview.start()
     except Exception as e:
         print(f"ERROR: webview failed to start: {e}", flush=True)
     finally:
-        # Window closed (or start failed) — signal worker, shut down Gradio,
-        # then exit. FastAPI runs in a daemon thread and is killed when the
-        # process exits. os._exit() avoids hanging on Gradio's non-daemon
+        # Window closed (or start failed) — stop the API so port 8000 is
+        # released, then os._exit() to avoid hanging on Gradio's non-daemon
         # internal threads.
         shutdown()
 

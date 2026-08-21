@@ -1007,6 +1007,9 @@ _QUALITY_HARD_GATE_INPUT_FIELDS = frozenset({
     "media_decodable",
     "decode_ok",
 })
+# Hard-gated / unreadable source assessments skip hashing the media file.
+# gif_clip writes these sentinels into parent_source; materialize must accept them.
+_QUALITY_SOURCE_SHA_SENTINELS = frozenset({"not_checked", "unavailable"})
 
 
 def _require_v2_field(
@@ -1133,6 +1136,12 @@ def _quality_hash(value: object, field: str, *, context: str) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         raise ValueError(f"{context} {field} must be 64 lowercase hexadecimal characters")
     return value
+
+
+def _quality_source_file_sha256(value: object, field: str, *, context: str) -> str:
+    if isinstance(value, str) and value in _QUALITY_SOURCE_SHA_SENTINELS:
+        return value
+    return _quality_hash(value, field, context=context)
 
 
 def _validate_quality_repair(value: object, *, assessment: dict, context: str):
@@ -1892,8 +1901,14 @@ def _validate_gif_quality_lineage(value: dict) -> None:
         _require_v2_field(parent, field, context=f"{context} parent_source")
     if parent["candidate_id"] != value["clip_id"] or parent["candidate_id"] != assessment["candidate_id"]:
         raise ValueError(f"{context} parent_source candidate_id does not match clip")
-    for field in ("input_hash", "source_file_sha256"):
-        _quality_hash(parent[field], field, context=f"{context} parent_source")
+    _quality_hash(
+        parent["input_hash"], "input_hash", context=f"{context} parent_source"
+    )
+    _quality_source_file_sha256(
+        parent["source_file_sha256"],
+        "source_file_sha256",
+        context=f"{context} parent_source",
+    )
     if parent["input_hash"] != assessment.get("input_hash"):
         raise ValueError(f"{context} parent_source input_hash does not match assessment")
     if not isinstance(parent["video_path"], str) or not parent["video_path"]:
