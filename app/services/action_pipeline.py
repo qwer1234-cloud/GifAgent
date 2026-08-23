@@ -218,6 +218,14 @@ def _fallback_result(
     )
 
 
+def _hard_cut_timestamps(guard_result: TransitionGuardResult) -> list[float]:
+    return [
+        float(boundary.timestamp_s)
+        for boundary in guard_result.boundaries
+        if boundary.boundary_type == "hard_cut"
+    ]
+
+
 def _transition_clip(
     clip: Mapping[str, Any], guard_result: TransitionGuardResult
 ) -> dict[str, Any]:
@@ -227,6 +235,7 @@ def _transition_clip(
         "transition_risk": guard_result.transition_risk,
         "motion_type": guard_result.motion_type,
         "guard_reason": guard_result.guard_reason,
+        "hard_cut_timestamps": _hard_cut_timestamps(guard_result),
     }
 
 

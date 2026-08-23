@@ -19,6 +19,8 @@ _STAGE_DIRECT_IMPORTS = [
     "app.services.frame_extract",
     "app.services.gif_encode",
     "app.services.gif_windows",
+    "app.services.boundary_snap",
+    "app.services.score_calibration",
     "app.services.stage_timing",
     "app.services.transition_candidates",
     "app.services.transition_guard",

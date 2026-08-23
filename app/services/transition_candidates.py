@@ -53,6 +53,11 @@ def build_guarded_clips(
             "transition_risk": guard_result.transition_risk,
             "motion_type": guard_result.motion_type,
             "guard_reason": guard_result.guard_reason,
+            "hard_cut_timestamps": [
+                float(boundary.timestamp_s)
+                for boundary in guard_result.boundaries
+                if boundary.boundary_type == "hard_cut"
+            ],
         }
         if segment_frames:
             best = max(
