@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Sequence
 
 from app.task_engine.fingerprints import sha256_file
 from app.task_engine.models import (
@@ -16,6 +17,11 @@ from app.task_engine.models import (
 )
 from app.task_engine.repository import TaskRepository
 from app.task_engine.stages import StageAdapter, StageContext, StageResult
+
+GPU_STAGES: tuple[StageName, ...] = ("vlm", "refine", "rank_dedup")
+CPU_STAGES: tuple[StageName, ...] = (
+    "discover", "sample", "synthesize", "gif_clip", "materialize",
+)
 
 _RESULT_FILE = ".stage_result.json"
 
@@ -188,6 +194,7 @@ class TaskWorker:
         lease_seconds: int = 90,
         heartbeat_seconds: int | None = None,
         db_path: str | None = None,
+        stage_names: Sequence[str] | None = None,
     ) -> None:
         self._repo = repo
         self._worker_id = worker_id
@@ -196,6 +203,7 @@ class TaskWorker:
         self._lease_seconds = max(1, lease_seconds)
         self._heartbeat_seconds = heartbeat_seconds or max(1, self._lease_seconds // 3)
         self._db_path = db_path
+        self._stage_names = tuple(stage_names) if stage_names is not None else None
         # P1-4: Thread-safe lease-lost flag checked before committing stage results.
         self._lease_lost = False
         self._lease_lock = __import__("threading").Lock()
@@ -225,7 +233,12 @@ class TaskWorker:
             return True
 
         # 1. Claim a stage.  ``None`` means the queue is empty.
-        stage = self._repo.claim_stage(self._worker_id, now, lease_seconds=self._lease_seconds)
+        stage = self._repo.claim_stage(
+            self._worker_id,
+            now,
+            lease_seconds=self._lease_seconds,
+            stage_names=self._stage_names,
+        )
         if stage is None:
             # 1b. No stage is claimable -- consume pending retry/cancel
             # commands.  The orchestrator owns every state transition, so

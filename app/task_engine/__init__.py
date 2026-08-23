@@ -25,7 +25,12 @@ from app.task_engine.orchestrator import (
     discover_videos,
     initialize_job,
 )
-from app.task_engine.worker import TaskWorker, classify_error
+from app.task_engine.worker import (
+    CPU_STAGES,
+    GPU_STAGES,
+    TaskWorker,
+    classify_error,
+)
 
 __all__ = [
     "ActiveJobConflictError",
@@ -45,6 +50,8 @@ __all__ = [
     "StageRecord",
     "StageResult",
     "TaskEngineError",
+    "CPU_STAGES",
+    "GPU_STAGES",
     "TaskWorker",
     "classify_error",
     "TaskEvent",

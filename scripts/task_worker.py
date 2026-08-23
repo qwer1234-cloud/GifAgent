@@ -26,6 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.task_engine import (
     AdaptivePipelineAdapter,
+    CPU_STAGES,
+    GPU_STAGES,
     RetryPolicy,
     TaskRepository,
     TaskWorker,
@@ -140,10 +142,106 @@ def main() -> None:
     if args.once:
         did_work = worker.run_once()
         sys.exit(0 if did_work else 1)
-    else:
+
+    gpu_n, cpu_n = _stage_worker_counts()
+    if gpu_n == 1 and cpu_n == 1:
         count = worker.drain()
         print(f"Processed {count} stages.")
         sys.exit(0)
+
+    conn.close()
+    total = _drain_class_workers(
+        db_path,
+        retry=retry,
+        lease_sec=lease_sec,
+        hb_sec=hb_sec,
+        gpu_n=gpu_n,
+        cpu_n=cpu_n,
+        worker_id=worker_id,
+    )
+    print(f"Processed {total} stages.")
+    sys.exit(0)
+
+
+def _stage_worker_counts() -> tuple[int, int]:
+    from app.config import load_config
+
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    te = cfg.get("task_engine") or {}
+    return (
+        max(1, int(te.get("gpu_stage_workers", 1))),
+        max(1, int(te.get("cpu_stage_workers", 1))),
+    )
+
+
+def _drain_class_workers(
+    db_path: str,
+    *,
+    retry: RetryPolicy,
+    lease_sec: int,
+    hb_sec: int,
+    gpu_n: int,
+    cpu_n: int,
+    worker_id: str,
+) -> int:
+    """Run one GPU-class pool and several CPU-class pools until globally idle."""
+    import threading
+    import time
+
+    stop = threading.Event()
+    last_work = time.monotonic()
+    lock = threading.Lock()
+    counts: list[int] = []
+
+    def _loop(wid: str, names: tuple[str, ...]) -> None:
+        nonlocal last_work
+        conn = connect_task_db(db_path)
+        processed = 0
+        try:
+            repo = TaskRepository(conn)
+            worker = TaskWorker(
+                repo, wid, _build_adapters(), retry,
+                lease_seconds=lease_sec, heartbeat_seconds=hb_sec,
+                db_path=db_path, stage_names=names,
+            )
+            while not stop.is_set():
+                if worker.run_once():
+                    processed += 1
+                    with lock:
+                        last_work = time.monotonic()
+                else:
+                    time.sleep(0.2)
+        finally:
+            conn.close()
+            counts.append(processed)
+
+    threads = []
+    for index in range(gpu_n):
+        threads.append(threading.Thread(
+            target=_loop,
+            args=(f"{worker_id}-gpu-{index}", GPU_STAGES),
+            daemon=True,
+        ))
+    for index in range(cpu_n):
+        threads.append(threading.Thread(
+            target=_loop,
+            args=(f"{worker_id}-cpu-{index}", CPU_STAGES),
+            daemon=True,
+        ))
+    for thread in threads:
+        thread.start()
+    while any(thread.is_alive() for thread in threads):
+        with lock:
+            idle_for = time.monotonic() - last_work
+        if idle_for >= 2.0:
+            stop.set()
+        time.sleep(0.2)
+    for thread in threads:
+        thread.join(timeout=5.0)
+    return sum(counts)
 
 
 if __name__ == "__main__":

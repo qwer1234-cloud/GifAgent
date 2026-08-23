@@ -5,6 +5,7 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Sequence
 
 from app.task_engine.models import (
     ArtifactRef,
@@ -249,7 +250,11 @@ class TaskRepository:
         )
 
     def claim_stage(
-        self, worker_id: str, now: datetime, lease_seconds: int = 90
+        self,
+        worker_id: str,
+        now: datetime,
+        lease_seconds: int = 90,
+        stage_names: Sequence[str] | None = None,
     ) -> StageRecord | None:
         now_iso = _iso(now)
         lease_expires = _iso(now + timedelta(seconds=lease_seconds))
@@ -259,14 +264,27 @@ class TaskRepository:
             conn.commit()
         conn.execute("BEGIN IMMEDIATE")
         try:
-            row = conn.execute(
-                """SELECT * FROM task_stages
-                   WHERE status = 'pending'
+            filters = [
+                """(status = 'pending'
                       OR (status = 'retry_wait' AND retry_at <= ?)
-                      OR (status IN ('leased','running') AND lease_expires_at <= ?)
+                      OR (status IN ('leased','running') AND lease_expires_at <= ?))"""
+            ]
+            params: list[object] = [now_iso, now_iso]
+            if stage_names is not None:
+                names = tuple(str(name) for name in stage_names)
+                if not names:
+                    conn.rollback()
+                    return None
+                placeholders = ",".join("?" for _ in names)
+                filters.append(f"stage_name IN ({placeholders})")
+                params.extend(names)
+            where = " AND ".join(filters)
+            row = conn.execute(
+                f"""SELECT * FROM task_stages
+                   WHERE {where}
                    ORDER BY created_at ASC, stage_id ASC
                    LIMIT 1""",
-                (now_iso, now_iso),
+                params,
             ).fetchone()
             if row is None:
                 conn.rollback()

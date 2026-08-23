@@ -178,21 +178,32 @@ def launch_gradio_app(gradio_app):
     gradio_app.launch(prevent_thread_lock=True, **launch_kwargs())
 
 
+def _stage_worker_counts() -> tuple[int, int]:
+    """Read gpu/cpu worker counts from models.yaml. Defaults stay at 1."""
+    from app.config import load_config
+
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        cfg = {}
+    te = cfg.get("task_engine") or {}
+    gpu = max(1, int(te.get("gpu_stage_workers", 1)))
+    cpu = max(1, int(te.get("cpu_stage_workers", 1)))
+    return gpu, cpu
+
+
 def _start_task_worker():
-    """Start background task worker daemon thread.
+    """Start GPU-class and CPU-class task worker daemon threads.
 
-    Returns (stop_event, thread) if successful, or (None, None) on failure.
-    The caller should set the stop_event and join the thread on shutdown.
-
-    The SQLite connection is created *inside* the worker thread — a
-    connection made in the main thread cannot be used across threads
-    (``sqlite3.ProgrammingError``), which previously caused the worker to
-    exit immediately and silently.
+    Returns ``(stop_event, threads)`` if successful, or ``(None, None)``
+    on failure.  Each thread owns its own SQLite connection.
     """
     import threading as _threading
 
     from app.task_engine import (
         AdaptivePipelineAdapter,
+        CPU_STAGES,
+        GPU_STAGES,
         StageName,
         TaskRepository,
         TaskWorker,
@@ -200,50 +211,72 @@ def _start_task_worker():
     )
 
     try:
-        worker_id = f"launcher-{os.getpid()}"
         stop_event = _threading.Event()
+        gpu_n, cpu_n = _stage_worker_counts()
+        threads: list = []
 
-        def _loop():
-            conn = None
-            try:
-                conn = connect_task_db()
-                repo = TaskRepository(conn)
-                all_stages: list[StageName] = [
-                    "discover",
-                    "sample",
-                    "vlm",
-                    "refine",
-                    "synthesize",
-                    "rank_dedup",
-                    "gif_clip",
-                    "materialize",
-                ]
-                adapters: dict[StageName, AdaptivePipelineAdapter] = {
-                    name: AdaptivePipelineAdapter(name) for name in all_stages
-                }
-                worker = TaskWorker(repo, worker_id, adapters)
-                worker.run_forever(poll_seconds=2.0, stop_event=stop_event)
-            except Exception as exc:
-                print(f"ERROR: task worker thread crashed: {exc}", flush=True)
-            finally:
-                if conn is not None:
-                    conn.close()
+        all_stages: list[StageName] = [
+            "discover",
+            "sample",
+            "vlm",
+            "refine",
+            "synthesize",
+            "rank_dedup",
+            "gif_clip",
+            "materialize",
+        ]
 
-        t = _threading.Thread(target=_loop, daemon=True, name="task-worker")
-        t.start()
-        print("Task worker started.")
-        return stop_event, t
+        def _spawn(worker_id: str, stage_names: tuple[str, ...], name: str):
+            def _loop():
+                conn = None
+                try:
+                    conn = connect_task_db()
+                    repo = TaskRepository(conn)
+                    adapters: dict[StageName, AdaptivePipelineAdapter] = {
+                        stage: AdaptivePipelineAdapter(stage) for stage in all_stages
+                    }
+                    worker = TaskWorker(
+                        repo, worker_id, adapters, stage_names=stage_names,
+                    )
+                    worker.run_forever(poll_seconds=2.0, stop_event=stop_event)
+                except Exception as exc:
+                    print(
+                        f"ERROR: task worker {worker_id} crashed: {exc}",
+                        flush=True,
+                    )
+                finally:
+                    if conn is not None:
+                        conn.close()
+
+            thread = _threading.Thread(target=_loop, daemon=True, name=name)
+            thread.start()
+            threads.append(thread)
+
+        pid = os.getpid()
+        for index in range(gpu_n):
+            _spawn(f"launcher-{pid}-gpu-{index}", GPU_STAGES, f"task-gpu-{index}")
+        for index in range(cpu_n):
+            _spawn(f"launcher-{pid}-cpu-{index}", CPU_STAGES, f"task-cpu-{index}")
+        print(
+            f"Task workers started (gpu={gpu_n}, cpu={cpu_n}).",
+            flush=True,
+        )
+        return stop_event, threads
     except Exception as e:
         print(f"WARNING: Could not start task worker: {e}", flush=True)
         return None, None
 
 
-def _stop_worker(stop_event, thread):
-    """Signal the worker to stop and wait for it."""
+def _stop_worker(stop_event, threads):
+    """Signal every worker thread to stop and join them."""
     if stop_event is not None:
         stop_event.set()
-    if thread is not None:
-        thread.join(timeout=3.0)
+    if threads is None:
+        return
+    pending = threads if isinstance(threads, (list, tuple)) else [threads]
+    for thread in pending:
+        if thread is not None:
+            thread.join(timeout=3.0)
 
 
 def _register_window_shutdown(
