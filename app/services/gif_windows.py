@@ -30,12 +30,16 @@ def build_export_window(
     total_duration_s: float,
     min_duration_s: float,
     max_duration_s: float,
+    single_frame_max_duration_s: float | None = None,
 ) -> ExportWindow:
     """Build a centered, video-clamped window that never exceeds ``max_duration_s``.
 
-    Single frames keep the established score interpolation.  Multi-frame
-    candidates retain their former span-plus-three-seconds preference, but
-    the result now shares the same strict maximum duration cap.
+    Single frames keep the established score interpolation, but interpolate
+    towards ``single_frame_max_duration_s`` instead of the global maximum:
+    one scored frame is no evidence about the rest of the window.  Omitting
+    it falls back to ``max_duration_s``, preserving every existing caller.
+    Multi-frame candidates retain their evidence-backed span-plus-three
+    seconds and ignore the single-frame cap entirely.
     """
     total_duration = max(0.0, _finite_number(total_duration_s))
     max_duration = max(0.0, _finite_number(max_duration_s))
@@ -50,7 +54,16 @@ def build_export_window(
         )
         requested_duration = min(max_duration, span + 3.0)
     else:
-        requested_duration = min_duration + (max_duration - min_duration) * worthiness
+        single_cap = max_duration
+        if single_frame_max_duration_s is not None:
+            single_cap = min(
+                max_duration,
+                max(
+                    min_duration,
+                    _finite_number(single_frame_max_duration_s, max_duration),
+                ),
+            )
+        requested_duration = min_duration + (single_cap - min_duration) * worthiness
 
     duration = min(requested_duration, total_duration)
     best_frame = clip.get("best_frame")

@@ -57,6 +57,80 @@ def test_single_frame_window_is_centered_and_capped():
     assert window.end_s == pytest.approx(13.0)
 
 
+def test_single_frame_uses_its_own_cap():
+    """One scored frame is thin evidence, so it gets a tighter ceiling."""
+    clip = {"frame_count": 1, "gif_worthiness": 1.0, "best_frame_ts": 60.0}
+
+    window = build_export_window(
+        clip,
+        total_duration_s=600.0,
+        min_duration_s=2.0,
+        max_duration_s=20.0,
+        single_frame_max_duration_s=5.0,
+    )
+
+    assert window.duration_s == pytest.approx(5.0)
+
+
+def test_multi_frame_ignores_single_frame_cap():
+    """Merged runs keep their evidence-backed span-plus-three seconds."""
+    clip = {
+        "frame_count": 4,
+        "start_ts": 30.0,
+        "end_ts": 42.0,
+        "best_frame_ts": 36.0,
+    }
+
+    window = build_export_window(
+        clip,
+        total_duration_s=600.0,
+        min_duration_s=2.0,
+        max_duration_s=20.0,
+        single_frame_max_duration_s=5.0,
+    )
+
+    assert window.duration_s == pytest.approx(15.0)
+
+
+def test_omitting_the_cap_preserves_legacy_behavior():
+    clip = {"frame_count": 1, "gif_worthiness": 1.0, "best_frame_ts": 60.0}
+
+    window = build_export_window(
+        clip, total_duration_s=600.0, min_duration_s=2.0, max_duration_s=20.0
+    )
+
+    assert window.duration_s == pytest.approx(20.0)
+
+
+def test_single_frame_cap_is_clamped_into_the_configured_bounds():
+    """A cap below min_duration must not invert the interpolation range."""
+    clip = {"frame_count": 1, "gif_worthiness": 0.0, "best_frame_ts": 60.0}
+
+    window = build_export_window(
+        clip,
+        total_duration_s=600.0,
+        min_duration_s=4.0,
+        max_duration_s=20.0,
+        single_frame_max_duration_s=1.0,
+    )
+
+    assert window.duration_s == pytest.approx(4.0)
+
+
+def test_single_frame_cap_never_exceeds_max_duration():
+    clip = {"frame_count": 1, "gif_worthiness": 1.0, "best_frame_ts": 60.0}
+
+    window = build_export_window(
+        clip,
+        total_duration_s=600.0,
+        min_duration_s=2.0,
+        max_duration_s=8.0,
+        single_frame_max_duration_s=50.0,
+    )
+
+    assert window.duration_s == pytest.approx(8.0)
+
+
 def test_direct_clip_shape_uses_nested_best_frame_timestamp():
     """Legacy direct clips anchor the 40/60 window on their nested best frame."""
     window = build_export_window(

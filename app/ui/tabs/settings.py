@@ -43,6 +43,7 @@ CONFIG_FIELD_KEYS = (
     "adaptive.worthiness_threshold",
     "adaptive.refine_threshold",
     "adaptive.max_duration",
+    "adaptive.single_frame_max_duration_s",
     "adaptive.transition_guard_enabled",
     "adaptive.transition_min_duration_s",
     "adaptive.transition_boundary_margin_s",
@@ -74,6 +75,7 @@ CONFIG_FIELD_HELP = {
     "adaptive.worthiness_threshold": "帧被认为值得导出为 GIF 的最低评分。",
     "adaptive.refine_threshold": "达到此评分的帧会触发周边时间段的细采样。",
     "adaptive.max_duration": "单个导出 GIF 的最长时长，单位为秒。",
+    "adaptive.single_frame_max_duration_s": "仅由单帧证据支撑的片段的最长时长，单位为秒；留空则回退到 max_duration。多帧合并片段不受此上限影响。",
     "adaptive.transition_guard_enabled": "是否启用转场保护；关闭后仅新任务跳过转场检测，历史结果不会删除。",
     "adaptive.transition_min_duration_s": "转场切分后允许导出的最短片段时长，单位为秒。",
     "adaptive.transition_boundary_margin_s": "检测到转场时在边界两侧保留的安全间隔，单位为秒。",
@@ -93,6 +95,7 @@ CONFIG_FIELD_LABELS = {
     "adaptive.sample_interval": "sample_interval (s)",
     "adaptive.merge_gap": "merge_gap (s)",
     "adaptive.max_duration": "max_duration (s)",
+    "adaptive.single_frame_max_duration_s": "single_frame_max_duration_s (s)",
     "adaptive.max_output": "max_output (0=no cap)",
     "adaptive.gif_fps": "gif_fps (frames/s)",
     "adaptive.score_prompt_mode": "score_prompt_mode",
@@ -274,6 +277,7 @@ def load_config():
         str(adaptive.get("worthiness_threshold", 0.2)),
         str(adaptive.get("refine_threshold", 0.5)),
         str(adaptive.get("max_duration", 10)),
+        str(adaptive.get("single_frame_max_duration_s", "")),
         bool(adaptive.get("transition_guard_enabled", True)),
         str(adaptive.get("transition_min_duration_s", 2.0)),
         str(adaptive.get("transition_boundary_margin_s", 0.25)),
@@ -302,7 +306,7 @@ def save_config(
     vlm_model, vlm_base_url,
     ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
     ad_worthiness_threshold, ad_refine_threshold,
-    ad_max_duration,
+    ad_max_duration, ad_single_frame_max_duration_s,
     ad_transition_guard_enabled, ad_transition_min_duration_s,
     ad_transition_boundary_margin_s,
     ad_action_guard_enabled, ad_action_vlm_verify_enabled,
@@ -345,6 +349,13 @@ def save_config(
         adaptive["worthiness_threshold"] = float(ad_worthiness_threshold)
         adaptive["refine_threshold"] = float(ad_refine_threshold)
         adaptive["max_duration"] = float(ad_max_duration)
+        # An empty field means "no separate single-frame ceiling", which
+        # the pipeline resolves back to max_duration.
+        single_frame_cap = str(ad_single_frame_max_duration_s or "").strip()
+        if single_frame_cap:
+            adaptive["single_frame_max_duration_s"] = float(single_frame_cap)
+        else:
+            adaptive.pop("single_frame_max_duration_s", None)
         adaptive["transition_guard_enabled"] = bool(
             ad_transition_guard_enabled
         )
@@ -453,6 +464,9 @@ def build_settings_tab(context) -> None:
                 ad_worthiness_threshold = config_textbox("adaptive.worthiness_threshold", value="")
                 ad_refine_threshold = config_textbox("adaptive.refine_threshold", value="")
                 ad_max_duration = config_textbox("adaptive.max_duration", value="")
+                ad_single_frame_max_duration_s = config_textbox(
+                    "adaptive.single_frame_max_duration_s", value=""
+                )
                 ad_transition_guard_enabled = config_checkbox(
                     "adaptive.transition_guard_enabled", value=True
                 )
@@ -510,7 +524,8 @@ def build_settings_tab(context) -> None:
         vlm_model, vlm_base_url,
         ad_sample_interval, ad_merge_gap, ad_merge_score_threshold,
         ad_worthiness_threshold, ad_refine_threshold,
-        ad_max_duration, ad_transition_guard_enabled, ad_transition_min_duration_s,
+        ad_max_duration, ad_single_frame_max_duration_s,
+        ad_transition_guard_enabled, ad_transition_min_duration_s,
         ad_transition_boundary_margin_s, ad_action_guard_enabled,
         ad_action_vlm_verify_enabled,         ad_vlm_temperature, ad_output_ratio,
         ad_max_output, ad_gif_fps, ad_score_prompt_mode,

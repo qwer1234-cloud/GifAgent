@@ -820,6 +820,15 @@ def extract_config(config_data: dict) -> dict:
             adaptive.get("max_refine_frames", DEFAULT_MAX_REFINE_FRAMES)
         ),
         **normalized_action,
+        # A single scored frame says nothing about the rest of the window,
+        # so it gets its own ceiling.  Falling back to the action
+        # max_duration keeps every existing snapshot at today's behavior.
+        "single_frame_max_duration_s": float(
+            adaptive.get(
+                "single_frame_max_duration_s",
+                normalized_action["max_duration"],
+            )
+        ),
         "worthiness_threshold": float(adaptive.get("worthiness_threshold", 0.2)),
         "merge_gap": int(adaptive.get("merge_gap", 12)),
         "merge_score_threshold": float(
@@ -914,6 +923,15 @@ def extract_config(config_data: dict) -> dict:
     _palette_filters_for(config)
     _warn_once_on_indivisible_fps(config["gif_fps"])
     return config
+
+
+def _single_frame_cap(cfg: dict, max_duration: float) -> float:
+    """Resolve the single-frame export ceiling from a frozen config.
+
+    Snapshots written before this key existed fall back to the configured
+    maximum, so their exports keep the length they always had.
+    """
+    return float(cfg.get("single_frame_max_duration_s", max_duration))
 
 
 def _palette_filters_for(cfg: dict) -> tuple[str, str]:
@@ -2481,6 +2499,7 @@ def run_pipeline(
                 total_duration_s=total_duration,
                 min_duration_s=MIN_DURATION,
                 max_duration_s=MAX_DURATION,
+                single_frame_max_duration_s=_single_frame_cap(cfg, MAX_DURATION),
             )
             start = window.start_s
             duration = window.duration_s
@@ -4564,6 +4583,7 @@ def _stage_gif_clip(
             total_duration_s=total_duration,
             min_duration_s=MIN_DURATION,
             max_duration_s=MAX_DURATION,
+            single_frame_max_duration_s=_single_frame_cap(cfg, MAX_DURATION),
         )
         start_ts = window.start_s
         end_ts = window.end_s

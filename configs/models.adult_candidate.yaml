@@ -10,7 +10,10 @@ adaptive:
   refine_radius: 15
   refine_interval: 5
   min_duration: 2
-  max_duration: 20
+  max_duration: 8
+  # One scored frame is thin evidence, so isolated singles stay shorter
+  # than merged runs even at worthiness 1.0.
+  single_frame_max_duration_s: 5
   action_guard_enabled: true
   action_vlm_verify_enabled: true
   action_analysis_version: 1
