@@ -43,15 +43,23 @@ E:\data\originals\（8000+ GIF）
 | VLM / Quality 视觉裁判 | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M` |
 | VLM `base_url` | `auto`（运行时发现 WSL 地址，禁止写死 `172.x`） |
 | LLM | `openai_compatible` / `deepseek-v4-flash`（`DEEPSEEK_API_KEY`） |
-| 打分提示 | `adaptive.score_prompt_mode: adult` |
+| 打分提示 | `adaptive.score_prompt_mode: adult`；`score_schema_mode: two_tier`（粗/细采样只出分数，caption 在 refine 回填） |
 | 粗采样 / 细采样 | `sample_interval=7`，`refine_interval=8`，`refine_radius=8`，`max_refine_frames=120` |
 | 准入 | `worthiness_threshold=0.62`，`refine_threshold=0.70` |
 | Merge | `merge_score_threshold=0.58`，`max_merge_span_s=18`，`merge_peak_threshold=0.70` |
-| 导出 | `output_ratio=1.0`，`max_output=100` |
+| 导出 | `output_ratio=1.0`，`max_output=100`；`gif_fps=25`（须整除 100；24 会令 GIF 延时不均） |
+| 并发 | `frame_extract_workers=6`，`vlm_score_workers=2`（需 `OLLAMA_NUM_PARALLEL=2`），`gpu_stage_workers=1`，`cpu_stage_workers=3` |
+| 默认关闭 | `boundary_snap_enabled`、`score_calibration_enabled`（缺省即旧行为；未做盲测前不要打开） |
 | Quality MoE | `enabled: true`，`report_only: false`；排序 80% adult（0.4×worthiness + 0.6×sex_act）+ 20% cinematic |
 | Preference Memory | 若 `enabled: true`，**用 caption embedding 替代** adult 排序 |
 | 阶段超时 | 默认 1h；`vlm` 4h；`refine` 6h |
 | 打包入口 | `dist/GifAgentUI/GifAgentUI.exe`（API `8000` + Gradio `7861`） |
+
+每个新键在 `extract_config()` 里的默认值都复现改之前的行为。Retry **不会**改写已冻结的 `config_json`，因此历史任务继续按当时的快照跑。`vlm_score_workers` 和 `cpu_stage_workers` 依赖显存与磁盘，必须在本机量过再改，不要直接抄 16GB 机器上的数字。`clear_output_dir: true` 时基准测试要用拷贝或新目录，不要原地覆盖历史导出。
+
+`configs/models.adult_candidate.yaml` 是独立 **preset**，不是 `models.yaml` 的镜像。当前主要分歧：`worthiness_threshold` 0.42 / 0.62，`refine_threshold` 0.55 / 0.70，`merge_score_threshold` 0.50 / 0.58，`merge_peak_threshold` 0.55 / 0.70，`max_merge_span_s` 24 / 18，`output_ratio` 0.45 / 1.0，`max_output` 35 / 100；adult preset 没有 `max_refine_frames`。
+
+Ollama 侧与 `vlm_score_workers` 对齐：在 WSL 里设置 `OLLAMA_NUM_PARALLEL`（当前 YAML 为 2）。若单帧 p50 变长，把两者都降回 1。
 
 ---
 

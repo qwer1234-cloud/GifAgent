@@ -46,10 +46,29 @@ POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
 SCORE_PROMPT_MODE = "adult"   # frozen via extract_config(); default|adult
 QUALITY_RANKING_ADULT = 0.80  # 0.4*worthiness + 0.6*sex_act
 QUALITY_RANKING_CINE = 0.20   # cinematic expert; cannot veto a sex clip
-VLM_OPTIONS = {"temperature": 0.25, "top_p": 0.90, "top_k": 40}
+VLM_OPTIONS = {"temperature": 0.0, "top_p": 1.0, "top_k": 1, "seed": 20260823}
+SCORE_SCHEMA_MODE = "two_tier"  # legacy = full caption on every frame
+FRAME_EXTRACT_WORKERS = 6
+VLM_SCORE_WORKERS = 2           # pair with OLLAMA_NUM_PARALLEL; measure first
+GIF_FPS = 25                    # must divide 100; 24 yields uneven delays
+BOUNDARY_SNAP_ENABLED = False   # leave off until a blind A/B wins
+SCORE_CALIBRATION_ENABLED = False
 ```
 
-Preset file: `configs/models.adult_candidate.yaml` (mirrors the same values).
+Every new key defaults to prior behavior in `extract_config()`. Retry never
+rewrites `config_json`, so historical jobs keep the snapshot they were
+created with.
+
+`configs/models.adult_candidate.yaml` is an adaptive **preset**, not a
+mirror of `models.yaml`. Current divergences include
+`worthiness_threshold` 0.42 vs 0.62, `refine_threshold` 0.55 vs 0.70,
+`merge_score_threshold` 0.50 vs 0.58, `merge_peak_threshold` 0.55 vs 0.70,
+`max_merge_span_s` 24 vs 18, `output_ratio` 0.45 vs 1.0, `max_output` 35 vs
+100, and no `max_refine_frames` on the adult preset.
+
+`vlm_score_workers` and `cpu_stage_workers` are hardware-dependent. Measure
+p50 and wall time before copying 16GB-VRAM values. Benchmark runs must use
+copies: `clear_output_dir: true` wipes the video's export folder.
 
 **Region-aware merge** (`app/services/clip_merge.py`): adjacent frames merge
 when `gap <= MERGE_GAP` AND both scores `>= MERGE_SCORE_THRESHOLD`, but groups
@@ -104,9 +123,11 @@ raises the evidence required for merging, refinement, and export. It then keeps
 every unique qualified clip (`output_ratio: 1.0`) up to `max_output: 100`.
 This makes quality the admission rule without treating low output count as a
 success metric: a video with many strong moments may still produce many GIFs.
-VLM scoring uses `temperature: 0.25` for repeatability; exports remain 24 fps at
-up to 720 px wide. Action completeness, transition protection, low-light
-tolerance, and duplicate removal stay enabled.
+VLM scoring uses seeded greedy decoding (`temperature: 0.0`, `seed: 20260823`)
+for repeatability; exports use `gif_fps: 25` (GIF delays are integer
+centiseconds, so 24 produces uneven playback) at up to 720 px wide. Action
+completeness, transition protection, low-light tolerance, and duplicate
+removal stay enabled.
 
 ### Quality MoE evaluation and repair boundary
 
@@ -251,7 +272,7 @@ scripts/
 └── vlm_loop.py                # Production VLM processing loop
 configs/
 ├── models.yaml                # Main config (models, paths, preference_memory, task_engine)
-└── models.adult_candidate.yaml# Adult adaptive preset mirror
+└── models.adult_candidate.yaml# Adult adaptive preset (not a mirror)
 ```
 
 ## Phase 1: Reliable Task Engine
@@ -777,7 +798,9 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
     `GifAgentUI.exe`. Afterlow / other foreign listeners are warned, not killed.
 
 13. **Retry does not rescore**: `POST /api/tasks/jobs/{id}/retry` resets failed
-    / `needs_attention` stages only. It does not rewrite `config_json`.
+    / `needs_attention` stages only. It does not rewrite `config_json`. New
+    keys (`vlm_score_workers`, `boundary_snap_*`, `score_calibration_*`, …)
+    default to old behavior, so historical snapshots are unchanged.
 
 ## API Endpoints (26+ total)
 
