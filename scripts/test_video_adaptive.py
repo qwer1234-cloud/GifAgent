@@ -58,6 +58,14 @@ from app.services.export_ranking import (
     rank_clips_for_export,
     sex_act_score,
 )
+from app.services.gif_encode import (
+    DEFAULT_DIFF_MODE,
+    DEFAULT_DITHER,
+    DEFAULT_STATS_MODE,
+    build_palette_filters,
+    is_divisible_gif_fps,
+    nearest_divisible_gif_fps,
+)
 from app.services.gif_naming import build_gif_filename
 from app.services.gif_windows import build_export_window
 from app.services.transition_candidates import build_guarded_clips
@@ -844,6 +852,13 @@ def extract_config(config_data: dict) -> dict:
         **_quality_ranking_weights(adaptive),
         "gif_fps": int(adaptive.get("gif_fps", 24)),
         "gif_max_width": int(adaptive.get("gif_max_width", 720)),
+        # Palette knobs default to FFmpeg's own defaults, so an unmodified
+        # snapshot still emits the bare palettegen/paletteuse commands.
+        "gif_palette_stats_mode": str(
+            adaptive.get("gif_palette_stats_mode", DEFAULT_STATS_MODE)
+        ),
+        "gif_dither": str(adaptive.get("gif_dither", DEFAULT_DITHER)),
+        "gif_diff_mode": str(adaptive.get("gif_diff_mode", DEFAULT_DIFF_MODE)),
         "clear_output_dir": bool(adaptive.get("clear_output_dir", True)),
         "potplayer_pbf_enabled": bool(
             adaptive.get("potplayer_pbf_enabled", True)
@@ -894,7 +909,45 @@ def extract_config(config_data: dict) -> dict:
     config["action_config_hash"] = computed_action_hash
     if config["max_refine_frames"] < 0:
         raise ValueError("max_refine_frames must be >= 0")
+    # Validate the palette values here so a bad snapshot fails at config
+    # freeze rather than deep inside an ffmpeg filtergraph.
+    _palette_filters_for(config)
+    _warn_once_on_indivisible_fps(config["gif_fps"])
     return config
+
+
+def _palette_filters_for(cfg: dict) -> tuple[str, str]:
+    """Resolve the palette fragments from a frozen pipeline config.
+
+    Direct and staged exports both read through here so the same snapshot
+    always yields the same two filtergraph fragments.
+    """
+    return build_palette_filters(
+        stats_mode=str(cfg.get("gif_palette_stats_mode", DEFAULT_STATS_MODE)),
+        dither=str(cfg.get("gif_dither", DEFAULT_DITHER)),
+        diff_mode=str(cfg.get("gif_diff_mode", DEFAULT_DIFF_MODE)),
+    )
+
+
+_WARNED_FPS: set[int] = set()
+
+
+def _warn_once_on_indivisible_fps(fps: int) -> None:
+    """Warn when *fps* cannot be expressed as an exact GIF frame delay.
+
+    Historical snapshots carry ``gif_fps: 24``, which must keep running, so
+    this never raises.
+    """
+    if is_divisible_gif_fps(fps) or fps in _WARNED_FPS:
+        return
+    _WARNED_FPS.add(fps)
+    nearest = ", ".join(str(v) for v in nearest_divisible_gif_fps(fps))
+    print(
+        f"  [gif] WARNING gif_fps={fps} does not divide 100, so GIF frame "
+        f"delays are rounded and playback is uneven; nearest exact "
+        f"rates: {nearest}",
+        flush=True,
+    )
 
 
 def _quality_ranking_weights(adaptive: dict) -> dict[str, float]:
@@ -2451,6 +2504,7 @@ def run_pipeline(
         ffmpeg_filter = build_ffmpeg_filter(
             repair_recipe, fps=fps, max_width=GIF_MAX_WIDTH
         )
+        palettegen, paletteuse = _palette_filters_for(cfg)
         quality_lineage = _quality_export_lineage(
             assessment,
             candidate_id=str(clip.get("candidate_id", clip.get("clip_id", ""))),
@@ -2473,7 +2527,7 @@ def run_pipeline(
                     "-i",
                     video_path,
                     "-vf",
-                    f"{ffmpeg_filter},palettegen",
+                    f"{ffmpeg_filter},{palettegen}",
                     palette,
                 ],
                 gif_command=[
@@ -2488,7 +2542,7 @@ def run_pipeline(
                     "-i",
                     palette,
                     "-filter_complex",
-                    f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
+                    f"{ffmpeg_filter}[x];[x][1:v]{paletteuse}",
                     out_gif,
                 ],
                 palette_path=palette,
@@ -4545,6 +4599,7 @@ def _stage_gif_clip(
     ffmpeg_filter = build_ffmpeg_filter(
         repair_recipe, fps=GIF_FPS, max_width=GIF_MAX_WIDTH
     )
+    palettegen, paletteuse = _palette_filters_for(cfg)
     quality_lineage = _quality_export_lineage(
         assessment,
         candidate_id=str(clip_id or ""),
@@ -4559,13 +4614,13 @@ def _stage_gif_clip(
             palette_command=[
                 "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
                 "-i", video_path,
-                "-vf", f"{ffmpeg_filter},palettegen",
+                "-vf", f"{ffmpeg_filter},{palettegen}",
                 palette_path,
             ],
             gif_command=[
                 "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
                 "-i", video_path, "-i", palette_path,
-                "-lavfi", f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
+                "-lavfi", f"{ffmpeg_filter}[x];[x][1:v]{paletteuse}",
                 gif_path,
             ],
             palette_path=palette_path,

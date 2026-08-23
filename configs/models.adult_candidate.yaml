@@ -28,8 +28,15 @@ adaptive:
   vlm_temperature: 0.50
   vlm_top_p: 0.90
   vlm_top_k: 40
-  gif_fps: 24
+  # GIF stores frame delays in centiseconds, so gif_fps must divide 100 or
+  # playback is unevenly rounded. 24 -> 25 removes that stutter.
+  gif_fps: 25
   gif_max_width: 720
+  # diff-mode palettes spend their 256 colors on the moving region, and
+  # rectangle diff only rewrites the changed area, which shrinks the file.
+  gif_palette_stats_mode: diff
+  gif_dither: sierra2_4a
+  gif_diff_mode: rectangle
   clear_output_dir: true
   potplayer_pbf_enabled: true
   embedding_dedup_enabled: true

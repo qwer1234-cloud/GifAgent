@@ -5,9 +5,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from app.services.gif_encode import is_divisible_gif_fps
 from app.ui.tabs import settings
+from scripts import test_video_adaptive
 from scripts.test_video_adaptive import (
     DEFAULT_MAX_REFINE_FRAMES,
+    _palette_filters_for,
     collect_refine_timestamps,
     extract_config,
 )
@@ -404,7 +407,7 @@ def test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity():
     assert cfg["vlm_temperature"] <= 0.25
     assert cfg["embed_sim_threshold"] <= 0.88
     assert cfg["temporal_dedup_min_gap_s"] >= 15
-    assert cfg["gif_fps"] == 24
+    assert cfg["gif_fps"] == 25
     assert cfg["gif_max_width"] == 720
     assert cfg["output_ratio"] == 1.0
     assert cfg["max_output"] == 100
@@ -605,4 +608,77 @@ def test_collect_refine_timestamps_caps_evenly():
     assert timestamps[-1] == max(timestamps)
     assert timestamps == sorted(timestamps)
     assert len(set(timestamps)) == 20
+
+
+def test_palette_defaults_reproduce_the_legacy_ffmpeg_commands():
+    cfg = extract_config({"adaptive": {}})
+
+    assert cfg["gif_palette_stats_mode"] == "full"
+    assert cfg["gif_dither"] == "sierra2_4a"
+    assert cfg["gif_diff_mode"] == "none"
+    assert _palette_filters_for(cfg) == ("palettegen", "paletteuse")
+
+
+def test_palette_overrides_flow_from_the_frozen_snapshot():
+    cfg = extract_config(
+        {
+            "adaptive": {
+                "gif_palette_stats_mode": "diff",
+                "gif_dither": "sierra2_4a",
+                "gif_diff_mode": "rectangle",
+            }
+        }
+    )
+
+    assert _palette_filters_for(cfg) == (
+        "palettegen=stats_mode=diff",
+        "paletteuse=dither=sierra2_4a:diff_mode=rectangle",
+    )
+
+
+def test_an_unknown_palette_value_is_rejected_at_config_freeze():
+    with pytest.raises(ValueError, match="dither"):
+        extract_config({"adaptive": {"gif_dither": "not-a-dither"}})
+
+
+def test_palette_keys_stay_out_of_the_action_config_hash():
+    baseline = extract_config({"adaptive": {}})
+    tuned = extract_config(
+        {
+            "adaptive": {
+                "gif_palette_stats_mode": "diff",
+                "gif_diff_mode": "rectangle",
+            }
+        }
+    )
+
+    assert tuned["action_config_hash"] == baseline["action_config_hash"]
+
+
+def test_shipped_configs_use_a_centisecond_divisible_frame_rate():
+    for name in ("models.yaml", "models.adult_candidate.yaml"):
+        data = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "configs" / name).read_text(
+                encoding="utf-8"
+            )
+        )
+        fps = data["adaptive"]["gif_fps"]
+        assert is_divisible_gif_fps(fps), (
+            f"configs/{name} gif_fps={fps} does not divide 100"
+        )
+
+
+def test_an_indivisible_frame_rate_warns_once_without_raising(capsys):
+    test_video_adaptive._WARNED_FPS.discard(24)
+
+    extract_config({"adaptive": {"gif_fps": 24}})
+    extract_config({"adaptive": {"gif_fps": 24}})
+
+    warnings = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if "does not divide 100" in line
+    ]
+    assert len(warnings) == 1
+    assert "25" in warnings[0]
 
