@@ -352,6 +352,35 @@ class TestScoreVlmFrameRejectsInvalidWorthiness:
         finally:
             stub.stop()
 
+    def test_score_vlm_frame_expands_auto_base_url(self, tmp_path, monkeypatch):
+        """Frozen ``auto`` must become an absolute URL before httpx."""
+        mod = _load_stage_module()
+        stub = _StubServer({"response": json.dumps({
+            "caption": "x", "emotional_core": "awe",
+            "gif_worthiness": 0.9, "aesthetic_notes": [], "reason": "x",
+        })})
+        stub.start()
+        try:
+            monkeypatch.setattr(
+                mod, "_expand_vlm_base_url",
+                lambda *a, **k: stub.base_url,
+            )
+            payload, error = mod._score_vlm_frame(
+                base_url="auto",
+                model="stub-vlm",
+                image_bytes=b"\xff\xd8\xff\xe0" + b"\x00" * 20,
+                prompt="score",
+                options={},
+                threshold=0.55,
+                timestamp=1.0,
+                frame_path=str(tmp_path / "frame.jpg"),
+            )
+            assert error is None
+            assert payload is not None
+            assert payload["gif_worthiness"] == 0.9
+        finally:
+            stub.stop()
+
     @pytest.mark.parametrize(
         "value", [None, True, -0.1, 1.1, "nan", "high"],
     )
@@ -850,6 +879,66 @@ class TestVlmLifecycle:
                             or _StatusResponse())
         assert mod.wait_model("m", runtime, timeout_s=1) is True
         assert urls == ["http://127.0.0.1:45678/api/generate"], urls
+
+    def test_materialize_expands_auto_base_url(self, monkeypatch):
+        mod = _load_stage_module()
+        monkeypatch.setattr(
+            "app.services.ollama_runtime.OllamaRuntimeManager.resolve_base_url",
+            lambda self, config=None: "http://172.16.9.9:11434",
+        )
+        parsed = mod._resolve_vlm_runtime({"vlm": {
+            "provider": "ollama", "model": "m",
+            "base_url": "auto",
+            "manage_lifecycle": True,
+            "launch_mode": "wsl",
+            "wsl_distro": "Ubuntu-20.04",
+        }})
+        assert parsed.base_url == "auto"
+        live = mod._materialize_vlm_runtime(parsed, {"vlm": {
+            "wsl_distro": "Ubuntu-20.04",
+        }})
+        assert live.base_url == "http://172.16.9.9:11434"
+        assert live.launch_mode == "wsl"
+        assert live.model == "m"
+
+    def test_materialize_expands_ephemeral_wsl_nat_url(self, monkeypatch):
+        mod = _load_stage_module()
+        monkeypatch.setattr(
+            "app.services.ollama_runtime.is_ephemeral_wsl_endpoint",
+            lambda url: "172.27.227.98" in (url or ""),
+        )
+        monkeypatch.setattr(
+            "app.services.ollama_runtime.OllamaRuntimeManager.resolve_base_url",
+            lambda self, config=None: "http://172.16.1.2:11434",
+        )
+        parsed = mod._resolve_vlm_runtime({"vlm": {
+            "provider": "ollama", "model": "m",
+            "base_url": "http://172.27.227.98:11434",
+            "manage_lifecycle": True,
+            "launch_mode": "wsl",
+        }})
+        live = mod._materialize_vlm_runtime(parsed, {"vlm": {
+            "launch_mode": "wsl",
+        }})
+        assert live.base_url == "http://172.16.1.2:11434"
+
+    def test_materialize_keeps_explicit_non_wsl_url(self, monkeypatch):
+        mod = _load_stage_module()
+        monkeypatch.setattr(
+            "app.services.ollama_runtime.OllamaRuntimeManager.resolve_base_url",
+            lambda self, config=None: (_ for _ in ()).throw(
+                AssertionError("explicit URLs must not be rediscovered")
+            ),
+        )
+        parsed = mod._resolve_vlm_runtime({"vlm": {
+            "provider": "ollama", "model": "m",
+            "base_url": "http://stub.example:11434",
+            "launch_mode": "none",
+        }})
+        live = mod._materialize_vlm_runtime(parsed, {"vlm": {
+            "base_url": "http://stub.example:11434",
+        }})
+        assert live.base_url == "http://stub.example:11434"
 
     def test_lifecycle_rejects_unknown_launch_mode(self):
         mod = _load_stage_module()

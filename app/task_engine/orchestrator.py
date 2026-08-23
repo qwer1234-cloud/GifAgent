@@ -47,16 +47,34 @@ _TERMINAL_STATES = frozenset({"succeeded", "failed", "cancelled", "needs_attenti
 
 
 def discover_videos(directory: str, extensions: str | None = None) -> list[str]:
-    """Discover video files in a directory, sorted by name for stability."""
+    """Discover video files under a directory, including nested subfolders."""
     raw = extensions or ""
     wanted = _parse_extensions(raw) if raw.strip() else {".mp4", ".mkv", ".avi", ".mov", ".webm", ".ts"}
     root = Path(directory)
     if not root.is_dir():
         return []
+    return _collect_video_files(root, wanted)
+
+
+def _collect_video_files(root: Path, wanted: set[str]) -> list[str]:
+    """Walk *root* recursively and return matching video paths, sorted."""
     files: list[str] = []
-    for child in sorted(root.iterdir()):
-        if child.is_file() and (not wanted or child.suffix.lower() in wanted):
-            files.append(str(child.resolve()))
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for name in filenames:
+            path = Path(dirpath) / name
+            if path.suffix.lower() not in wanted:
+                continue
+            try:
+                resolved = str(path.resolve())
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(resolved)
+    files.sort()
     return files
 
 

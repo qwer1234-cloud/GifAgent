@@ -578,9 +578,17 @@ def ensure_runtime_ready(
     return _default_runtime.ensure_ready(config)
 
 
-def resolve_base_url() -> str:
-    """Resolve the default runtime base URL (module-level convenience)."""
-    return _default_runtime.resolve_base_url()
+def resolve_base_url(
+    config: Optional[EmbeddingRuntimeConfig] = None,
+) -> str:
+    """Resolve the runtime base URL (module-level convenience).
+
+    When *config* is omitted, embedding settings from ``models.yaml`` are
+    used.  Callers that already have a VLM/embedding snapshot should pass
+    it so ``auto`` discovery uses that launch_mode/distro, not a stale
+    global default.
+    """
+    return _default_runtime.resolve_base_url(config)
 
 
 def invalidate_runtime() -> None:

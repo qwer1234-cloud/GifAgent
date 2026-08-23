@@ -1,3 +1,5 @@
+import os
+
 from scripts.test_video_batch import (
     checkpoint_key,
     claim_checkpoint_entry_for_source,
@@ -40,6 +42,20 @@ def test_discover_videos_handles_glob_metacharacters_in_directory(tmp_path):
     video_path.write_bytes(b"placeholder")
 
     assert discover_videos(str(video_dir), ".mp4,.mkv") == [str(video_path)]
+
+
+def test_discover_videos_recurses_into_subfolders(tmp_path):
+    nested = tmp_path / "creator" / "show"
+    nested.mkdir(parents=True)
+    top = tmp_path / "top.mp4"
+    clip = nested / "clip.mp4"
+    top.write_bytes(b"top")
+    clip.write_bytes(b"nested")
+    (nested / "notes.txt").write_bytes(b"no")
+
+    found = discover_videos(str(tmp_path), ".mp4")
+    names = sorted(os.path.basename(path) for path in found)
+    assert names == ["clip.mp4", "top.mp4"]
 
 
 def test_checkpoint_key_uses_normalized_source_path_for_same_basename(tmp_path):

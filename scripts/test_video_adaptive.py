@@ -13,7 +13,7 @@ import sys
 import os
 import subprocess
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import re
 import base64
@@ -339,6 +339,14 @@ def _score_vlm_frame(
     """
     import math
 
+    if not str(base_url or "").strip().lower().startswith(("http://", "https://")):
+        base_url = _expand_vlm_base_url(
+            base_url or "auto",
+            launch_mode="wsl",
+            wsl_distro="Ubuntu-20.04",
+            manage_lifecycle=True,
+        )
+
     img_b64 = base64.b64encode(image_bytes).decode("utf-8")
     last_error: str | None = None
 
@@ -450,6 +458,44 @@ class VlmRuntimeConfig:
     retry_delay_s: float   # mapped from config key "retry_delay_s"
 
 
+def _expand_vlm_base_url(
+    configured: str,
+    *,
+    launch_mode: str,
+    wsl_distro: str,
+    manage_lifecycle: bool,
+) -> str:
+    """Turn frozen ``auto`` / ephemeral WSL NAT URLs into a live endpoint.
+
+    Job snapshots keep ``vlm.base_url: auto`` on purpose (WSL ``172.x``
+    changes across reboots).  Stage subprocesses must expand that token
+    before any HTTP call, otherwise ``wait_model`` posts to
+    ``auto/api/generate`` and every VLM attempt dies as
+    ``VLM not responding``.
+    """
+    from app.services.ollama_runtime import (
+        EmbeddingRuntimeConfig,
+        OllamaRuntimeManager,
+        is_ephemeral_wsl_endpoint,
+        normalize_base_url,
+    )
+
+    text = (configured or "").strip()
+    if text and text.lower() != "auto" and not is_ephemeral_wsl_endpoint(text):
+        return normalize_base_url(text)
+    discover_mode = launch_mode if launch_mode in ("native", "wsl") else "wsl"
+    return normalize_base_url(
+        OllamaRuntimeManager().resolve_base_url(
+            EmbeddingRuntimeConfig(
+                base_url="auto",
+                manage_lifecycle=manage_lifecycle,
+                launch_mode=discover_mode,
+                wsl_distro=wsl_distro or "Ubuntu-20.04",
+            )
+        )
+    )
+
+
 def _resolve_vlm_runtime(config_data: dict | None) -> VlmRuntimeConfig:
     """Parse the frozen job config into an immutable VLM runtime spec.
 
@@ -497,6 +543,23 @@ def _resolve_vlm_runtime(config_data: dict | None) -> VlmRuntimeConfig:
         manage_lifecycle=manage_lifecycle, launch_mode=launch_mode,
         retry_delay_s=retry_delay,
     )
+
+
+def _materialize_vlm_runtime(
+    runtime: VlmRuntimeConfig,
+    config_data: dict | None = None,
+) -> VlmRuntimeConfig:
+    """Expand ``auto`` / stale WSL NAT URLs without rewriting the snapshot."""
+    vlm_cfg = (config_data or {}).get("vlm") or {}
+    expanded = _expand_vlm_base_url(
+        runtime.base_url,
+        launch_mode=runtime.launch_mode,
+        wsl_distro=str(vlm_cfg.get("wsl_distro") or "Ubuntu-20.04"),
+        manage_lifecycle=runtime.manage_lifecycle,
+    )
+    if expanded == runtime.base_url:
+        return runtime
+    return replace(runtime, base_url=expanded)
 
 
 def _resolve_quality_runtime_snapshot(
@@ -833,6 +896,39 @@ def _planned_output_count(
     return output_count
 
 
+def _is_stable_http_url(url: str) -> bool:
+    """Return True for a non-sentinel, non-ephemeral HTTP(S) endpoint."""
+    text = (url or "").strip()
+    lowered = text.lower()
+    if lowered in {"", "auto", "inherit_vlm"}:
+        return False
+    if not lowered.startswith(("http://", "https://")):
+        return False
+    from app.services.ollama_runtime import is_ephemeral_wsl_endpoint
+
+    return not is_ephemeral_wsl_endpoint(text)
+
+
+def _attach_live_vlm_base_url(cfg: dict, config_data: dict | None) -> str | None:
+    """Remember the live VLM URL on *cfg* without rewriting the snapshot hash."""
+    existing = str(cfg.get("_live_vlm_base_url") or "").strip()
+    if existing.startswith(("http://", "https://")):
+        return existing
+    if not config_data:
+        return None
+    try:
+        live = _materialize_vlm_runtime(
+            _resolve_vlm_runtime(config_data), config_data
+        ).base_url
+    except ValueError:
+        return None
+    live = str(live or "").strip()
+    if not live.startswith(("http://", "https://")):
+        return None
+    cfg["_live_vlm_base_url"] = live
+    return live
+
+
 def _quality_config_from_pipeline_cfg(cfg: dict) -> QualityMoeConfig:
     raw = cfg.get("quality_moe")
     if raw is None:
@@ -845,22 +941,22 @@ def _quality_config_from_pipeline_cfg(cfg: dict) -> QualityMoeConfig:
         cfg["quality_moe_config_hash"] = quality_config.config_hash
         return quality_config
     quality_config = QualityMoeConfig.from_mapping({"quality_moe": raw})
-    judge_base_url = str(quality_config.judge.get("base_url", "") or "").strip()
-    if judge_base_url:
-        parsed_url = httpx.URL(judge_base_url)
-        if (
-            judge_base_url.lower() in {"auto", "inherit_vlm"}
-            or not parsed_url.is_absolute_url
-            or parsed_url.scheme not in {"http", "https"}
-        ):
-            raise ValueError(
-                "quality_moe judge base_url must be a frozen absolute URL"
-            )
     expected_hash = cfg.get("quality_moe_config_hash")
     if expected_hash is None:
         cfg["quality_moe_config_hash"] = quality_config.config_hash
     elif quality_config.config_hash != expected_hash:
         raise ValueError("quality_moe config hash does not match the frozen snapshot")
+    judge_base_url = str(quality_config.judge.get("base_url", "") or "").strip()
+    if judge_base_url and not _is_stable_http_url(judge_base_url):
+        live = str(cfg.get("_live_vlm_base_url") or "").strip()
+        if not live.startswith(("http://", "https://")):
+            raise ValueError(
+                "quality_moe judge base_url must be a frozen absolute URL"
+            )
+        judge = dict(quality_config.judge)
+        judge["base_url"] = live.rstrip("/")
+        quality_config = replace(quality_config, judge=judge)
+        print(f"  [quality] judge base_url={judge['base_url']}", flush=True)
     return quality_config
 
 
@@ -2564,7 +2660,9 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
 
     # Direct execution must honor the configured VLM endpoint/model, just as
     # staged jobs do.  The module default is only a legacy fallback.
-    vlm_runtime = _resolve_vlm_runtime(config_data)
+    vlm_runtime = _materialize_vlm_runtime(
+        _resolve_vlm_runtime(config_data), config_data
+    )
     output = run_pipeline(
         video_path, FRAMES_DIR, EXPORT_DIR, cfg, vlm_runtime=vlm_runtime
     )
@@ -2723,6 +2821,9 @@ def run_stage_mode(
     sys.stderr = _TeeIO(log_file, old_stderr)
 
     try:
+        live = _attach_live_vlm_base_url(cfg, config_data)
+        if live:
+            print(f"  [stage runtime] vlm_base_url={live}", flush=True)
         output = _run_stage(
             stage,
             video_path=video_path,
@@ -3334,7 +3435,7 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     # Task 4 (seventh-review): resolve the entire VLM runtime from the frozen
     # config.  Provider validation, model, base_url, lifecycle and launch_mode
     # are all explicit; no URL inference.
-    vlm_rt = _resolve_vlm_runtime(config_data)
+    vlm_rt = _materialize_vlm_runtime(_resolve_vlm_runtime(config_data), config_data)
     vlm_model = vlm_rt.model
     vlm_base_url = vlm_rt.base_url
     vlm_retry_delay = vlm_rt.retry_delay_s
@@ -3347,17 +3448,19 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
 
     # Task 4: explicit lifecycle.  manage_lifecycle=False or launch_mode=none
     # skips ALL model lifecycle (no WSL subprocess, no sleep).
+    print(
+        f"  [VLM runtime] model={vlm_model} base_url={vlm_base_url} "
+        f"lifecycle={vlm_rt.manage_lifecycle} launch={vlm_rt.launch_mode}",
+        flush=True,
+    )
     if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
         if is_local_llm():
             stop_model(llm_model_name().split("/")[-1].split(":")[0], vlm_rt)
         stop_model("nomic-embed-text", vlm_rt)
         time.sleep(5)
-        if not wait_model(vlm_model, vlm_rt):
+        if not wait_model(vlm_model, vlm_rt, timeout_s=300):
             print("ERROR: VLM not responding")
             sys.exit(1)
-    else:
-        print(f"  [VLM runtime] model={vlm_model} base_url={vlm_base_url} "
-              f"lifecycle=False launch={vlm_rt.launch_mode} (skipped)")
 
     print(f"\n  VLM scoring ({len(validated_frames)} frames)...")
     scored = []
@@ -3468,16 +3571,16 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     # the shared ``_score_vlm_frame`` for every scoring request so VLM and
     # refine share one endpoint, one error semantics, and one parse path.
     vlm_cfg = _validate_vlm_provider(config_data)
-    vlm_model = vlm_cfg.get("model", "llava:13b")
-    vlm_base_url = vlm_cfg.get("base_url", OLLAMA_BASE)
-    vlm_retry_delay = float(vlm_cfg.get("retry_delay_s", 2.0))
+    vlm_rt = _materialize_vlm_runtime(_resolve_vlm_runtime(config_data), config_data)
+    vlm_model = vlm_rt.model
+    vlm_base_url = vlm_rt.base_url
+    vlm_retry_delay = vlm_rt.retry_delay_s
     VLM_OPTIONS = {
         "temperature": cfg["vlm_temperature"],
         "top_p": cfg["vlm_top_p"],
         "top_k": cfg["vlm_top_k"],
         "num_think": 0,
     }
-    vlm_rt = _resolve_vlm_runtime(config_data)
     if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
         print(
             f"  [refine] waiting for VLM {vlm_model} at {vlm_rt.base_url}",
@@ -3845,6 +3948,7 @@ def _stage_rank_dedup(
     rank_stage_id = str(
         (config_data or {}).get("_stage_id") or "standalone-rank-stage"
     )
+    _attach_live_vlm_base_url(cfg, config_data)
     clips = synth_manifest.get("clips", [])
     scored_frames = synth_manifest.get("scored_frames", [])
 
@@ -3962,7 +4066,30 @@ def _stage_rank_dedup(
         def resolve_vlm() -> dict:
             nonlocal vlm_cfg
             if vlm_cfg is None:
-                vlm_cfg = _validate_vlm_provider(config_data)
+                raw = (config_data or {}).get("vlm") or {}
+                if raw:
+                    _validate_vlm_provider(config_data)
+                    live = _materialize_vlm_runtime(
+                        _resolve_vlm_runtime(config_data), config_data
+                    )
+                    vlm_cfg = {
+                        **raw,
+                        "base_url": live.base_url,
+                        "model": live.model,
+                        "retry_delay_s": live.retry_delay_s,
+                    }
+                    print(
+                        f"  [rank_dedup VLM] model={live.model} "
+                        f"base_url={live.base_url}",
+                        flush=True,
+                    )
+                else:
+                    vlm_cfg = {
+                        "provider": "ollama",
+                        "model": "llava:13b",
+                        "base_url": OLLAMA_BASE,
+                        "retry_delay_s": 2.0,
+                    }
             return vlm_cfg
 
         def frame_scorer(timestamp_s: float, label: str) -> dict | None:

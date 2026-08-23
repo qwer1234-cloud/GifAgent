@@ -130,7 +130,25 @@ def discover_videos(video_dir: str, extensions: str) -> list[str]:
     if not wanted:
         return []
     root = Path(video_dir)
-    return sorted(str(path) for path in root.iterdir() if path.is_file() and path.suffix.lower() in wanted)
+    if not root.is_dir():
+        return []
+    files: list[str] = []
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames.sort()
+        for name in filenames:
+            path = Path(dirpath) / name
+            if path.suffix.lower() not in wanted:
+                continue
+            try:
+                resolved = str(path.resolve())
+            except OSError:
+                continue
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            files.append(resolved)
+    return sorted(files)
 
 
 def normalize_checkpoint_for_resume(cp: dict) -> dict:

@@ -622,6 +622,7 @@ def test_stage_timeout_is_longer_for_vlm_and_refine():
     assert stage_timeout_seconds("gif_clip") == 3600
     assert stage_timeout_seconds("vlm") == 4 * 3600
     assert stage_timeout_seconds("refine") == 6 * 3600
+    assert stage_timeout_seconds("rank_dedup") == 6 * 3600
 
 
 def test_run_adaptive_stage_passes_stage_timeout(tmp_path):

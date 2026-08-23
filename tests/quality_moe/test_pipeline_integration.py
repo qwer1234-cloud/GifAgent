@@ -1021,3 +1021,70 @@ def test_quality_stage_rejects_unfrozen_endpoint_sentinel_before_judge_http():
     import pytest
     with pytest.raises(ValueError, match="frozen absolute URL"):
         adaptive._quality_config_from_pipeline_cfg(cfg)
+
+
+def test_quality_stage_materializes_inherit_vlm_from_live_vlm_url():
+    cfg = adaptive.extract_config({
+        "quality_moe": {
+            "enabled": True,
+            "judge": {"model_id": "llava:13b", "base_url": "inherit_vlm"},
+        },
+    })
+    frozen_hash = cfg["quality_moe_config_hash"]
+    cfg["_live_vlm_base_url"] = "http://172.27.227.98:11434/"
+
+    quality = adaptive._quality_config_from_pipeline_cfg(cfg)
+
+    assert quality.judge["base_url"] == "http://172.27.227.98:11434"
+    assert quality.config_hash == frozen_hash
+    assert cfg["quality_moe"]["judge"]["base_url"] == "inherit_vlm"
+
+
+def test_stage_mode_attaches_live_url_for_inherit_vlm(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "vlm": {
+            "provider": "ollama",
+            "model": "llava:13b",
+            "base_url": "auto",
+            "launch_mode": "wsl",
+            "wsl_distro": "Ubuntu-20.04",
+            "manage_lifecycle": True,
+        },
+        "quality_moe": {
+            "enabled": True,
+            "judge": {"model_id": "llava:13b", "base_url": "inherit_vlm"},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(
+        adaptive,
+        "_materialize_vlm_runtime",
+        lambda runtime, _snapshot=None: replace(runtime, base_url="http://live-ollama.example:11434"),
+    )
+    monkeypatch.setattr(adaptive, "init_db", lambda: None)
+    seen = []
+
+    def fake_stage(stage, **kwargs):
+        quality = adaptive._quality_config_from_pipeline_cfg(kwargs["cfg"])
+        seen.append({
+            "live": kwargs["cfg"].get("_live_vlm_base_url"),
+            "judge": quality.judge["base_url"],
+            "frozen": kwargs["config_data"]["quality_moe"]["judge"]["base_url"],
+        })
+        return {"output_key": stage, "_artifacts": []}
+
+    monkeypatch.setattr(adaptive, "_run_stage", fake_stage)
+
+    adaptive.run_stage_mode(
+        stage="rank_dedup",
+        video_path=str(tmp_path / "source.mp4"),
+        work_dir=str(tmp_path / "work"),
+        result_path=str(tmp_path / "result.json"),
+        config_path=str(config_path),
+    )
+
+    assert seen == [{
+        "live": "http://live-ollama.example:11434",
+        "judge": "http://live-ollama.example:11434",
+        "frozen": "inherit_vlm",
+    }]

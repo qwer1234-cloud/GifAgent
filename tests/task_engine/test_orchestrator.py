@@ -79,6 +79,17 @@ def test_discover_videos_default_extensions(video_dir: Path):
     assert len(videos) == 3  # a.mp4, b.mp4, c.mp4; readme.txt excluded
 
 
+def test_discover_videos_recurses_into_subfolders(tmp_path: Path):
+    nested = tmp_path / "creator" / "show"
+    nested.mkdir(parents=True)
+    (tmp_path / "top.mp4").write_text("fake-top", encoding="utf-8")
+    (nested / "clip.mp4").write_text("fake-nested", encoding="utf-8")
+    (nested / "notes.txt").write_text("not a video", encoding="utf-8")
+    videos = discover_videos(str(tmp_path), ".mp4")
+    names = sorted(Path(path).name for path in videos)
+    assert names == ["clip.mp4", "top.mp4"]
+
+
 # ---------------------------------------------------------------------------
 # initialize_job
 # ---------------------------------------------------------------------------

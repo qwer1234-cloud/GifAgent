@@ -19,6 +19,9 @@ DEFAULT_STAGE_TIMEOUT_S = 3600
 STAGE_TIMEOUT_S = {
     "vlm": 4 * 3600,
     "refine": 6 * 3600,
+    # Livestreams keep hundreds of action windows; embedding + VLM
+    # rescore regularly exceeds the 1h default.
+    "rank_dedup": 6 * 3600,
 }
 
 
