@@ -19,7 +19,7 @@ adaptive:
   action_analysis_version: 1
   action_analysis_window_s: 30
   action_preferred_min_duration_s: 4
-  action_preferred_max_duration_s: 12
+  action_preferred_max_duration_s: 8
   action_scan_fps: 4
   action_boundary_confidence_threshold: 0.65
   action_loop_adjust_s: 0.75

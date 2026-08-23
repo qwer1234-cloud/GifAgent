@@ -657,6 +657,28 @@ def test_palette_keys_stay_out_of_the_action_config_hash():
     assert tuned["action_config_hash"] == baseline["action_config_hash"]
 
 
+@pytest.mark.parametrize(
+    "name", ["models.yaml", "models.adult_candidate.yaml"]
+)
+def test_every_shipped_config_freezes_without_raising(name):
+    """The adult preset has no other coverage, so config drift lands here.
+
+    ``extract_config`` runs strict action-boundary validation, which is how
+    a tightened ``max_duration`` silently broke this preset before.
+    """
+    data = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / "configs" / name).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    cfg = extract_config(data)
+
+    assert cfg["action_preferred_max_duration_s"] <= cfg["max_duration"]
+    assert cfg["action_preferred_min_duration_s"] >= cfg["min_duration"]
+    assert cfg["single_frame_max_duration_s"] <= cfg["max_duration"]
+
+
 def test_shipped_configs_use_a_centisecond_divisible_frame_rate():
     for name in ("models.yaml", "models.adult_candidate.yaml"):
         data = yaml.safe_load(
