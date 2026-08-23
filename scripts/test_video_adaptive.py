@@ -73,7 +73,10 @@ from app.services.transition_candidates import build_guarded_clips
 from app.services.transition_guard import guard_candidate_window
 from app.services.temporal_evidence import TemporalEvidenceCache
 from app.services.json_guard import parse_json_response
-from app.services.score_prompt import normalize_score_prompt_mode
+from app.services.score_prompt import (
+    normalize_score_prompt_mode,
+    normalize_score_schema_mode,
+)
 from app.services.stage_timing import StageTimings
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
@@ -191,16 +194,51 @@ SCORE_PROMPT_ADULT = (
     "NEVER output 'what you see', '2-3 observations', or pipe-delimited emotions."
 )
 
+# Fast schema: same scoring rubric, numeric fields only. Used by two_tier
+# coarse/refine so the model spends tokens on gif_worthiness instead of
+# discarded prose. Caption/notes are backfilled later on best frames.
+SCORE_PROMPT_FAST = (
+    "Evaluate this film frame for GIF potential. Use the full 0.0-1.0 scale.\n"
+    "Output ONLY valid JSON with numeric fields. No markdown. No extra keys.\n\n"
+    '{"gif_worthiness":0.5}\n\n'
+    "gif_worthiness scale:\n"
+    "  0.0-0.2: BAD - static, dark, blurry, nothing happening. Skip.\n"
+    "  0.3-0.5: AVERAGE - some emotion, decent composition.\n"
+    "  0.6-0.8: GOOD - clear emotion/action, cinematic framing.\n"
+    "  0.9-1.0: EXCELLENT - iconic moment, beautiful lighting, peak drama.\n"
+)
 
-def get_score_prompt(mode: str = "default") -> str:
+SCORE_PROMPT_ADULT_FAST = (
+    "Evaluate this adult-video frame for short-GIF potential.\n"
+    "Output ONLY valid JSON with numeric fields. No markdown. "
+    "Be literal; do not euphemize or refuse sex.\n\n"
+    '{"gif_worthiness":0.5,"sex_act":0.0}\n\n'
+    "sex_act = how much sexual activity is visible in THIS frame:\n"
+    "  0.0: no sexual contact (talking, walking, cooking, clothed portrait, empty room)\n"
+    "  0.2-0.4: kissing, undressing, implied sex, bodies close but no sex act\n"
+    "  0.5-0.7: nude grinding, oral, hands on genitals, clear sexual contact\n"
+    "  0.8-1.0: penetrative sex, peak thrusting, orgasm, explicit sex in motion\n\n"
+    "gif_worthiness = should we export this as a GIF:\n"
+    "  0.0-0.25: SKIP daily life, kitchen, phone, walking, talking-head, no sex.\n"
+    "  0.3-0.5: weak kissing/undressing or static nude with little motion.\n"
+    "  0.6-0.8: GOOD clear sexual contact, readable motion, strong body framing.\n"
+    "  0.9-1.0: EXCELLENT peak sex action, climax, distinctive position, high motion.\n"
+    "Do NOT give high gif_worthiness to cooking, conversation, or walking.\n"
+    "Moody low-light sex can score HIGH. Do not penalize darkness when the act is visible.\n"
+)
+
+
+def get_score_prompt(mode: str = "default", *, schema: str = "full") -> str:
     """Return the scoring prompt frozen into the job snapshot.
 
     ``mode`` is the canonical ``default`` or ``adult`` value from
     ``extract_config()``. Scoring never reads process environment variables.
+    ``schema="score"`` keeps the rubric but asks only for numeric fields.
     """
-    if normalize_score_prompt_mode(mode) == "adult":
-        return SCORE_PROMPT_ADULT
-    return SCORE_PROMPT
+    adult = normalize_score_prompt_mode(mode) == "adult"
+    if schema == "score":
+        return SCORE_PROMPT_ADULT_FAST if adult else SCORE_PROMPT_FAST
+    return SCORE_PROMPT_ADULT if adult else SCORE_PROMPT
 
 
 def _temporal_media_duration(duration_s: float, scan_fps: float) -> float:
@@ -392,6 +430,7 @@ def _score_vlm_frame(
     frame_path: str,
     retry_delay_s: float = 2.0,
     keep_alive: str | None = None,
+    schema: str = "full",
 ) -> tuple[dict | None, str | None]:
     """Score one frame via the Ollama-compatible VLM endpoint.
 
@@ -498,6 +537,21 @@ def _score_vlm_frame(
                         time.sleep(retry_delay_s)
                         continue
                     return None, last_error
+
+                if schema == "score":
+                    # Two-tier coarse/refine: no caption to quality-gate.
+                    # Worthiness validation and sex_act extraction stay strict.
+                    return {
+                        "caption": "",
+                        "emotional_core": "?",
+                        "aesthetic_notes": [],
+                        "why_i_like_it": "",
+                        "reason": "",
+                        "gif_worthiness": float(worth),
+                        "sex_act": sex_act_score(raw_parsed),
+                        "timestamp": timestamp,
+                        "path": frame_path,
+                    }, None
 
                 # Worth is valid - now run the quality-gate parser for caption
                 # and other non-critical fields.  parse_vlm_response will not
@@ -930,6 +984,20 @@ def extract_config(config_data: dict) -> dict:
         "score_prompt_mode": normalize_score_prompt_mode(
             adaptive.get("score_prompt_mode", "default")
         ),
+        # legacy = current full-schema scoring. two_tier = numeric schema
+        # on coarse/refine plus caption backfill on each clip's best_frame.
+        "score_schema_mode": normalize_score_schema_mode(
+            adaptive.get("score_schema_mode", "legacy")
+        ),
+        "caption_backfill_max_frames": max(
+            0, int(adaptive.get("caption_backfill_max_frames", 150))
+        ),
+        "vlm_num_predict_score": _optional_int(
+            adaptive.get("vlm_num_predict_score")
+        ),
+        "vlm_num_predict_caption": _optional_int(
+            adaptive.get("vlm_num_predict_caption")
+        ),
         # 0 disables the dark-frame prefilter. Default 25 preserves legacy behavior.
         "min_brightness": float(adaptive.get("min_brightness", 25)),
         # Transition behavior comes only from this frozen config snapshot.
@@ -985,6 +1053,94 @@ def _optional_seed(value: object) -> int | None:
             f"vlm_seed must be an integer or null, got {value!r}"
         )
     return value
+
+
+def _optional_int(value: object) -> int | None:
+    """Parse an optional positive-or-zero integer config value.
+
+    ``None``/absent means "omit this option from the request body".
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"expected an integer or null, got {value!r}")
+    return value
+
+
+def _scoring_schema(cfg: dict) -> str:
+    """``score`` for two_tier coarse/refine; ``full`` otherwise."""
+    return "score" if cfg.get("score_schema_mode") == "two_tier" else "full"
+
+
+def _scoring_vlm_options(cfg: dict, schema: str = "full") -> dict:
+    """VLM sampling options plus the schema-specific ``num_predict`` cap."""
+    options = dict(_vlm_options(cfg))
+    key = (
+        "vlm_num_predict_score" if schema == "score" else "vlm_num_predict_caption"
+    )
+    capped = cfg.get(key)
+    if capped is not None:
+        options["num_predict"] = int(capped)
+    return options
+
+
+_BACKFILL_FIELDS = ("caption", "emotional_core", "aesthetic_notes", "reason")
+
+
+def backfill_clip_captions(
+    clips: list[dict],
+    *,
+    score_frame,
+    max_frames: int = 150,
+    counters: dict | None = None,
+) -> list[dict]:
+    """Re-score each clip's ``best_frame`` with the full caption schema.
+
+    Clips are visited in descending ``gif_worthiness`` order and capped by
+    ``max_frames``.  ``score_frame`` is injected so tests can drive this
+    without a live VLM.  Failures leave caption empty and never raise.
+    """
+    stats = counters if counters is not None else {}
+    attempted = 0
+    succeeded = 0
+    failed = 0
+    budget = max(0, int(max_frames))
+    ranked = sorted(
+        clips,
+        key=lambda clip: float(clip.get("gif_worthiness") or 0.0),
+        reverse=True,
+    )
+    for clip in ranked:
+        best = clip.get("best_frame")
+        if not isinstance(best, dict):
+            continue
+        if attempted >= budget:
+            best.setdefault("caption", "")
+            continue
+        attempted += 1
+        payload = None
+        try:
+            payload = score_frame(best)
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            failed += 1
+            best["caption"] = ""
+            best.setdefault("emotional_core", "?")
+            best.setdefault("aesthetic_notes", [])
+            best.setdefault("reason", "")
+            continue
+        succeeded += 1
+        for field in _BACKFILL_FIELDS:
+            if field in payload:
+                best[field] = payload[field]
+        clip["caption"] = best.get("caption", "")
+        if payload.get("emotional_core"):
+            clip["emotional_core"] = payload["emotional_core"]
+    stats["caption_backfill_attempted"] = attempted
+    stats["caption_backfill_succeeded"] = succeeded
+    stats["caption_backfill_failed"] = failed
+    return clips
 
 
 def _vlm_options(cfg: dict) -> dict:
@@ -1818,9 +1974,10 @@ def run_pipeline(
     BASE_SCORE_WEIGHT = cfg["base_score_weight"]
     PREFERENCE_SCORE_WEIGHT = cfg["preference_score_weight"]
 
-    VLM_OPTIONS = _vlm_options(cfg)
     SCORE_PROMPT_MODE = cfg.get("score_prompt_mode", "default")
-    score_prompt = get_score_prompt(SCORE_PROMPT_MODE)
+    coarse_schema = _scoring_schema(cfg)
+    VLM_OPTIONS = _scoring_vlm_options(cfg, coarse_schema)
+    score_prompt = get_score_prompt(SCORE_PROMPT_MODE, schema=coarse_schema)
     vlm_retry_delay_s = vlm_runtime.retry_delay_s if vlm_runtime else 2.0
 
     VLM_MODEL = vlm_runtime.model if vlm_runtime else "llava:13b"
@@ -1908,19 +2065,26 @@ def run_pipeline(
         print("ERROR: VLM not responding")
         sys.exit(1)
 
-    def _score_frame_file(frame_path: str, timestamp: float) -> tuple[dict | None, str | None]:
+    def _score_frame_file(
+        frame_path: str,
+        timestamp: float,
+        *,
+        schema: str | None = None,
+    ) -> tuple[dict | None, str | None]:
+        used_schema = coarse_schema if schema is None else schema
         with open(frame_path, "rb") as frame_file:
             return _score_vlm_frame(
                 base_url=VLM_BASE_URL,
                 model=VLM_MODEL,
                 image_bytes=frame_file.read(),
-                prompt=score_prompt,
-                options=VLM_OPTIONS,
+                prompt=get_score_prompt(SCORE_PROMPT_MODE, schema=used_schema),
+                options=_scoring_vlm_options(cfg, used_schema),
                 threshold=WORTHINESS_THRESHOLD,
                 timestamp=timestamp,
                 frame_path=frame_path,
                 retry_delay_s=vlm_retry_delay_s,
                 keep_alive=cfg.get("vlm_keep_alive"),
+                schema=used_schema,
             )
 
     scored = list(resumed_scored or [])
@@ -2058,6 +2222,21 @@ def run_pipeline(
     single_frame = sum(1 for c in clips if c["frame_count"] == 1)
     print(f"  Single-frame clips: {single_frame}")
 
+    if cfg.get("score_schema_mode") == "two_tier":
+        print(
+            f"  Caption backfill over best frames "
+            f"(budget={cfg.get('caption_backfill_max_frames', 150)})..."
+        )
+        backfill_clip_captions(
+            clips,
+            score_frame=lambda frame: _score_frame_file(
+                str(frame.get("path") or ""),
+                float(frame.get("timestamp") or 0),
+                schema="full",
+            )[0],
+            max_frames=int(cfg.get("caption_backfill_max_frames", 150)),
+        )
+
     # ---- Phase 2.65: transition-safe, action-complete materialization ----
     # Materialization must happen before embeddings, temporal deduplication,
     # ranking, and max_output so every split action is an independent candidate.
@@ -2109,7 +2288,9 @@ def run_pipeline(
                     )[0]
                 if not extracted.ok or not os.path.exists(extracted.path):
                     return None
-                payload, error = _score_frame_file(extracted.path, timestamp_s)
+                payload, error = _score_frame_file(
+                    extracted.path, timestamp_s, schema="full",
+                )
                 if payload is None:
                     print(
                         "  Action rescore dropped segment at "
@@ -3645,7 +3826,8 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     vlm_model = vlm_rt.model
     vlm_base_url = vlm_rt.base_url
     vlm_retry_delay = vlm_rt.retry_delay_s
-    VLM_OPTIONS = _vlm_options(cfg)
+    coarse_schema = _scoring_schema(cfg)
+    VLM_OPTIONS = _scoring_vlm_options(cfg, coarse_schema)
 
     # Task 4: explicit lifecycle.  manage_lifecycle=False or launch_mode=none
     # skips ALL model lifecycle (no WSL subprocess, no sleep).
@@ -3681,12 +3863,13 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
         payload, error = _score_vlm_frame(
             base_url=vlm_base_url, model=vlm_model,
             image_bytes=img_data, prompt=get_score_prompt(
-                cfg.get("score_prompt_mode", "default")
+                cfg.get("score_prompt_mode", "default"), schema=coarse_schema
             ),
             options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
             timestamp=ts, frame_path=fpath,
             retry_delay_s=vlm_retry_delay,
             keep_alive=cfg.get("vlm_keep_alive"),
+            schema=coarse_schema,
         )
 
         if payload is not None:
@@ -3778,7 +3961,8 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     vlm_model = vlm_rt.model
     vlm_base_url = vlm_rt.base_url
     vlm_retry_delay = vlm_rt.retry_delay_s
-    VLM_OPTIONS = _vlm_options(cfg)
+    coarse_schema = _scoring_schema(cfg)
+    VLM_OPTIONS = _scoring_vlm_options(cfg, coarse_schema)
     if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
         print(
             f"  [refine] waiting for VLM {vlm_model} at {vlm_rt.base_url}",
@@ -3874,12 +4058,13 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
             payload, error = _score_vlm_frame(
                 base_url=vlm_base_url, model=vlm_model,
                 image_bytes=img_data, prompt=get_score_prompt(
-                    cfg.get("score_prompt_mode", "default")
+                    cfg.get("score_prompt_mode", "default"), schema=coarse_schema
                 ),
                 options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
                 timestamp=rf["timestamp"], frame_path=rf["path"],
                 retry_delay_s=vlm_retry_delay,
                 keep_alive=cfg.get("vlm_keep_alive"),
+                schema=coarse_schema,
             )
             if payload is not None:
                 refine_responded += 1
@@ -3914,6 +4099,60 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
 
     print(f"  After refinement: {len(scored_frames)} total scored frames")
 
+    backfill_stats = {
+        "caption_backfill_attempted": 0,
+        "caption_backfill_succeeded": 0,
+        "caption_backfill_failed": 0,
+    }
+    if cfg.get("score_schema_mode") == "two_tier" and scored_frames:
+        # Same frozen merge keys synthesize will use. Because
+        # merge_scored_frames_into_clips is pure, the best_frame set is
+        # identical to the one synthesize will derive from this manifest.
+        provisional = merge_scored_frames_into_clips(
+            scored_frames,
+            merge_gap=cfg["merge_gap"],
+            merge_score_threshold=cfg["merge_score_threshold"],
+            max_merge_span_s=float(cfg.get("max_merge_span_s", 24)),
+            peak_threshold=float(
+                cfg.get("merge_peak_threshold", cfg.get("refine_threshold", 0.55))
+            ),
+        )
+
+        def _backfill_one(frame: dict) -> dict | None:
+            path = str(frame.get("path") or "")
+            if not path or not os.path.exists(path):
+                return None
+            with open(path, "rb") as frame_file:
+                payload, _error = _score_vlm_frame(
+                    base_url=vlm_base_url,
+                    model=vlm_model,
+                    image_bytes=frame_file.read(),
+                    prompt=get_score_prompt(
+                        cfg.get("score_prompt_mode", "default"), schema="full"
+                    ),
+                    options=_scoring_vlm_options(cfg, "full"),
+                    threshold=WORTHINESS_THRESHOLD,
+                    timestamp=float(frame.get("timestamp") or 0),
+                    frame_path=path,
+                    retry_delay_s=vlm_retry_delay,
+                    keep_alive=cfg.get("vlm_keep_alive"),
+                    schema="full",
+                )
+            return payload
+
+        backfill_clip_captions(
+            provisional,
+            score_frame=_backfill_one,
+            max_frames=int(cfg.get("caption_backfill_max_frames", 150)),
+            counters=backfill_stats,
+        )
+        print(
+            "  Caption backfill: "
+            f"attempted={backfill_stats['caption_backfill_attempted']} "
+            f"succeeded={backfill_stats['caption_backfill_succeeded']} "
+            f"failed={backfill_stats['caption_backfill_failed']}"
+        )
+
     manifest = {
         "schema_version": 1,
         "stage": "refine",
@@ -3926,6 +4165,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
         "refine_responded": refine_responded,
         "refine_parsed": refine_parsed,
         "refine_failed": refine_failed,
+        **backfill_stats,
         "frames": scored_frames,
         "output_key": "refine",
     }
@@ -4307,9 +4547,10 @@ def _stage_rank_dedup(
                         model=provider.get("model", "llava:13b"),
                         image_bytes=frame_file.read(),
                         prompt=get_score_prompt(
-                            cfg.get("score_prompt_mode", "default")
+                            cfg.get("score_prompt_mode", "default"),
+                            schema="full",
                         ),
-                        options=vlm_options,
+                        options=_scoring_vlm_options(cfg, "full"),
                         threshold=cfg["worthiness_threshold"],
                         timestamp=timestamp_s,
                         frame_path=frame_path,

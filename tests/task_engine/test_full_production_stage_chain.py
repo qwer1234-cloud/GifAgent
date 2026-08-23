@@ -180,6 +180,9 @@ def _make_full_config(work_base: Path, export_base: Path, vlm_port: int,
             "clear_output_dir": False,
             "vlm_temperature": 0.65, "vlm_top_p": 0.95,
             "vlm_top_k": 60,
+            # Explicit: this E2E chain asserts request counts against the
+            # legacy full-schema scoring loop. two_tier adds backfill calls.
+            "score_schema_mode": "legacy",
         },
         "preference_memory": {"enabled": False},
         "models": {},

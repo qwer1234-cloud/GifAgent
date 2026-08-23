@@ -167,8 +167,9 @@ def test_settings_action_checkboxes_load_after_transition_fields(
     _, _, adaptive_fields, _, _ = settings.load_config()
 
     assert adaptive_fields[7:12] == [False, "2.5", "0.5", False, True]
-    assert adaptive_fields[-2] == "default"
-    assert adaptive_fields[-1] == "1"
+    assert adaptive_fields[-3] == "default"
+    assert adaptive_fields[-2] == "1"
+    assert adaptive_fields[-1] == "legacy"
 
 
 def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
@@ -184,7 +185,7 @@ def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "20", "5",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "adult", "6",
+        "0.65", "1.0", "0", "24", "adult", "6", "two_tier",
         False, "0.5", "0.5", "",
     )
 
@@ -193,6 +194,7 @@ def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
     assert saved["adaptive"]["score_prompt_mode"] == "adult"
     assert saved["adaptive"]["single_frame_max_duration_s"] == 5.0
     assert saved["adaptive"]["frame_extract_workers"] == 6
+    assert saved["adaptive"]["score_schema_mode"] == "two_tier"
 
 
 def test_settings_save_rewrites_stale_wsl_ollama_urls(tmp_path, monkeypatch):
@@ -214,7 +216,7 @@ def test_settings_save_rewrites_stale_wsl_ollama_urls(tmp_path, monkeypatch):
         "llava:13b", "http://172.27.227.98:11434",
         "10", "12", "0.55", "0.2", "0.5", "20", "",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "adult", "6",
+        "0.65", "1.0", "0", "24", "adult", "6", "legacy",
         False, "0.5", "0.5", "",
     )
 
@@ -250,7 +252,7 @@ def test_settings_reject_invalid_action_relationship_without_writing(
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "3", "",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "default", "6",
+        "0.65", "1.0", "0", "24", "default", "6", "legacy",
         False, "0.5", "0.5", "",
     )
 
@@ -280,7 +282,7 @@ def test_settings_reject_malformed_number_without_writing(
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "not-a-number", "",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "default", "6",
+        "0.65", "1.0", "0", "24", "default", "6", "legacy",
         False, "0.5", "0.5", "",
     )
 

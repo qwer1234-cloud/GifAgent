@@ -75,3 +75,9 @@ adaptive:
   # Coarse/refine extraction is pure I/O + CPU decode; 16GB VRAM setups can
   # run several ffmpeg processes alongside GPU scoring without contention.
   frame_extract_workers: 6
+  # two_tier: coarse/refine emit numeric scores; captions are backfilled
+  # only on each clip's best_frame. legacy = previous full-schema scoring.
+  score_schema_mode: two_tier
+  caption_backfill_max_frames: 150
+  vlm_num_predict_score: 48
+  vlm_num_predict_caption: 320

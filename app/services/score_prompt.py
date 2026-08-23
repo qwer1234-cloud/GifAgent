@@ -16,6 +16,14 @@ SCORE_PROMPT_MODE_ALIASES = {
     "optimized": "adult",
     "nsfw": "adult",
 }
+SCORE_SCHEMA_MODES = ("legacy", "two_tier")
+SCORE_SCHEMA_MODE_ALIASES = {
+    "": "legacy",
+    "legacy": "legacy",
+    "full": "legacy",
+    "two_tier": "two_tier",
+    "score": "two_tier",
+}
 
 
 def normalize_score_prompt_mode(value: Any, *, strict: bool = True) -> str:
@@ -28,4 +36,17 @@ def normalize_score_prompt_mode(value: Any, *, strict: bool = True) -> str:
     raise ValueError(
         "adaptive.score_prompt_mode must be one of "
         f"{list(SCORE_PROMPT_MODES)} (aliases: optimized, nsfw), got {value!r}"
+    )
+
+
+def normalize_score_schema_mode(value: Any, *, strict: bool = True) -> str:
+    """Return the canonical ``legacy`` or ``two_tier`` scoring schema."""
+    key = "" if value is None else str(value).strip().lower()
+    if key in SCORE_SCHEMA_MODE_ALIASES:
+        return SCORE_SCHEMA_MODE_ALIASES[key]
+    if not strict:
+        return "legacy"
+    raise ValueError(
+        "adaptive.score_schema_mode must be one of "
+        f"{list(SCORE_SCHEMA_MODES)}, got {value!r}"
     )
