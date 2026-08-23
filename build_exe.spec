@@ -73,6 +73,7 @@ hiddenimports += [
     "app.services.action_pipeline",
     "app.services.export_ranking",
     "app.services.gif_windows",
+    "app.services.stage_timing",
     "app.services.transition_candidates",
     "app.services.transition_guard",
     "app.quality_moe",

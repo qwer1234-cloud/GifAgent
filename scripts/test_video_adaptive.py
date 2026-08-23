@@ -9,6 +9,7 @@ Two-pass adaptive GIF extraction:
 from __future__ import annotations
 
 import atexit
+import functools
 import sys
 import os
 import subprocess
@@ -64,6 +65,7 @@ from app.services.transition_guard import guard_candidate_window
 from app.services.temporal_evidence import TemporalEvidenceCache
 from app.services.json_guard import parse_json_response
 from app.services.score_prompt import normalize_score_prompt_mode
+from app.services.stage_timing import StageTimings
 from app.services.llm_client import generate_llm_text, is_local_llm, llm_model_name, wait_for_llm
 from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
 from app.services.quality import validate_frame_analysis, normalize_emotional_core
@@ -72,6 +74,55 @@ from app.quality_moe.evaluator import QualityBatchResult, evaluate_candidates
 from app.quality_moe.judge import OllamaQualityJudge
 from app.quality_moe.models import EvidenceStatus, QualityAssessment, QualityDecision, RepairRecipe, RepairValidation
 from app.quality_moe.repair import build_ffmpeg_filter
+
+# ---------------------------------------------------------------------------
+# Timing instrumentation.
+#
+# Each stage runs in its own subprocess, so a module-level collector maps
+# one-to-one onto one stage's work.  ``reset_timings()`` exists for the
+# in-process test harnesses that drive several stages back to back.
+# ---------------------------------------------------------------------------
+
+_TIMINGS = StageTimings()
+
+
+def reset_timings() -> StageTimings:
+    """Start a fresh collection window and return the active collector."""
+    global _TIMINGS
+    _TIMINGS = StageTimings()
+    return _TIMINGS
+
+
+def current_timings() -> StageTimings:
+    """Return the collector accumulating this process's samples."""
+    return _TIMINGS
+
+
+def _timed(metric: str):
+    """Record every call to the decorated function under *metric*."""
+
+    def decorate(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            with _TIMINGS.span(metric):
+                return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def _attach_timings(manifest: dict) -> dict:
+    """Attach the collected timings to *manifest* when anything was measured.
+
+    The key is additive: manifests written before this existed, and stages
+    that measure nothing, simply carry no ``timings``.
+    """
+    payload = _TIMINGS.to_dict()
+    if payload:
+        manifest["timings"] = payload
+    return manifest
+
 
 # ---- Helpers (kept at module level, no side effects) ---------------
 
@@ -310,6 +361,17 @@ def _validate_vlm_provider(config_data: dict | None) -> dict:
     return vlm_cfg
 
 
+def _response_eval_count(response_json: object) -> int:
+    """Return the Ollama-reported generated token count, or 0 if absent."""
+    if not isinstance(response_json, dict):
+        return 0
+    try:
+        count = int(response_json.get("eval_count") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return count if count > 0 else 0
+
+
 def _score_vlm_frame(
     base_url: str,
     model: str,
@@ -349,96 +411,107 @@ def _score_vlm_frame(
 
     img_b64 = base64.b64encode(image_bytes).decode("utf-8")
     last_error: str | None = None
+    # Tokens are summed across retries because every attempt really was
+    # generated; the latency sample is the wall time the caller waited,
+    # retry backoff included.
+    generated_tokens = 0
+    started_at = time.perf_counter()
 
-    for attempt in range(3):
-        try:
-            resp = httpx.post(
-                f"{base_url}/api/generate",
-                json={
-                    "model": model, "prompt": prompt,
-                    "images": [img_b64], "stream": False,
-                    "format": "json",
-                    "think": False,
-                    "options": options,
-                },
-                timeout=120,
-            )
-            resp.raise_for_status()
-            response_json = resp.json()
-            raw = response_json.get("response", "")
-            # Read + validate the raw gif_worthiness BEFORE parse_vlm_response
-            # (validate_frame_analysis coerces bool->float, drops unconvertible
-            # strings to None, and even raises on float("high") - all of which
-            # would hide invalid values from the strict check).
-            # Use parse_json_response so LLaVA prose/markdown wrappers still
-            # yield the JSON object; json.loads(raw) rejects those.
-            raw_worthiness: object = None
-            parse_error_msg: str | None = None
-            parsed_result = parse_json_response(raw if isinstance(raw, str) else "")
-            raw_parsed = parsed_result.data
-            if isinstance(raw_parsed, list) and raw_parsed and isinstance(raw_parsed[0], dict):
-                raw_parsed = raw_parsed[0]
-            if not parsed_result.ok or not isinstance(raw_parsed, dict):
-                parse_error_msg = (
-                    f"parse_error: {parsed_result.error or 'response JSON is not an object'}"
-                    f"; raw={str(raw)[:120]!r}"
+    try:
+        for attempt in range(3):
+            try:
+                resp = httpx.post(
+                    f"{base_url}/api/generate",
+                    json={
+                        "model": model, "prompt": prompt,
+                        "images": [img_b64], "stream": False,
+                        "format": "json",
+                        "think": False,
+                        "options": options,
+                    },
+                    timeout=120,
                 )
-            else:
-                raw_worthiness = raw_parsed.get("gif_worthiness")
+                resp.raise_for_status()
+                response_json = resp.json()
+                generated_tokens += _response_eval_count(response_json)
+                raw = response_json.get("response", "")
+                # Read + validate the raw gif_worthiness BEFORE parse_vlm_response
+                # (validate_frame_analysis coerces bool->float, drops unconvertible
+                # strings to None, and even raises on float("high") - all of which
+                # would hide invalid values from the strict check).
+                # Use parse_json_response so LLaVA prose/markdown wrappers still
+                # yield the JSON object; json.loads(raw) rejects those.
+                raw_worthiness: object = None
+                parse_error_msg: str | None = None
+                parsed_result = parse_json_response(raw if isinstance(raw, str) else "")
+                raw_parsed = parsed_result.data
+                if isinstance(raw_parsed, list) and raw_parsed and isinstance(raw_parsed[0], dict):
+                    raw_parsed = raw_parsed[0]
+                if not parsed_result.ok or not isinstance(raw_parsed, dict):
+                    parse_error_msg = (
+                        f"parse_error: {parsed_result.error or 'response JSON is not an object'}"
+                        f"; raw={str(raw)[:120]!r}"
+                    )
+                else:
+                    raw_worthiness = raw_parsed.get("gif_worthiness")
 
-            if parse_error_msg is not None:
-                last_error = (
-                    f"{parse_error_msg} after {attempt + 1} attempt(s)"
-                )
-                if attempt < 2:
-                    time.sleep(retry_delay_s)
-                    continue
-                return None, last_error
+                if parse_error_msg is not None:
+                    last_error = (
+                        f"{parse_error_msg} after {attempt + 1} attempt(s)"
+                    )
+                    if attempt < 2:
+                        time.sleep(retry_delay_s)
+                        continue
+                    return None, last_error
 
-            # Strict worthiness validation (seventh-review Task 2 Step 1).
-            worth = raw_worthiness
-            if (
-                isinstance(worth, bool)
-                or not isinstance(worth, (int, float))
-                or not math.isfinite(float(worth))
-                or not 0.0 <= float(worth) <= 1.0
-            ):
-                last_error = (
-                    f"invalid gif_worthiness: expected finite number in "
-                    f"[0, 1], got {worth!r}"
-                )
-                if attempt < 2:
-                    time.sleep(retry_delay_s)
-                    continue
-                return None, last_error
+                # Strict worthiness validation (seventh-review Task 2 Step 1).
+                worth = raw_worthiness
+                if (
+                    isinstance(worth, bool)
+                    or not isinstance(worth, (int, float))
+                    or not math.isfinite(float(worth))
+                    or not 0.0 <= float(worth) <= 1.0
+                ):
+                    last_error = (
+                        f"invalid gif_worthiness: expected finite number in "
+                        f"[0, 1], got {worth!r}"
+                    )
+                    if attempt < 2:
+                        time.sleep(retry_delay_s)
+                        continue
+                    return None, last_error
 
-            # Worth is valid - now run the quality-gate parser for caption
-            # and other non-critical fields.  parse_vlm_response will not
-            # raise because worth is already a valid finite number.
-            parsed = parse_vlm_response(raw)
-            if parsed.get("_parse_error"):
-                last_error = (
-                    f"parse_error after {attempt + 1} attempt(s): "
-                    f"{parsed.get('_raw', '')[:120]}"
-                )
-                if attempt < 2:
-                    time.sleep(retry_delay_s)
-                    continue
-                return None, last_error
+                # Worth is valid - now run the quality-gate parser for caption
+                # and other non-critical fields.  parse_vlm_response will not
+                # raise because worth is already a valid finite number.
+                parsed = parse_vlm_response(raw)
+                if parsed.get("_parse_error"):
+                    last_error = (
+                        f"parse_error after {attempt + 1} attempt(s): "
+                        f"{parsed.get('_raw', '')[:120]}"
+                    )
+                    if attempt < 2:
+                        time.sleep(retry_delay_s)
+                        continue
+                    return None, last_error
 
-            parsed["gif_worthiness"] = float(worth)
-            parsed["sex_act"] = sex_act_score(raw_parsed)
-            parsed["timestamp"] = timestamp
-            parsed["path"] = frame_path
-            return parsed, None
+                parsed["gif_worthiness"] = float(worth)
+                parsed["sex_act"] = sex_act_score(raw_parsed)
+                parsed["timestamp"] = timestamp
+                parsed["path"] = frame_path
+                return parsed, None
 
-        except Exception as e:
-            last_error = str(e)
-            if attempt == 2:
-                return None, last_error
-            time.sleep(retry_delay_s)
+            except Exception as e:
+                last_error = str(e)
+                if attempt == 2:
+                    return None, last_error
+                time.sleep(retry_delay_s)
 
-    return None, last_error or "exhausted 3 retries"
+        return None, last_error or "exhausted 3 retries"
+    finally:
+        _TIMINGS.observe_vlm(
+            generated_tokens, (time.perf_counter() - started_at) * 1000.0
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -596,6 +669,7 @@ def _ollama_command(runtime: VlmRuntimeConfig, *args: str) -> list[str]:
     )
 
 
+@_timed("model_wait")
 def stop_model(name: str, runtime: VlmRuntimeConfig | None = None) -> bool:
     """Stop an Ollama model and wait until it's fully unloaded from GPU.
 
@@ -627,6 +701,7 @@ def stop_model(name: str, runtime: VlmRuntimeConfig | None = None) -> bool:
     return False
 
 
+@_timed("model_wait")
 def wait_model(name: str, runtime: VlmRuntimeConfig | None = None,
                timeout_s: int = 120) -> bool:
     """Wait for an Ollama model to be ready, loading it if needed.
@@ -1649,23 +1724,24 @@ def run_pipeline(
 
         for i, ts in enumerate(timestamps):
             out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-ss",
-                    str(ts),
-                    "-i",
-                    video_path,
-                    "-vf",
-                    "scale=640:-1",
-                    "-vframes",
-                    "1",
-                    out_path,
-                ],
-                capture_output=True,
-                timeout=15,
-            )
+            with _TIMINGS.span("extract"):
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-ss",
+                        str(ts),
+                        "-i",
+                        video_path,
+                        "-vf",
+                        "scale=640:-1",
+                        "-vframes",
+                        "1",
+                        out_path,
+                    ],
+                    capture_output=True,
+                    timeout=15,
+                )
             if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
                 try:
                     img = Image.open(out_path).convert("L")
@@ -1782,23 +1858,24 @@ def run_pipeline(
             refine_frames = []
             for ts in sorted(refine_ts):
                 out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-ss",
-                        str(ts),
-                        "-i",
-                        video_path,
-                        "-vf",
-                        "scale=640:-1",
-                        "-vframes",
-                        "1",
-                        out_path,
-                    ],
-                    capture_output=True,
-                    timeout=15,
-                )
+                with _TIMINGS.span("extract"):
+                    subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-ss",
+                            str(ts),
+                            "-i",
+                            video_path,
+                            "-vf",
+                            "scale=640:-1",
+                            "-vframes",
+                            "1",
+                            out_path,
+                        ],
+                        capture_output=True,
+                        timeout=15,
+                    )
                 if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
                     try:
                         img = Image.open(out_path).convert("L")
@@ -1907,23 +1984,24 @@ def run_pipeline(
                 f"action_{clip_index:04d}_{safe_label}_{timestamp_s:.3f}.jpg",
             )
             try:
-                extracted = subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-ss",
-                        str(timestamp_s),
-                        "-i",
-                        video_path,
-                        "-vf",
-                        "scale=640:-1",
-                        "-vframes",
-                        "1",
-                        frame_path,
-                    ],
-                    capture_output=True,
-                    timeout=15,
-                )
+                with _TIMINGS.span("extract"):
+                    extracted = subprocess.run(
+                        [
+                            "ffmpeg",
+                            "-y",
+                            "-ss",
+                            str(timestamp_s),
+                            "-i",
+                            video_path,
+                            "-vf",
+                            "scale=640:-1",
+                            "-vframes",
+                            "1",
+                            frame_path,
+                        ],
+                        capture_output=True,
+                        timeout=15,
+                    )
                 if extracted.returncode != 0 or not os.path.exists(frame_path):
                     return None
                 payload, error = _score_frame_file(frame_path, timestamp_s)
@@ -2383,38 +2461,39 @@ def run_pipeline(
             repair_applied=repair_recipe is not None,
         )
 
-        attempt = run_gif_export_attempt(
-            palette_command=[
-                "ffmpeg",
-                "-y",
-                "-ss",
-                _ffmpeg_seconds(start),
-                "-t",
-                _ffmpeg_seconds(duration),
-                "-i",
-                video_path,
-                "-vf",
-                f"{ffmpeg_filter},palettegen",
-                palette,
-            ],
-            gif_command=[
-                "ffmpeg",
-                "-y",
-                "-ss",
-                _ffmpeg_seconds(start),
-                "-t",
-                _ffmpeg_seconds(duration),
-                "-i",
-                video_path,
-                "-i",
-                palette,
-                "-filter_complex",
-                f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
-                out_gif,
-            ],
-            palette_path=palette,
-            output_path=out_gif,
-        )
+        with _TIMINGS.span("gif_export"):
+            attempt = run_gif_export_attempt(
+                palette_command=[
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    _ffmpeg_seconds(start),
+                    "-t",
+                    _ffmpeg_seconds(duration),
+                    "-i",
+                    video_path,
+                    "-vf",
+                    f"{ffmpeg_filter},palettegen",
+                    palette,
+                ],
+                gif_command=[
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    _ffmpeg_seconds(start),
+                    "-t",
+                    _ffmpeg_seconds(duration),
+                    "-i",
+                    video_path,
+                    "-i",
+                    palette,
+                    "-filter_complex",
+                    f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
+                    out_gif,
+                ],
+                palette_path=palette,
+                output_path=out_gif,
+            )
         gif_export_results.append(
             {
                 "index": i + 1,
@@ -2663,9 +2742,14 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
     vlm_runtime = _materialize_vlm_runtime(
         _resolve_vlm_runtime(config_data), config_data
     )
-    output = run_pipeline(
-        video_path, FRAMES_DIR, EXPORT_DIR, cfg, vlm_runtime=vlm_runtime
-    )
+    timings = reset_timings()
+    with timings.span("stage"):
+        output = run_pipeline(
+            video_path, FRAMES_DIR, EXPORT_DIR, cfg, vlm_runtime=vlm_runtime
+        )
+    timing_payload = timings.to_dict()
+    if timing_payload:
+        output["timings"] = timing_payload
 
     # Save result
     with open("data/adaptive_test_result.json", "w", encoding="utf-8") as f:
@@ -2820,21 +2904,23 @@ def run_stage_mode(
     sys.stdout = _TeeIO(log_file, old_stdout)
     sys.stderr = _TeeIO(log_file, old_stderr)
 
+    timings = reset_timings()
     try:
         live = _attach_live_vlm_base_url(cfg, config_data)
         if live:
             print(f"  [stage runtime] vlm_base_url={live}", flush=True)
-        output = _run_stage(
-            stage,
-            video_path=video_path,
-            frames_dir=FRAMES_DIR,
-            export_dir=EXPORT_DIR,
-            work_dir=work_dir,
-            cfg=cfg,
-            input_manifest=input_manifest,
-            clip_id=clip_id,
-            config_data=config_data,
-        )
+        with timings.span("stage"):
+            output = _run_stage(
+                stage,
+                video_path=video_path,
+                frames_dir=FRAMES_DIR,
+                export_dir=EXPORT_DIR,
+                work_dir=work_dir,
+                cfg=cfg,
+                input_manifest=input_manifest,
+                clip_id=clip_id,
+                config_data=config_data,
+            )
     finally:
         sys.stdout.flush()
         sys.stderr.flush()
@@ -2862,6 +2948,9 @@ def run_stage_mode(
         "artifacts": artifacts,
         "metrics": metrics,
     }
+    timing_payload = timings.to_dict()
+    if timing_payload:
+        result["timings"] = timing_payload
 
     # Write atomically
     tmp_path = result_path + ".tmp"
@@ -2914,8 +3003,21 @@ def _load_manifest(work_dir: str, stage_name: str, prior_work_dirs: dict[str, st
     return {}
 
 
-def _save_manifest(work_dir: str, stage_name: str, data: dict) -> str:
-    """Save *data* as the manifest for *stage_name*, return the path."""
+def _save_manifest(
+    work_dir: str,
+    stage_name: str,
+    data: dict,
+    *,
+    include_timings: bool = True,
+) -> str:
+    """Save *data* as the manifest for *stage_name*, return the path.
+
+    Stage manifests carry a ``timings`` block so throughput is auditable
+    per run.  Strictly-shaped side artifacts such as the rank candidate
+    ledger opt out.
+    """
+    if include_timings:
+        _attach_timings(data)
     manifest_name = _MANIFEST_NAME.get(stage_name, f"{stage_name}_manifest.json")
     path = os.path.join(work_dir, manifest_name)
     with open(path, "w", encoding="utf-8") as f:
@@ -3219,11 +3321,12 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
         out_path = os.path.abspath(
             os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
         )
-        subprocess.run(
-            ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
-             "-vf", "scale=640:-1", "-vframes", "1", out_path],
-            capture_output=True, timeout=15,
-        )
+        with _TIMINGS.span("extract"):
+            subprocess.run(
+                ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
+                 "-vf", "scale=640:-1", "-vframes", "1", out_path],
+                capture_output=True, timeout=15,
+            )
         if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
             try:
                 img = Image.open(out_path).convert("L")
@@ -3627,11 +3730,12 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
         for ts in sorted(refine_ts):
             out_path = os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
             # Task 3 Step 2: check ffmpeg extraction result explicitly.
-            completed = subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
-                 "-vf", "scale=640:-1", "-vframes", "1", out_path],
-                capture_output=True, timeout=15,
-            )
+            with _TIMINGS.span("extract"):
+                completed = subprocess.run(
+                    ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
+                     "-vf", "scale=640:-1", "-vframes", "1", out_path],
+                    capture_output=True, timeout=15,
+                )
             if completed.returncode != 0:
                 refine_extraction_failed += 1
                 print(f"  refine extract FAILED ts={ts}: "
@@ -3912,7 +4016,9 @@ def _write_rank_candidate_ledger(
         ],
     }
     ledger_path = os.path.abspath(
-        _save_manifest(work_dir, "rank_candidate_ledger", ledger)
+        _save_manifest(
+            work_dir, "rank_candidate_ledger", ledger, include_timings=False
+        )
     )
     with open(ledger_path, "rb") as ledger_file:
         raw = ledger_file.read()
@@ -4100,15 +4206,16 @@ def _stage_rank_dedup(
                 f"action_{clip_index:04d}_{safe_label}_{timestamp_s:.3f}.jpg",
             )
             try:
-                extracted = subprocess.run(
-                    [
-                        "ffmpeg", "-y", "-ss", str(timestamp_s), "-i",
-                        video_path, "-vf", "scale=640:-1", "-vframes", "1",
-                        frame_path,
-                    ],
-                    capture_output=True,
-                    timeout=15,
-                )
+                with _TIMINGS.span("extract"):
+                    extracted = subprocess.run(
+                        [
+                            "ffmpeg", "-y", "-ss", str(timestamp_s), "-i",
+                            video_path, "-vf", "scale=640:-1", "-vframes", "1",
+                            frame_path,
+                        ],
+                        capture_output=True,
+                        timeout=15,
+                    )
                 if extracted.returncode != 0 or not os.path.exists(frame_path):
                     return None
                 with open(frame_path, "rb") as frame_file:
@@ -4447,22 +4554,23 @@ def _stage_gif_clip(
         config_hash=str(cfg["quality_moe_config_hash"]),
         repair_applied=repair_recipe is not None,
     )
-    attempt = run_gif_export_attempt(
-        palette_command=[
-            "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
-            "-i", video_path,
-            "-vf", f"{ffmpeg_filter},palettegen",
-            palette_path,
-        ],
-        gif_command=[
+    with _TIMINGS.span("gif_export"):
+        attempt = run_gif_export_attempt(
+            palette_command=[
+                "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
+                "-i", video_path,
+                "-vf", f"{ffmpeg_filter},palettegen",
+                palette_path,
+            ],
+            gif_command=[
                 "ffmpeg", "-y", "-ss", ffmpeg_start, "-t", ffmpeg_duration,
                 "-i", video_path, "-i", palette_path,
                 "-lavfi", f"{ffmpeg_filter}[x];[x][1:v]paletteuse",
                 gif_path,
             ],
-        palette_path=palette_path,
-        output_path=gif_path,
-    )
+            palette_path=palette_path,
+            output_path=gif_path,
+        )
     print(
         format_gif_export_line(
             video_name=video_name,
