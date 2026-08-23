@@ -28,9 +28,13 @@ adaptive:
   min_brightness: 10
   output_ratio: 0.45
   max_output: 35
-  vlm_temperature: 0.50
-  vlm_top_p: 0.90
-  vlm_top_k: 40
+  # Greedy, seeded decoding. Every downstream threshold (worthiness,
+  # refine, merge) is built on these scores, so re-running a video must
+  # reproduce them exactly or A/B comparisons are meaningless.
+  vlm_temperature: 0.0
+  vlm_top_p: 1.0
+  vlm_top_k: 1
+  vlm_seed: 20260823
   # GIF stores frame delays in centiseconds, so gif_fps must divide 100 or
   # playback is unevenly rounded. 24 -> 25 removes that stutter.
   gif_fps: 25

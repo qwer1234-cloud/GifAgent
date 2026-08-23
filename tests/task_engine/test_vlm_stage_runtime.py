@@ -70,6 +70,7 @@ class _StubServer:
                     payload = {}
                 server.requests.append({
                     "path": self.path, "model": payload.get("model", ""),
+                    "options": payload.get("options"),
                 })
                 resp = json.dumps(server.response_payload).encode("utf-8")
                 self.send_response(200)
@@ -714,6 +715,62 @@ def test_score_vlm_frame_accepts_json_wrapped_in_prose(tmp_path):
         assert payload["gif_worthiness"] == 0.8
     finally:
         stub.stop()
+
+
+class TestDeterministicScoring:
+    """Seeded greedy decoding is opt-in; default snapshots are untouched."""
+
+    def _score_once(self, mod, stub, tmp_path, cfg):
+        return mod._score_vlm_frame(
+            base_url=stub.base_url, model="stub-vlm",
+            image_bytes=b"\xff\xd8\xff\xe0" + b"\x00" * 20,
+            prompt="score", options=mod._vlm_options(cfg), threshold=0.5,
+            timestamp=0.0, frame_path=str(tmp_path / "frame.jpg"),
+            retry_delay_s=0.0,
+        )
+
+    def test_default_snapshot_carries_no_seed(self):
+        mod = _load_stage_module()
+        cfg = mod.extract_config({"adaptive": {}})
+
+        assert cfg["vlm_seed"] is None
+        assert "seed" not in mod._vlm_options(cfg)
+
+    def test_unset_seed_keeps_the_request_body_byte_identical(self, tmp_path):
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            cfg = mod.extract_config({"adaptive": {}})
+            self._score_once(mod, stub, tmp_path, cfg)
+
+            sent = [r for r in stub.requests if r["path"] == "/api/generate"]
+            assert "seed" not in sent[0]["options"]
+            assert set(sent[0]["options"]) == {
+                "temperature", "top_p", "top_k", "num_think"
+            }
+        finally:
+            stub.stop()
+
+    def test_configured_seed_reaches_the_request_body(self, tmp_path):
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            cfg = mod.extract_config({"adaptive": {"vlm_seed": 7}})
+            self._score_once(mod, stub, tmp_path, cfg)
+
+            sent = [r for r in stub.requests if r["path"] == "/api/generate"]
+            assert sent[0]["options"]["seed"] == 7
+        finally:
+            stub.stop()
+
+    @pytest.mark.parametrize("value", [True, "seven", 1.5, float("nan")])
+    def test_a_non_integer_seed_is_rejected_at_config_freeze(self, value):
+        mod = _load_stage_module()
+
+        with pytest.raises(ValueError, match="vlm_seed"):
+            mod.extract_config({"adaptive": {"vlm_seed": value}})
 
 
 # Task 2 Step 5: unit-level retry count protection

@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 from app.services.gif_encode import is_divisible_gif_fps
+from app.task_engine.fingerprints import canonical_hash
 from app.ui.tabs import settings
 from scripts import test_video_adaptive
 from scripts.test_video_adaptive import (
@@ -667,6 +668,30 @@ def test_shipped_configs_use_a_centisecond_divisible_frame_rate():
         assert is_divisible_gif_fps(fps), (
             f"configs/{name} gif_fps={fps} does not divide 100"
         )
+
+
+def test_shipped_configs_pin_a_deterministic_scoring_seed():
+    for name in ("models.yaml", "models.adult_candidate.yaml"):
+        adaptive = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "configs" / name).read_text(
+                encoding="utf-8"
+            )
+        )["adaptive"]
+
+        assert adaptive["vlm_temperature"] == 0.0
+        assert adaptive["vlm_top_p"] == 1.0
+        assert adaptive["vlm_top_k"] == 1
+        assert isinstance(adaptive["vlm_seed"], int)
+
+
+def test_vlm_seed_changes_the_job_level_config_hash():
+    """Reproducibility depends on the seed being part of the job identity."""
+    unseeded = canonical_hash({"adaptive": {"sample_interval": 4}})
+    seeded = canonical_hash(
+        {"adaptive": {"sample_interval": 4, "vlm_seed": 20260823}}
+    )
+
+    assert unseeded != seeded
 
 
 def test_an_indivisible_frame_rate_warns_once_without_raising(capsys):

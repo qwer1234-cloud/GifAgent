@@ -880,6 +880,9 @@ def extract_config(config_data: dict) -> dict:
         "vlm_temperature": float(adaptive.get("vlm_temperature", 0.65)),
         "vlm_top_p": float(adaptive.get("vlm_top_p", 0.95)),
         "vlm_top_k": int(adaptive.get("vlm_top_k", 60)),
+        # None means "send no seed", which keeps default snapshots
+        # byte-identical to the pre-seed request body.
+        "vlm_seed": _optional_seed(adaptive.get("vlm_seed")),
         "score_prompt_mode": normalize_score_prompt_mode(
             adaptive.get("score_prompt_mode", "default")
         ),
@@ -923,6 +926,39 @@ def extract_config(config_data: dict) -> dict:
     _palette_filters_for(config)
     _warn_once_on_indivisible_fps(config["gif_fps"])
     return config
+
+
+def _optional_seed(value: object) -> int | None:
+    """Parse ``adaptive.vlm_seed``; ``None``/absent means "send no seed".
+
+    Booleans and non-integers are rejected rather than coerced, so a typo
+    cannot silently disable reproducibility.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"vlm_seed must be an integer or null, got {value!r}"
+        )
+    return value
+
+
+def _vlm_options(cfg: dict) -> dict:
+    """Build the Ollama sampling options shared by every scoring call site.
+
+    ``seed`` is only present when configured, so an unmodified snapshot
+    produces the exact request body the pipeline has always sent.
+    """
+    options = {
+        "temperature": cfg["vlm_temperature"],
+        "top_p": cfg["vlm_top_p"],
+        "top_k": cfg["vlm_top_k"],
+        "num_think": 0,
+    }
+    seed = cfg.get("vlm_seed")
+    if seed is not None:
+        options["seed"] = int(seed)
+    return options
 
 
 def _single_frame_cap(cfg: dict, max_duration: float) -> float:
@@ -1738,12 +1774,7 @@ def run_pipeline(
     BASE_SCORE_WEIGHT = cfg["base_score_weight"]
     PREFERENCE_SCORE_WEIGHT = cfg["preference_score_weight"]
 
-    VLM_OPTIONS = {
-        "temperature": cfg["vlm_temperature"],
-        "top_p": cfg["vlm_top_p"],
-        "top_k": cfg["vlm_top_k"],
-        "num_think": 0,
-    }
+    VLM_OPTIONS = _vlm_options(cfg)
     SCORE_PROMPT_MODE = cfg.get("score_prompt_mode", "default")
     score_prompt = get_score_prompt(SCORE_PROMPT_MODE)
     vlm_retry_delay_s = vlm_runtime.retry_delay_s if vlm_runtime else 2.0
@@ -3615,12 +3646,7 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     vlm_model = vlm_rt.model
     vlm_base_url = vlm_rt.base_url
     vlm_retry_delay = vlm_rt.retry_delay_s
-    VLM_OPTIONS = {
-        "temperature": cfg["vlm_temperature"],
-        "top_p": cfg["vlm_top_p"],
-        "top_k": cfg["vlm_top_k"],
-        "num_think": 0,
-    }
+    VLM_OPTIONS = _vlm_options(cfg)
 
     # Task 4: explicit lifecycle.  manage_lifecycle=False or launch_mode=none
     # skips ALL model lifecycle (no WSL subprocess, no sleep).
@@ -3751,12 +3777,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     vlm_model = vlm_rt.model
     vlm_base_url = vlm_rt.base_url
     vlm_retry_delay = vlm_rt.retry_delay_s
-    VLM_OPTIONS = {
-        "temperature": cfg["vlm_temperature"],
-        "top_p": cfg["vlm_top_p"],
-        "top_k": cfg["vlm_top_k"],
-        "num_think": 0,
-    }
+    VLM_OPTIONS = _vlm_options(cfg)
     if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
         print(
             f"  [refine] waiting for VLM {vlm_model} at {vlm_rt.base_url}",
@@ -4236,10 +4257,7 @@ def _stage_rank_dedup(
         "action_max_duration_s": normalized_action["max_duration"],
     }
     vlm_cfg: dict | None = None
-    vlm_options = {
-        "temperature": cfg["vlm_temperature"], "top_p": cfg["vlm_top_p"],
-        "top_k": cfg["vlm_top_k"], "num_think": 0,
-    }
+    vlm_options = _vlm_options(cfg)
 
     for clip_index, clip in enumerate(clips):
         def resolve_vlm() -> dict:
