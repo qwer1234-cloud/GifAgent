@@ -167,9 +167,10 @@ def test_settings_action_checkboxes_load_after_transition_fields(
     _, _, adaptive_fields, _, _ = settings.load_config()
 
     assert adaptive_fields[7:12] == [False, "2.5", "0.5", False, True]
-    assert adaptive_fields[-3] == "default"
-    assert adaptive_fields[-2] == "1"
-    assert adaptive_fields[-1] == "legacy"
+    assert adaptive_fields[-4] == "default"
+    assert adaptive_fields[-3] == "1"
+    assert adaptive_fields[-2] == "legacy"
+    assert adaptive_fields[-1] == "1"
 
 
 def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
@@ -185,7 +186,7 @@ def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "20", "5",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "adult", "6", "two_tier",
+        "0.65", "1.0", "0", "24", "adult", "6", "two_tier", "2",
         False, "0.5", "0.5", "",
     )
 
@@ -195,6 +196,7 @@ def test_settings_save_score_prompt_mode(tmp_path, monkeypatch):
     assert saved["adaptive"]["single_frame_max_duration_s"] == 5.0
     assert saved["adaptive"]["frame_extract_workers"] == 6
     assert saved["adaptive"]["score_schema_mode"] == "two_tier"
+    assert saved["adaptive"]["vlm_score_workers"] == 2
 
 
 def test_settings_save_rewrites_stale_wsl_ollama_urls(tmp_path, monkeypatch):
@@ -216,7 +218,7 @@ def test_settings_save_rewrites_stale_wsl_ollama_urls(tmp_path, monkeypatch):
         "llava:13b", "http://172.27.227.98:11434",
         "10", "12", "0.55", "0.2", "0.5", "20", "",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "adult", "6", "legacy",
+        "0.65", "1.0", "0", "24", "adult", "6", "legacy", "2",
         False, "0.5", "0.5", "",
     )
 
@@ -252,7 +254,7 @@ def test_settings_reject_invalid_action_relationship_without_writing(
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "3", "",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "default", "6", "legacy",
+        "0.65", "1.0", "0", "24", "default", "6", "legacy", "2",
         False, "0.5", "0.5", "",
     )
 
@@ -282,7 +284,7 @@ def test_settings_reject_malformed_number_without_writing(
         "", "",
         "10", "12", "0.55", "0.2", "0.5", "not-a-number", "",
         True, "2", "0.25", True, True,
-        "0.65", "1.0", "0", "24", "default", "6", "legacy",
+        "0.65", "1.0", "0", "24", "default", "6", "legacy", "2",
         False, "0.5", "0.5", "",
     )
 
@@ -718,6 +720,59 @@ def test_vlm_seed_changes_the_job_level_config_hash():
     )
 
     assert unseeded != seeded
+
+
+def test_extract_config_concurrency_and_quality_defaults():
+    cfg = extract_config({"adaptive": {}})
+
+    assert cfg["vlm_score_workers"] == 1
+    assert cfg["frame_extract_workers"] == 1
+    assert cfg["score_schema_mode"] == "legacy"
+    assert cfg["boundary_snap_enabled"] is False
+    assert cfg["boundary_snap_radius_s"] == 0.6
+    assert cfg["score_calibration_enabled"] is False
+    assert cfg["score_calibration_path"] == ""
+
+
+def test_performance_worker_keys_stay_out_of_action_and_quality_hashes():
+    baseline = extract_config({"adaptive": {}})
+    tuned = extract_config(
+        {
+            "adaptive": {
+                "vlm_score_workers": 4,
+                "frame_extract_workers": 8,
+            }
+        }
+    )
+
+    assert tuned["action_config_hash"] == baseline["action_config_hash"]
+    assert tuned["quality_moe_config_hash"] == baseline["quality_moe_config_hash"]
+
+
+def test_output_affecting_snap_and_calibration_change_job_identity():
+    baseline = {"adaptive": {"sample_interval": 4}}
+    snapped = {"adaptive": {"sample_interval": 4, "boundary_snap_enabled": True}}
+    calibrated = {
+        "adaptive": {
+            "sample_interval": 4,
+            "score_calibration_enabled": True,
+            "score_calibration_path": "cal.json",
+        }
+    }
+    workers = {"adaptive": {"sample_interval": 4, "vlm_score_workers": 3}}
+
+    assert canonical_hash(baseline) != canonical_hash(snapped)
+    assert canonical_hash(baseline) != canonical_hash(calibrated)
+    snap_cfg = extract_config(snapped)
+    cal_cfg = extract_config(calibrated)
+    worker_cfg = extract_config(workers)
+    frozen = extract_config(baseline)
+    assert snap_cfg["action_config_hash"] == frozen["action_config_hash"]
+    assert cal_cfg["action_config_hash"] == frozen["action_config_hash"]
+    assert worker_cfg["action_config_hash"] == frozen["action_config_hash"]
+    assert snap_cfg["quality_moe_config_hash"] == frozen["quality_moe_config_hash"]
+    assert cal_cfg["quality_moe_config_hash"] == frozen["quality_moe_config_hash"]
+    assert worker_cfg["quality_moe_config_hash"] == frozen["quality_moe_config_hash"]
 
 
 def test_an_indivisible_frame_rate_warns_once_without_raising(capsys):

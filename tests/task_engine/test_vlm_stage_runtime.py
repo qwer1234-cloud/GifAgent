@@ -1598,3 +1598,150 @@ class TestVlmLegacyRelativeArtifactIdRecovery:
                 str(frames_dir), str(work_dir), self._cfg(mod), inputs,
                 self._config_data(),
             )
+
+
+class TestVlmScoreConcurrency:
+    """Task 11: intra-stage VLM scoring concurrency helper."""
+
+    def test_results_ordered_by_timestamp_regardless_of_completion(self):
+        mod = _load_stage_module()
+        frames = [{"timestamp": 30}, {"timestamp": 10}, {"timestamp": 20}]
+
+        def score_one(frame):
+            time.sleep(0.02 * (40 - frame["timestamp"]) / 10)
+            return {"gif_worthiness": 0.9, "timestamp": frame["timestamp"]}, None
+
+        results = mod._score_frames_concurrent(
+            frames, score_one=score_one, workers=3,
+        )
+        assert [item.frame["timestamp"] for item in results] == [10, 20, 30]
+
+    def test_workers_one_preserves_call_order(self):
+        mod = _load_stage_module()
+        calls: list[int] = []
+        frames = [{"timestamp": ts} for ts in (10, 20, 30)]
+
+        def score_one(frame):
+            calls.append(frame["timestamp"])
+            return {"gif_worthiness": 0.5, "timestamp": frame["timestamp"]}, None
+
+        mod._score_frames_concurrent(frames, score_one=score_one, workers=1)
+        assert calls == [10, 20, 30]
+
+    def test_failure_is_attributed_to_the_right_timestamp(self):
+        mod = _load_stage_module()
+        frames = [{"timestamp": ts} for ts in (10, 20, 30)]
+
+        def score_one(frame):
+            if frame["timestamp"] == 20:
+                return None, "invalid gif_worthiness: expected finite number"
+            return {"gif_worthiness": 0.8, "timestamp": frame["timestamp"]}, None
+
+        results = mod._score_frames_concurrent(
+            frames, score_one=score_one, workers=3,
+        )
+        by_ts = {item.frame["timestamp"]: item for item in results}
+        assert by_ts[20].payload is None
+        assert "invalid gif_worthiness" in (by_ts[20].error or "")
+        assert by_ts[10].payload is not None
+        assert by_ts[30].payload is not None
+
+    def test_exception_in_one_frame_does_not_lose_others(self):
+        mod = _load_stage_module()
+        frames = [{"timestamp": ts} for ts in (10, 20, 30)]
+
+        def score_one(frame):
+            if frame["timestamp"] == 20:
+                raise RuntimeError("boom")
+            return {"gif_worthiness": 0.8, "timestamp": frame["timestamp"]}, None
+
+        results = mod._score_frames_concurrent(
+            frames, score_one=score_one, workers=3,
+        )
+        by_ts = {item.frame["timestamp"]: item for item in results}
+        assert by_ts[10].payload is not None
+        assert by_ts[30].payload is not None
+        assert by_ts[20].payload is None
+        assert "boom" in (by_ts[20].error or "")
+
+    def test_stage_vlm_counters_match_serial_and_concurrent(
+        self, tmp_path, monkeypatch,
+    ):
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            counts = {}
+            for workers in (1, 2):
+                work_dir, frames_dir, frame_path, sm_path = (
+                    _one_frame_sample_fixture(tmp_path / f"w{workers}")
+                )
+                extra = frames_dir / "ts_000020.jpg"
+                extra.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+                sm = json.loads(sm_path.read_text(encoding="utf-8"))
+                sm["frame_count"] = 2
+                sm["timestamps"] = [10, 20]
+                sm["frame_paths"] = [str(frame_path), str(extra)]
+                sm["frame_entries"] = [
+                    {"artifact_id": "aid-1", "timestamp": 10, "path": str(frame_path)},
+                    {"artifact_id": "aid-2", "timestamp": 20, "path": str(extra)},
+                ]
+                sm_path.write_text(json.dumps(sm), encoding="utf-8")
+                cfg = mod.extract_config({
+                    "adaptive": {"vlm_score_workers": workers},
+                    "preference_memory": {},
+                })
+                config_data = {
+                    "vlm": {
+                        "provider": "ollama",
+                        "model": "stub-vlm",
+                        "base_url": stub.base_url,
+                        "manage_lifecycle": False,
+                        "launch_mode": "none",
+                        "retry_delay_s": 0.0,
+                    },
+                }
+                inputs = {
+                    "sample_manifest": [
+                        {"artifact_id": "s", "path": str(sm_path), "clip_id": None}
+                    ],
+                    "sample_frames": [
+                        {
+                            "artifact_id": "aid-1",
+                            "path": str(frame_path),
+                            "clip_id": None,
+                            "sha256": hashlib.sha256(
+                                frame_path.read_bytes()
+                            ).hexdigest(),
+                            "size_bytes": frame_path.stat().st_size,
+                        },
+                        {
+                            "artifact_id": "aid-2",
+                            "path": str(extra),
+                            "clip_id": None,
+                            "sha256": hashlib.sha256(
+                                extra.read_bytes()
+                            ).hexdigest(),
+                            "size_bytes": extra.stat().st_size,
+                        },
+                    ],
+                }
+                monkeypatch.setattr(mod, "wait_model", lambda *a, **k: True)
+                out = mod._stage_vlm(
+                    str(frames_dir), str(work_dir), cfg, inputs, config_data,
+                )
+                manifest = json.loads(
+                    Path(out["_artifacts"][0]["path"]).read_text(encoding="utf-8")
+                )
+                counts[workers] = (
+                    manifest["attempted_count"],
+                    manifest["parsed_count"],
+                    manifest["failed_count"],
+                    [frame["timestamp"] for frame in manifest["frames"]],
+                )
+            assert counts[1] == counts[2]
+            assert counts[1][0] == 2
+            assert counts[1][3] == sorted(counts[1][3])
+        finally:
+            stub.stop()
+

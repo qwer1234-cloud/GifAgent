@@ -132,7 +132,7 @@ def extract_frames(
     jpeg_quality: int = 3,
     workers: int = 1,
     timeout_s: float = 15.0,
-    runner: Callable = subprocess.run,
+    runner: Callable | None = None,
 ) -> list[FrameExtractResult]:
     """Extract one frame per timestamp, optionally with bounded concurrency.
 
@@ -148,6 +148,8 @@ def extract_frames(
     ts_list = sorted(float(t) for t in timestamps)
     if not ts_list:
         return []
+    if runner is None:
+        runner = subprocess.run
 
     os.makedirs(out_dir, exist_ok=True)
     worker_count = max(1, min(int(workers), len(ts_list)))

@@ -5,7 +5,7 @@ import hashlib
 from PIL import Image
 import pytest
 
-from app.services import action_pipeline
+from app.services import action_pipeline, frame_extract
 from app.services.transition_guard import GuardSegment, TransitionGuardResult
 from scripts import test_video_adaptive
 
@@ -66,11 +66,16 @@ def _run_direct_pipeline_fixture(
             return SimpleNamespace(
                 stdout=f"{total_duration_s}\n", returncode=0
             )
-        Path(command[-1]).parent.mkdir(parents=True, exist_ok=True)
-        source_frame.save(command[-1], "JPEG", quality=95)
+        out_path = Path(command[-1])
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        source_frame.save(out_path, "JPEG", quality=95)
+        # Direct-path callers keep frames only when they exceed 500 bytes.
+        if out_path.stat().st_size <= 500:
+            out_path.write_bytes(out_path.read_bytes() + b"\x00" * 512)
         return SimpleNamespace(stdout="", returncode=0)
 
     monkeypatch.setattr(test_video_adaptive.subprocess, "run", fake_run)
+    monkeypatch.setattr(frame_extract.subprocess, "run", fake_run)
     monkeypatch.setattr(test_video_adaptive, "stop_model", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(test_video_adaptive, "wait_model", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(test_video_adaptive, "wait_for_llm", lambda **_kwargs: False)
@@ -127,7 +132,15 @@ def _run_direct_pipeline_fixture(
 
     def fake_rescore(**kwargs):
         frame_name = Path(str(kwargs.get("frame_path", ""))).name
-        if not frame_name.startswith("action_"):
+        timestamp = kwargs.get("timestamp")
+        # Action rescore used to write action_*.jpg; the shared extractor
+        # now emits frame_{millis}.jpg. The empty split segment is at 12s.
+        is_action_rescore = (
+            frame_name.startswith("action_")
+            or timestamp == 12
+            or timestamp == 12.0
+        )
+        if not is_action_rescore:
             return real_score(**kwargs)
         rescore_calls.append(kwargs)
         return ({

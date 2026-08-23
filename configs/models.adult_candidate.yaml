@@ -75,9 +75,17 @@ adaptive:
   # Coarse/refine extraction is pure I/O + CPU decode; 16GB VRAM setups can
   # run several ffmpeg processes alongside GPU scoring without contention.
   frame_extract_workers: 6
+  # Overlap two VLM HTTP calls inside vlm/refine. Pair with OLLAMA_NUM_PARALLEL=2.
+  # Fall back to 1 if p50 latency rises (KV cache / VRAM pressure).
+  vlm_score_workers: 2
   # two_tier: coarse/refine emit numeric scores; captions are backfilled
   # only on each clip's best_frame. legacy = previous full-schema scoring.
   score_schema_mode: two_tier
   caption_backfill_max_frames: 150
   vlm_num_predict_score: 48
   vlm_num_predict_caption: 320
+  # Leave off until a blind A/B says they win. Defaults match current windows.
+  boundary_snap_enabled: false
+  boundary_snap_radius_s: 0.6
+  score_calibration_enabled: false
+  score_calibration_path: ""

@@ -147,6 +147,20 @@ def test_workers_greater_than_timestamp_count_does_not_oversubscribe(tmp_path):
     assert peak <= 2, f"only 2 timestamps but saw {peak} concurrent calls"
 
 
+def test_default_runner_is_resolved_at_call_time(tmp_path, monkeypatch):
+    seen: list[list[str]] = []
+
+    def patched_run(cmd, **kwargs):
+        seen.append(cmd)
+        return _FakeCompleted(0)
+
+    monkeypatch.setattr(
+        "app.services.frame_extract.subprocess.run", patched_run
+    )
+    extract_frames("video.mp4", [1.0], str(tmp_path))
+    assert seen and seen[0][0] == "ffmpeg"
+
+
 def test_empty_timestamps_returns_empty_list_without_touching_out_dir(tmp_path):
     missing_dir = tmp_path / "does_not_exist_yet"
     results = extract_frames(

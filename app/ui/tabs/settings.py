@@ -58,6 +58,7 @@ CONFIG_FIELD_KEYS = (
     "adaptive.score_prompt_mode",
     "adaptive.frame_extract_workers",
     "adaptive.score_schema_mode",
+    "adaptive.vlm_score_workers",
     "preference_memory.enabled",
     "preference_memory.base_score_weight",
     "preference_memory.preference_score_weight",
@@ -92,6 +93,7 @@ CONFIG_FIELD_HELP = {
     "adaptive.score_prompt_mode": "VLM 打分提示词；default 为影视向，adult 为成人向中性 GIF 潜力。写入任务快照，运行时不再读取环境变量。",
     "adaptive.frame_extract_workers": "粗采样/细采样阶段并行抽帧的线程数；1 为原有串行行为。抽帧只占 I/O 与 CPU，不与 GPU 打分抢占资源。",
     "adaptive.score_schema_mode": "打分模式。legacy 每帧都生成完整描述；two_tier 粗/细采样只打分，合并后再给每段最佳帧补描述，显著减少输出 token。",
+    "adaptive.vlm_score_workers": "同一阶段内并行打分的线程数；1 为原有串行。提高会占用更多显存（权重 + KV cache），需配合 OLLAMA_NUM_PARALLEL。若单帧耗时变长请降回 1。",
     "preference_memory.enabled": "是否启用基于用户反馈构建偏好画像并参与后续排序。",
     "preference_memory.base_score_weight": "导出排序中原始 VLM gif_worthiness 评分的权重；与偏好权重按比例归一化。",
     "preference_memory.preference_score_weight": "导出排序中已发布偏好画像评分的权重；与原始评分权重按比例归一化。",
@@ -107,6 +109,7 @@ CONFIG_FIELD_LABELS = {
     "adaptive.score_prompt_mode": "score_prompt_mode",
     "adaptive.frame_extract_workers": "frame_extract_workers (threads)",
     "adaptive.score_schema_mode": "score_schema_mode",
+    "adaptive.vlm_score_workers": "vlm_score_workers (threads)",
 }
 
 CONFIG_TOOLTIP_CSS = """
@@ -255,7 +258,7 @@ def load_config():
         return (
             [str(e)] * 7,
             [str(e)] * 2,
-            [str(e)] * 19,
+            [str(e)] * 20,
             [False, "0.50", "0.50"],
             "",
         )
@@ -302,6 +305,7 @@ def load_config():
         normalize_score_schema_mode(
             adaptive.get("score_schema_mode", "legacy"), strict=False
         ),
+        str(adaptive.get("vlm_score_workers", 1)),
     ]
     pm_fields = [
         bool(pm.get("enabled", False)),
@@ -324,6 +328,7 @@ def save_config(
     ad_action_guard_enabled, ad_action_vlm_verify_enabled,
     ad_vlm_temperature, ad_output_ratio, ad_max_output, ad_gif_fps,
     ad_score_prompt_mode, ad_frame_extract_workers, ad_score_schema_mode,
+    ad_vlm_score_workers,
     pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_text,
 ):
     """Save edited fields back to configs/models.yaml, preserving other sections."""
@@ -394,6 +399,7 @@ def save_config(
         adaptive["score_schema_mode"] = normalize_score_schema_mode(
             ad_score_schema_mode
         )
+        adaptive["vlm_score_workers"] = max(1, int(ad_vlm_score_workers))
         freeze_action_config(adaptive)
 
         cfg.setdefault("preference_memory", {})
@@ -520,6 +526,9 @@ def build_settings_tab(context) -> None:
                     choices=list(SCORE_SCHEMA_MODES),
                     value="legacy",
                 )
+                ad_vlm_score_workers = config_textbox(
+                    "adaptive.vlm_score_workers", value=""
+                )
 
             with gr.Accordion("Preference Memory", open=True):
                 gr.Markdown("### Preference Memory")
@@ -556,6 +565,7 @@ def build_settings_tab(context) -> None:
         ad_action_vlm_verify_enabled,         ad_vlm_temperature, ad_output_ratio,
         ad_max_output, ad_gif_fps, ad_score_prompt_mode,
         ad_frame_extract_workers, ad_score_schema_mode,
+        ad_vlm_score_workers,
         pm_enabled, pm_base_score_weight, pm_preference_score_weight, raw_yaml,
     ]
     save_btn.click(fn=save_config, inputs=all_inputs, outputs=[config_status, raw_yaml])

@@ -13,6 +13,8 @@ import functools
 import sys
 import os
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import dataclass, replace
 import json
@@ -53,7 +55,12 @@ from app.services.export_cleanup import (
     ExportDirectoryLock,
     cleanup_adaptive_export_dir,
 )
+from app.services.boundary_snap import guard_result_from_cut_times, snap_window
 from app.services.frame_extract import extract_frames
+from app.services.score_calibration import (
+    apply_calibrated_worthiness,
+    load_calibrator,
+)
 from app.services.export_ranking import (
     make_adult_moe_scorer,
     rank_clips_for_export,
@@ -431,6 +438,7 @@ def _score_vlm_frame(
     retry_delay_s: float = 2.0,
     keep_alive: str | None = None,
     schema: str = "full",
+    calibrator=None,
 ) -> tuple[dict | None, str | None]:
     """Score one frame via the Ollama-compatible VLM endpoint.
 
@@ -541,7 +549,7 @@ def _score_vlm_frame(
                 if schema == "score":
                     # Two-tier coarse/refine: no caption to quality-gate.
                     # Worthiness validation and sex_act extraction stay strict.
-                    return {
+                    parsed = {
                         "caption": "",
                         "emotional_core": "?",
                         "aesthetic_notes": [],
@@ -551,7 +559,10 @@ def _score_vlm_frame(
                         "sex_act": sex_act_score(raw_parsed),
                         "timestamp": timestamp,
                         "path": frame_path,
-                    }, None
+                    }
+                    if calibrator is not None:
+                        apply_calibrated_worthiness(parsed, calibrator)
+                    return parsed, None
 
                 # Worth is valid - now run the quality-gate parser for caption
                 # and other non-critical fields.  parse_vlm_response will not
@@ -571,6 +582,8 @@ def _score_vlm_frame(
                 parsed["sex_act"] = sex_act_score(raw_parsed)
                 parsed["timestamp"] = timestamp
                 parsed["path"] = frame_path
+                if calibrator is not None:
+                    apply_calibrated_worthiness(parsed, calibrator)
                 return parsed, None
 
             except Exception as e:
@@ -981,6 +994,11 @@ def extract_config(config_data: dict) -> dict:
         "frame_extract_workers": max(
             1, int(adaptive.get("frame_extract_workers", 1))
         ),
+        # 1 = current serial scoring. >1 overlaps VLM HTTP calls inside
+        # one stage; Ollama must allow matching NUM_PARALLEL.
+        "vlm_score_workers": max(
+            1, int(adaptive.get("vlm_score_workers", 1))
+        ),
         "score_prompt_mode": normalize_score_prompt_mode(
             adaptive.get("score_prompt_mode", "default")
         ),
@@ -997,6 +1015,18 @@ def extract_config(config_data: dict) -> dict:
         ),
         "vlm_num_predict_caption": _optional_int(
             adaptive.get("vlm_num_predict_caption")
+        ),
+        "boundary_snap_enabled": bool(
+            adaptive.get("boundary_snap_enabled", False)
+        ),
+        "boundary_snap_radius_s": float(
+            adaptive.get("boundary_snap_radius_s", 0.6)
+        ),
+        "score_calibration_enabled": bool(
+            adaptive.get("score_calibration_enabled", False)
+        ),
+        "score_calibration_path": str(
+            adaptive.get("score_calibration_path", "") or ""
         ),
         # 0 disables the dark-frame prefilter. Default 25 preserves legacy behavior.
         "min_brightness": float(adaptive.get("min_brightness", 25)),
@@ -1072,6 +1102,59 @@ def _scoring_schema(cfg: dict) -> str:
     return "score" if cfg.get("score_schema_mode") == "two_tier" else "full"
 
 
+def _resolve_score_calibrator(cfg: dict, model_id: str):
+    """Load the frozen calibrator when the snapshot asks for it."""
+    if not cfg.get("score_calibration_enabled"):
+        return None
+    path = str(cfg.get("score_calibration_path") or "").strip()
+    if not path:
+        return None
+    return load_calibrator(
+        path,
+        model_id=str(model_id or ""),
+        prompt_mode=str(cfg.get("score_prompt_mode") or "default"),
+    )
+
+
+def _apply_boundary_snaps(
+    clips: list[dict],
+    video_path: str,
+    cfg: dict,
+    cache: TemporalEvidenceCache,
+) -> dict:
+    """Snap each clip window after transition guard, before dedup."""
+    stats = {"snapped": 0, "kept": 0, "unavailable": 0}
+    if not cfg.get("boundary_snap_enabled") or not clips:
+        return stats
+    radius = float(cfg.get("boundary_snap_radius_s", 0.6))
+    for clip in clips:
+        # ``guarded_export_window`` only means "export uses start_ts/end_ts
+        # instead of re-centering".  Snap still refines those bounds, but
+        # never crosses hard cuts recorded on the clip.
+        result = snap_window(
+            video_path,
+            float(clip.get("start_ts") or 0),
+            float(clip.get("end_ts") or 0),
+            radius_s=radius,
+            guard_result=guard_result_from_cut_times(
+                clip.get("hard_cut_timestamps")
+            ),
+            config=cfg,
+            cache=cache,
+            guarded_export_window=False,
+        )
+        clip["start_ts"] = result.start_s
+        clip["end_ts"] = result.end_s
+        clip["snap_action"] = result.snap_action
+        stats[result.snap_action] = stats.get(result.snap_action, 0) + 1
+    print(
+        "  Boundary snap: "
+        f"snapped={stats['snapped']} kept={stats['kept']} "
+        f"unavailable={stats['unavailable']}"
+    )
+    return stats
+
+
 def _scoring_vlm_options(cfg: dict, schema: str = "full") -> dict:
     """VLM sampling options plus the schema-specific ``num_predict`` cap."""
     options = dict(_vlm_options(cfg))
@@ -1141,6 +1224,68 @@ def backfill_clip_captions(
     stats["caption_backfill_succeeded"] = succeeded
     stats["caption_backfill_failed"] = failed
     return clips
+
+
+@dataclass
+class _ScoredItem:
+    frame: dict
+    payload: dict | None
+    error: str | None
+
+
+def _score_frames_concurrent(
+    frames: list[dict],
+    *,
+    score_one,
+    workers: int = 1,
+    on_progress=None,
+    timestamp_key: str = "timestamp",
+) -> list[_ScoredItem]:
+    """Score *frames* with bounded concurrency.
+
+    ``workers=1`` issues calls in the given order (today's serial
+    behavior).  Any ``workers>1`` uses a thread pool; one frame's
+    exception becomes an error on that item and does not drop siblings.
+    Returned items are always sorted by timestamp so manifests stay
+    byte-reproducible.  ``on_progress(completed, total, item)`` fires on
+    completion count, not submission order.
+    """
+    if not frames:
+        return []
+    worker_count = max(1, min(int(workers), len(frames)))
+    completed = 0
+    lock = threading.Lock()
+    results: list[_ScoredItem | None] = [None] * len(frames)
+
+    def _run(index: int, frame: dict) -> _ScoredItem:
+        nonlocal completed
+        try:
+            payload, error = score_one(frame)
+        except Exception as exc:
+            payload, error = None, str(exc)
+        item = _ScoredItem(frame=frame, payload=payload, error=error)
+        with lock:
+            completed += 1
+            done = completed
+            results[index] = item
+        if on_progress is not None:
+            on_progress(done, len(frames), item)
+        return item
+
+    if worker_count == 1:
+        for index, frame in enumerate(frames):
+            _run(index, frame)
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            futures = [
+                pool.submit(_run, index, frame)
+                for index, frame in enumerate(frames)
+            ]
+            for future in futures:
+                future.result()
+
+    ordered = [item for item in results if item is not None]
+    return sorted(ordered, key=lambda item: float(item.frame.get(timestamp_key) or 0))
 
 
 def _vlm_options(cfg: dict) -> dict:
@@ -1983,6 +2128,7 @@ def run_pipeline(
     VLM_MODEL = vlm_runtime.model if vlm_runtime else "llava:13b"
     VLM_BASE_URL = vlm_runtime.base_url if vlm_runtime else OLLAMA_BASE
     LLM_MODEL = llm_model_name()
+    score_calibrator = _resolve_score_calibrator(cfg, VLM_MODEL)
     print(f"  VLM: {VLM_MODEL}  prompt={SCORE_PROMPT_MODE}")
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -2085,6 +2231,7 @@ def run_pipeline(
                 retry_delay_s=vlm_retry_delay_s,
                 keep_alive=cfg.get("vlm_keep_alive"),
                 schema=used_schema,
+                calibrator=score_calibrator,
             )
 
     scored = list(resumed_scored or [])
@@ -2100,18 +2247,33 @@ def run_pipeline(
             f"{len(scored)} kept at threshold={WORTHINESS_THRESHOLD}"
         )
     else:
-        for fi, sf in enumerate(sample_frames):
-            payload, error = _score_frame_file(sf["path"], sf["timestamp"])
-            if payload is None:
-                print(f"  [{fi+1}] FAILED: {error}")
-            elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
-                scored.append(payload)
-            if (fi + 1) % 30 == 0:
-                avg = sum(s["gif_worthiness"] for s in scored) / max(1, len(scored))
+        progress_kept: list[dict] = []
+        kept_lock = threading.Lock()
+
+        def _progress(done: int, total: int, item: _ScoredItem) -> None:
+            if item.payload is None:
+                print(f"  [{done}] FAILED: {item.error}")
+            elif item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                with kept_lock:
+                    progress_kept.append(item.payload)
+            if done % 30 == 0:
+                with kept_lock:
+                    kept = list(progress_kept)
+                avg = sum(s["gif_worthiness"] for s in kept) / max(1, len(kept))
                 print(
-                    f"  [{fi+1}/{len(sample_frames)}] scored={len(scored)} kept, "
+                    f"  [{done}/{total}] scored={len(kept)} kept, "
                     f"avg_worth={avg:.2f}"
                 )
+
+        results = _score_frames_concurrent(
+            sample_frames,
+            score_one=lambda sf: _score_frame_file(sf["path"], sf["timestamp"]),
+            workers=int(cfg.get("vlm_score_workers", 1)),
+            on_progress=_progress,
+        )
+        for item in results:
+            if item.payload is not None and item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                scored.append(item.payload)
 
     print(f"  Scored: {len(scored)} frames kept (threshold={WORTHINESS_THRESHOLD})")
 
@@ -2176,19 +2338,36 @@ def run_pipeline(
 
             print(f"  Refinement frames after filter: {len(refine_frames)}", flush=True)
 
-            for fi, rf in enumerate(refine_frames):
-                payload, error = _score_frame_file(rf["path"], rf["timestamp"])
-                if payload is None:
-                    print(f"  refine [{fi+1}] FAILED: {error}", flush=True)
-                elif payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
-                    scored.append(payload)
+            refine_kept = 0
+            refine_lock = threading.Lock()
 
-                if (fi + 1) % 10 == 0 or (fi + 1) == len(refine_frames):
+            def _refine_progress(done: int, total: int, item: _ScoredItem) -> None:
+                nonlocal refine_kept
+                if item.payload is None:
+                    print(f"  refine [{done}] FAILED: {item.error}", flush=True)
+                elif item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                    with refine_lock:
+                        refine_kept += 1
+                if done % 10 == 0 or done == total:
+                    with refine_lock:
+                        kept = refine_kept + len(scored)
                     print(
-                        f"  refine [{fi+1}/{len(refine_frames)}] done, "
-                        f"scored={len(scored)}",
+                        f"  refine [{done}/{total}] done, scored={kept}",
                         flush=True,
                     )
+
+            refine_results = _score_frames_concurrent(
+                refine_frames,
+                score_one=lambda rf: _score_frame_file(rf["path"], rf["timestamp"]),
+                workers=int(cfg.get("vlm_score_workers", 1)),
+                on_progress=_refine_progress,
+            )
+            for item in refine_results:
+                if (
+                    item.payload is not None
+                    and item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD
+                ):
+                    scored.append(item.payload)
 
             print(f"  After refinement: {len(scored)} total scored frames")
 
@@ -2370,6 +2549,9 @@ def run_pipeline(
                 )
 
     clips = materialized_clips
+    snap_stats = _apply_boundary_snaps(
+        clips, video_path, cfg, evidence_cache,
+    )
     print(
         "  Guard: "
         f"{transition_guard['input']} input -> {len(clips)} clean candidates "
@@ -2897,6 +3079,7 @@ def run_pipeline(
         "potplayer_pbf_path": potplayer_pbf_path,
         "dedup_input_clips": dedup_input_clips,
         "transition_guard": transition_guard,
+        "boundary_snap": snap_stats,
         "action_guard": action_guard,
         "action_config_hash": cfg.get("action_config_hash"),
         "action_input_count": int(action_guard["input"]),
@@ -3828,6 +4011,7 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     vlm_retry_delay = vlm_rt.retry_delay_s
     coarse_schema = _scoring_schema(cfg)
     VLM_OPTIONS = _scoring_vlm_options(cfg, coarse_schema)
+    score_calibrator = _resolve_score_calibrator(cfg, vlm_model)
 
     # Task 4: explicit lifecycle.  manage_lifecycle=False or launch_mode=none
     # skips ALL model lifecycle (no WSL subprocess, no sleep).
@@ -3852,15 +4036,15 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     response_count = 0
     parsed_count = 0
     failed_count = 0
+    progress_kept: list[dict] = []
+    scored_lock = threading.Lock()
 
-    for fi, vf in enumerate(validated_frames):
+    def _score_one_validated(vf: dict) -> tuple[dict | None, str | None]:
         fpath = vf["path"]
         ts = vf["timestamp"]
-        with open(fpath, "rb") as f:
-            img_data = f.read()
-
-        attempted_count += 1
-        payload, error = _score_vlm_frame(
+        with open(fpath, "rb") as frame_file:
+            img_data = frame_file.read()
+        return _score_vlm_frame(
             base_url=vlm_base_url, model=vlm_model,
             image_bytes=img_data, prompt=get_score_prompt(
                 cfg.get("score_prompt_mode", "default"), schema=coarse_schema
@@ -3870,24 +4054,41 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
             retry_delay_s=vlm_retry_delay,
             keep_alive=cfg.get("vlm_keep_alive"),
             schema=coarse_schema,
+            calibrator=score_calibrator,
         )
 
-        if payload is not None:
+    def _vlm_progress(done: int, total: int, item: _ScoredItem) -> None:
+        if item.payload is None:
+            print(f"  [{done}] FAILED: {item.error}")
+        else:
+            worth = item.payload.get("gif_worthiness", 0.0)
+            if worth >= WORTHINESS_THRESHOLD:
+                with scored_lock:
+                    progress_kept.append(item.payload)
+                print(f"  [{done}] score={worth:.2f} KEPT")
+            else:
+                print(f"  [{done}] score={worth:.2f} below threshold")
+        if done % 30 == 0:
+            with scored_lock:
+                kept = list(progress_kept)
+            avg = sum(s["gif_worthiness"] for s in kept) / max(1, len(kept))
+            print(f"  [{done}/{total}] scored={len(kept)} kept, avg_worth={avg:.2f}")
+
+    vlm_results = _score_frames_concurrent(
+        validated_frames,
+        score_one=_score_one_validated,
+        workers=int(cfg.get("vlm_score_workers", 1)),
+        on_progress=_vlm_progress,
+    )
+    for item in vlm_results:
+        attempted_count += 1
+        if item.payload is not None:
             response_count += 1
             parsed_count += 1
-            worth = payload.get("gif_worthiness", 0.0)
-            if worth >= WORTHINESS_THRESHOLD:
-                scored.append(payload)
-                print(f"  [{fi + 1}] score={worth:.2f} KEPT")
-            else:
-                print(f"  [{fi + 1}] score={worth:.2f} below threshold")
+            if item.payload.get("gif_worthiness", 0.0) >= WORTHINESS_THRESHOLD:
+                scored.append(item.payload)
         else:
             failed_count += 1
-            print(f"  [{fi + 1}] FAILED: {error}")
-
-        if (fi + 1) % 30 == 0:
-            avg = sum(s["gif_worthiness"] for s in scored) / max(1, len(scored))
-            print(f"  [{fi + 1}/{len(validated_frames)}] scored={len(scored)} kept, avg_worth={avg:.2f}")
 
     # P0: ALL frames failed and there were frames to analyze -> stage MUST
     # fail (never produce a false zero-clip success from a service outage).
@@ -3963,6 +4164,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     vlm_retry_delay = vlm_rt.retry_delay_s
     coarse_schema = _scoring_schema(cfg)
     VLM_OPTIONS = _scoring_vlm_options(cfg, coarse_schema)
+    score_calibrator = _resolve_score_calibrator(cfg, vlm_model)
     if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
         print(
             f"  [refine] waiting for VLM {vlm_model} at {vlm_rt.base_url}",
@@ -4051,11 +4253,10 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 f"extraction_failed={refine_extraction_failed}"
             )
 
-        for fi, rf in enumerate(refine_frames):
-            with open(rf["path"], "rb") as f:
-                img_data = f.read()
-            refine_attempted += 1
-            payload, error = _score_vlm_frame(
+        def _score_one_refine(rf: dict) -> tuple[dict | None, str | None]:
+            with open(rf["path"], "rb") as frame_file:
+                img_data = frame_file.read()
+            return _score_vlm_frame(
                 base_url=vlm_base_url, model=vlm_model,
                 image_bytes=img_data, prompt=get_score_prompt(
                     cfg.get("score_prompt_mode", "default"), schema=coarse_schema
@@ -4065,29 +4266,38 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 retry_delay_s=vlm_retry_delay,
                 keep_alive=cfg.get("vlm_keep_alive"),
                 schema=coarse_schema,
+                calibrator=score_calibrator,
             )
-            if payload is not None:
-                refine_responded += 1
-                refine_parsed += 1
-                worth = payload.get("gif_worthiness", 0.0)
-                if worth >= WORTHINESS_THRESHOLD:
-                    scored_frames.append(payload)
-                    print(f"  refine[{fi + 1}] score={worth:.2f} KEPT", flush=True)
-                else:
-                    print(
-                        f"  refine[{fi + 1}] score={worth:.2f} below threshold",
-                        flush=True,
-                    )
-            else:
-                refine_failed += 1
-                print(f"  refine[{fi + 1}] FAILED: {error}", flush=True)
 
-            if (fi + 1) % 10 == 0 or (fi + 1) == len(refine_frames):
+        def _refine_stage_progress(done: int, total: int, item: _ScoredItem) -> None:
+            if item.payload is None:
+                print(f"  refine[{done}] FAILED: {item.error}", flush=True)
+            else:
+                worth = item.payload.get("gif_worthiness", 0.0)
+                label = "KEPT" if worth >= WORTHINESS_THRESHOLD else "below threshold"
+                print(f"  refine[{done}] score={worth:.2f} {label}", flush=True)
+            if done % 10 == 0 or done == total:
                 print(
-                    f"  refine [{fi + 1}/{len(refine_frames)}] done, "
+                    f"  refine [{done}/{total}] done, "
                     f"scored={len(scored_frames)}",
                     flush=True,
                 )
+
+        refine_results = _score_frames_concurrent(
+            refine_frames,
+            score_one=_score_one_refine,
+            workers=int(cfg.get("vlm_score_workers", 1)),
+            on_progress=_refine_stage_progress,
+        )
+        for item in refine_results:
+            refine_attempted += 1
+            if item.payload is not None:
+                refine_responded += 1
+                refine_parsed += 1
+                if item.payload.get("gif_worthiness", 0.0) >= WORTHINESS_THRESHOLD:
+                    scored_frames.append(item.payload)
+            else:
+                refine_failed += 1
 
         # Task 2 Step 3: all-score-failed refine is a hard error too
         # (consistent with _stage_vlm).  Partial failure keeps going.
@@ -4097,6 +4307,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 f"frames failed to parse (0 parsed, {refine_failed} failed)."
             )
 
+    scored_frames.sort(key=lambda item: float(item.get("timestamp") or 0))
     print(f"  After refinement: {len(scored_frames)} total scored frames")
 
     backfill_stats = {
@@ -4137,6 +4348,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                     retry_delay_s=vlm_retry_delay,
                     keep_alive=cfg.get("vlm_keep_alive"),
                     schema="full",
+                    calibrator=score_calibrator,
                 )
             return payload
 
@@ -4391,6 +4603,8 @@ def _stage_rank_dedup(
         (config_data or {}).get("_stage_id") or "standalone-rank-stage"
     )
     _attach_live_vlm_base_url(cfg, config_data)
+    vlm_model = str(((config_data or {}).get("vlm") or {}).get("model") or "")
+    score_calibrator = _resolve_score_calibrator(cfg, vlm_model)
     clips = synth_manifest.get("clips", [])
     scored_frames = synth_manifest.get("scored_frames", [])
 
@@ -4558,6 +4772,8 @@ def _stage_rank_dedup(
                             provider.get("retry_delay_s", 2.0)
                         ),
                         keep_alive=cfg.get("vlm_keep_alive"),
+                        schema="full",
+                        calibrator=score_calibrator,
                     )
                 if payload is None:
                     print(
@@ -4660,6 +4876,9 @@ def _stage_rank_dedup(
         f"drop={transition_guard['drop']}, unverified={transition_guard['unverified']}, "
         f"action_split={action_guard['split']}, fallback={action_guard['fallback']})"
     )
+    snap_stats = _apply_boundary_snaps(
+        clean_clips, video_path, cfg, evidence_cache,
+    )
 
     import numpy as np
 
@@ -4749,6 +4968,7 @@ def _stage_rank_dedup(
         "clip_count": len(deduped_clips),
         "clips": deduped_clips,
         "transition_guard": transition_guard,
+        "boundary_snap": snap_stats,
         "action_guard": action_guard,
         "quality_moe": quality_moe,
         "output_key": "rank_dedup",
