@@ -16,7 +16,7 @@ from app.ui.workbench import load_layout_css
 
 def test_every_config_field_has_non_empty_chinese_tooltip_label():
     assert set(CONFIG_FIELD_HELP) == set(CONFIG_FIELD_KEYS)
-    assert len(CONFIG_FIELD_KEYS) == 29
+    assert len(CONFIG_FIELD_KEYS) == 30
     assert "preference_memory.base_score_weight" in CONFIG_FIELD_KEYS
     assert "preference_memory.preference_score_weight" in CONFIG_FIELD_KEYS
     assert "adaptive.score_prompt_mode" in CONFIG_FIELD_KEYS
@@ -27,6 +27,7 @@ def test_every_config_field_has_non_empty_chinese_tooltip_label():
         "adaptive.action_guard_enabled",
         "adaptive.action_vlm_verify_enabled",
         "adaptive.single_frame_max_duration_s",
+        "adaptive.frame_extract_workers",
     ):
         assert key in CONFIG_FIELD_KEYS
         assert any("\u4e00" <= char <= "\u9fff" for char in CONFIG_FIELD_HELP[key])

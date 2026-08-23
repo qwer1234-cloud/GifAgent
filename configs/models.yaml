@@ -194,6 +194,9 @@ adaptive:
   transition_rescore_split_segments: true
   # Frozen scoring prompt. default = cinematic; adult = sex-action GIF potential.
   score_prompt_mode: adult
+  # Coarse/refine extraction is pure I/O + CPU decode; 16GB VRAM setups can
+  # run several ffmpeg processes alongside GPU scoring without contention.
+  frame_extract_workers: 6
 
 # Previous baseline adaptive (pre-adult A/B):
 #   sample_interval: 10, merge_score_threshold: 0.50, worthiness_threshold: 0.50,

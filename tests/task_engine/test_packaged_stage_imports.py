@@ -16,6 +16,7 @@ _STAGE_DIRECT_IMPORTS = [
     "app.services.clip_merge",
     "app.services.action_pipeline",
     "app.services.export_ranking",
+    "app.services.frame_extract",
     "app.services.gif_encode",
     "app.services.gif_windows",
     "app.services.stage_timing",

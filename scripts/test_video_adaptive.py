@@ -53,6 +53,7 @@ from app.services.export_cleanup import (
     ExportDirectoryLock,
     cleanup_adaptive_export_dir,
 )
+from app.services.frame_extract import extract_frames
 from app.services.export_ranking import (
     make_adult_moe_scorer,
     rank_clips_for_export,
@@ -921,6 +922,11 @@ def extract_config(config_data: dict) -> dict:
         # other vlm_* keys above it is free to default to something other
         # than "no keep_alive sent" (see Task 7 in the throughput plan).
         "vlm_keep_alive": str(adaptive.get("vlm_keep_alive", "30m")),
+        # 1 = current serial behavior. Extraction is pure I/O + CPU decode,
+        # so it can run alongside GPU scoring without contention.
+        "frame_extract_workers": max(
+            1, int(adaptive.get("frame_extract_workers", 1))
+        ),
         "score_prompt_mode": normalize_score_prompt_mode(
             adaptive.get("score_prompt_mode", "default")
         ),
@@ -1862,33 +1868,23 @@ def run_pipeline(
         timestamps = list(range(SAMPLE_INTERVAL, int(total_duration), SAMPLE_INTERVAL))
         print(f"  Sampling {len(timestamps)} timestamps")
 
-        for i, ts in enumerate(timestamps):
-            out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
-            with _TIMINGS.span("extract"):
-                subprocess.run(
-                    [
-                        "ffmpeg",
-                        "-y",
-                        "-ss",
-                        str(ts),
-                        "-i",
-                        video_path,
-                        "-vf",
-                        "scale=640:-1",
-                        "-vframes",
-                        "1",
-                        out_path,
-                    ],
-                    capture_output=True,
-                    timeout=15,
-                )
-            if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
+        # One span covers the whole batch: with workers>1 the calls overlap
+        # in real time, so per-frame spans would over-count wall time if
+        # summed (see Task 8 in the throughput plan).
+        with _TIMINGS.span("extract"):
+            extraction_results = extract_frames(
+                video_path, timestamps, frames_dir,
+                workers=cfg.get("frame_extract_workers", 1),
+            )
+        for i, result in enumerate(extraction_results):
+            ts = int(result.timestamp_s)
+            if os.path.exists(result.path) and os.path.getsize(result.path) > 500:
                 try:
-                    img = Image.open(out_path).convert("L")
+                    img = Image.open(result.path).convert("L")
                     brightness = sum(img.getdata()) / max(1, img.width * img.height)
                     img.close()
                     if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
-                        sample_frames.append({"path": out_path, "timestamp": ts})
+                        sample_frames.append({"path": result.path, "timestamp": ts})
                     else:
                         dark_dropped += 1
                 except Exception:
@@ -1997,33 +1993,20 @@ def run_pipeline(
 
         if refine_ts:
             refine_frames = []
-            for ts in sorted(refine_ts):
-                out_path = f"{frames_dir}/ts_{ts:06d}.jpg"
-                with _TIMINGS.span("extract"):
-                    subprocess.run(
-                        [
-                            "ffmpeg",
-                            "-y",
-                            "-ss",
-                            str(ts),
-                            "-i",
-                            video_path,
-                            "-vf",
-                            "scale=640:-1",
-                            "-vframes",
-                            "1",
-                            out_path,
-                        ],
-                        capture_output=True,
-                        timeout=15,
-                    )
-                if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
+            with _TIMINGS.span("extract"):
+                extraction_results = extract_frames(
+                    video_path, sorted(refine_ts), frames_dir,
+                    workers=cfg.get("frame_extract_workers", 1),
+                )
+            for result in extraction_results:
+                ts = int(result.timestamp_s)
+                if os.path.exists(result.path) and os.path.getsize(result.path) > 500:
                     try:
-                        img = Image.open(out_path).convert("L")
+                        img = Image.open(result.path).convert("L")
                         brightness = sum(img.getdata()) / max(1, img.width * img.height)
                         img.close()
                         if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
-                            refine_frames.append({"path": out_path, "timestamp": ts})
+                            refine_frames.append({"path": result.path, "timestamp": ts})
                     except Exception:
                         pass
 
@@ -2119,33 +2102,14 @@ def run_pipeline(
 
     for clip_index, clip in enumerate(clips):
         def frame_scorer(timestamp_s: float, label: str) -> dict | None:
-            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label))
-            frame_path = os.path.join(
-                frames_dir,
-                f"action_{clip_index:04d}_{safe_label}_{timestamp_s:.3f}.jpg",
-            )
             try:
                 with _TIMINGS.span("extract"):
-                    extracted = subprocess.run(
-                        [
-                            "ffmpeg",
-                            "-y",
-                            "-ss",
-                            str(timestamp_s),
-                            "-i",
-                            video_path,
-                            "-vf",
-                            "scale=640:-1",
-                            "-vframes",
-                            "1",
-                            frame_path,
-                        ],
-                        capture_output=True,
-                        timeout=15,
-                    )
-                if extracted.returncode != 0 or not os.path.exists(frame_path):
+                    extracted = extract_frames(
+                        video_path, [timestamp_s], frames_dir, workers=1,
+                    )[0]
+                if not extracted.ok or not os.path.exists(extracted.path):
                     return None
-                payload, error = _score_frame_file(frame_path, timestamp_s)
+                payload, error = _score_frame_file(extracted.path, timestamp_s)
                 if payload is None:
                     print(
                         "  Action rescore dropped segment at "
@@ -3454,29 +3418,25 @@ def _stage_sample(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
 
     sample_frames = []
     dark_dropped = 0
-    for i, ts in enumerate(timestamps):
-        # Canonical path: the frame path stored in frame_entries and hashed
-        # into frame_entries[].artifact_id MUST use the same absolute
-        # representation that _make_artifact() reports and that the adapter
-        # persists into task_artifacts.  Hashing a raw relative
-        # data/task_work path here produced a different artifact_id than the
-        # one the VLM resolver reads, splitting sample -> vlm.
-        out_path = os.path.abspath(
-            os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
+    # Canonical path: the frame path stored in frame_entries and hashed into
+    # frame_entries[].artifact_id MUST use the same absolute representation
+    # that _make_artifact() reports and that the adapter persists into
+    # task_artifacts.  extract_frames() already returns absolute paths, so
+    # this stays true without any extra os.path.abspath() here.
+    with _TIMINGS.span("extract"):
+        extraction_results = extract_frames(
+            video_path, timestamps, frames_dir,
+            workers=cfg.get("frame_extract_workers", 1),
         )
-        with _TIMINGS.span("extract"):
-            subprocess.run(
-                ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
-                 "-vf", "scale=640:-1", "-vframes", "1", out_path],
-                capture_output=True, timeout=15,
-            )
-        if os.path.exists(out_path) and os.path.getsize(out_path) > 500:
+    for i, result in enumerate(extraction_results):
+        ts = int(result.timestamp_s)
+        if os.path.exists(result.path) and os.path.getsize(result.path) > 500:
             try:
-                img = Image.open(out_path).convert("L")
+                img = Image.open(result.path).convert("L")
                 brightness = sum(img.getdata()) / max(1, img.width * img.height)
                 img.close()
                 if MIN_BRIGHTNESS <= 0 or brightness > MIN_BRIGHTNESS:
-                    sample_frames.append({"path": out_path, "timestamp": ts})
+                    sample_frames.append({"path": result.path, "timestamp": ts})
                 else:
                     dark_dropped += 1
             except Exception:
@@ -3862,27 +3822,27 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
 
     refine_frames = []
     if refine_ts:
-        for ts in sorted(refine_ts):
-            out_path = os.path.join(frames_dir, f"ts_{ts:06d}.jpg")
-            # Task 3 Step 2: check ffmpeg extraction result explicitly.
-            with _TIMINGS.span("extract"):
-                completed = subprocess.run(
-                    ["ffmpeg", "-y", "-ss", str(ts), "-i", video_path,
-                     "-vf", "scale=640:-1", "-vframes", "1", out_path],
-                    capture_output=True, timeout=15,
-                )
-            if completed.returncode != 0:
+        # Task 3 Step 2 (preserved): check the ffmpeg extraction result
+        # explicitly for each frame.
+        with _TIMINGS.span("extract"):
+            extraction_results = extract_frames(
+                video_path, sorted(refine_ts), frames_dir,
+                workers=cfg.get("frame_extract_workers", 1),
+            )
+        for result in extraction_results:
+            ts = int(result.timestamp_s)
+            if not result.ok:
                 refine_extraction_failed += 1
                 print(f"  refine extract FAILED ts={ts}: "
-                      f"ffmpeg exit={completed.returncode}")
+                      f"ffmpeg exit={result.returncode}")
                 continue
-            if not os.path.exists(out_path) or os.path.getsize(out_path) <= 500:
+            if not os.path.exists(result.path) or os.path.getsize(result.path) <= 500:
                 refine_extraction_failed += 1
                 print(f"  refine extract FAILED ts={ts}: "
                       f"missing or too-small output")
                 continue
             try:
-                img = Image.open(out_path).convert("L")
+                img = Image.open(result.path).convert("L")
                 brightness = sum(img.getdata()) / max(1, img.width * img.height)
                 img.close()
             except Exception as exc:
@@ -3894,7 +3854,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 print(f"  refine extract FAILED ts={ts}: "
                       f"brightness={brightness:.1f} below {MIN_BRIGHTNESS}")
                 continue
-            refine_frames.append({"path": out_path, "timestamp": ts})
+            refine_frames.append({"path": result.path, "timestamp": ts})
             refine_extracted += 1
 
         print(f"  Refinement frames after filter: {len(refine_frames)}")
@@ -4333,24 +4293,14 @@ def _stage_rank_dedup(
 
         def frame_scorer(timestamp_s: float, label: str) -> dict | None:
             provider = resolve_vlm()
-            safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label))
-            frame_path = os.path.join(
-                work_dir,
-                f"action_{clip_index:04d}_{safe_label}_{timestamp_s:.3f}.jpg",
-            )
             try:
                 with _TIMINGS.span("extract"):
-                    extracted = subprocess.run(
-                        [
-                            "ffmpeg", "-y", "-ss", str(timestamp_s), "-i",
-                            video_path, "-vf", "scale=640:-1", "-vframes", "1",
-                            frame_path,
-                        ],
-                        capture_output=True,
-                        timeout=15,
-                    )
-                if extracted.returncode != 0 or not os.path.exists(frame_path):
+                    extracted = extract_frames(
+                        video_path, [timestamp_s], work_dir, workers=1,
+                    )[0]
+                if not extracted.ok or not os.path.exists(extracted.path):
                     return None
+                frame_path = extracted.path
                 with open(frame_path, "rb") as frame_file:
                     payload, error = _score_vlm_frame(
                         base_url=provider.get("base_url", OLLAMA_BASE),

@@ -72,3 +72,6 @@ adaptive:
   transition_soft_run_frames: 3
   transition_rescore_split_segments: true
   score_prompt_mode: adult
+  # Coarse/refine extraction is pure I/O + CPU decode; 16GB VRAM setups can
+  # run several ffmpeg processes alongside GPU scoring without contention.
+  frame_extract_workers: 6
