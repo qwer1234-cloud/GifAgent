@@ -390,6 +390,7 @@ def _score_vlm_frame(
     timestamp: float,
     frame_path: str,
     retry_delay_s: float = 2.0,
+    keep_alive: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Score one frame via the Ollama-compatible VLM endpoint.
 
@@ -406,6 +407,10 @@ def _score_vlm_frame(
       FAILURE -- the caller NEVER gets a default 0.5 score
       (seventh-review Task 2 Step 1: removed ``safe_worth(0.5)`` fallback).
     * Quality-gate errors in non-score fields are informational, not fatal.
+    * ``keep_alive`` is omitted from the request entirely when ``None``, so
+      callers that don't pass it keep the byte-identical legacy body
+      (Task 7: lets Ollama hold the VLM resident between stages instead of
+      evicting and reloading it on its own default timeout).
     """
     import math
 
@@ -426,17 +431,21 @@ def _score_vlm_frame(
     started_at = time.perf_counter()
 
     try:
+        request_body = {
+            "model": model, "prompt": prompt,
+            "images": [img_b64], "stream": False,
+            "format": "json",
+            "think": False,
+            "options": options,
+        }
+        if keep_alive is not None:
+            request_body["keep_alive"] = keep_alive
+
         for attempt in range(3):
             try:
                 resp = httpx.post(
                     f"{base_url}/api/generate",
-                    json={
-                        "model": model, "prompt": prompt,
-                        "images": [img_b64], "stream": False,
-                        "format": "json",
-                        "think": False,
-                        "options": options,
-                    },
+                    json=request_body,
                     timeout=120,
                 )
                 resp.raise_for_status()
@@ -537,6 +546,10 @@ class VlmRuntimeConfig:
     manage_lifecycle: bool
     launch_mode: str       # "none" | "native" | "wsl"
     retry_delay_s: float   # mapped from config key "retry_delay_s"
+    # Whether to unload other resident models (nomic-embed-text) before
+    # loading the VLM.  True reproduces legacy behavior; large-VRAM setups
+    # can set this False to keep embeddings warm across stages.
+    free_vram_before_load: bool = True
 
 
 def _expand_vlm_base_url(
@@ -618,11 +631,13 @@ def _resolve_vlm_runtime(config_data: dict | None) -> VlmRuntimeConfig:
             f"must be 'none', 'native', or 'wsl'"
         )
     retry_delay = float(vlm_cfg.get("retry_delay_s", 2.0))
+    free_vram_before_load = bool(vlm_cfg.get("free_vram_before_load", True))
 
     return VlmRuntimeConfig(
         provider=provider, model=model, base_url=base_url,
         manage_lifecycle=manage_lifecycle, launch_mode=launch_mode,
         retry_delay_s=retry_delay,
+        free_vram_before_load=free_vram_before_load,
     )
 
 
@@ -691,20 +706,34 @@ def stop_model(name: str, runtime: VlmRuntimeConfig | None = None) -> bool:
             provider="ollama", model="", base_url=OLLAMA_BASE,
             manage_lifecycle=True, launch_mode="wsl", retry_delay_s=2.0,
         )
+
+    def _confirmed_unloaded() -> bool:
+        """``True`` only when ``/api/ps`` positively rules the model out.
+
+        A transport failure or an ambiguous response must NOT be treated
+        as "unloaded" -- that would skip the real stop command below.
+        """
+        try:
+            r = httpx.get(f"{runtime.base_url}/api/ps", timeout=5)
+            loaded = {m.get("name", "") for m in r.json().get("models", [])}
+            return not any(name.split(":")[0] in m for m in loaded)
+        except Exception:
+            return False
+
+    # Task 7: skip the stop command and every sleep entirely when the model
+    # was already not resident -- there is nothing to stop and nothing to
+    # wait for.
+    if _confirmed_unloaded():
+        return True
+
     for attempt in range(3):
         subprocess.run(
             _ollama_command(runtime, "stop", name),
             capture_output=True, timeout=30,
         )
         time.sleep(5)
-        try:
-            r = httpx.get(f"{runtime.base_url}/api/ps", timeout=5)
-            loaded = {m.get("name", "") for m in r.json().get("models", [])}
-            still_loaded = any(name.split(":")[0] in m for m in loaded)
-            if not still_loaded:
-                return True
-        except Exception:
-            pass
+        if _confirmed_unloaded():
+            return True
         time.sleep(10)
     return False
 
@@ -729,7 +758,12 @@ def wait_model(name: str, runtime: VlmRuntimeConfig | None = None,
         try:
             r = httpx.post(
                 f"{runtime.base_url}/api/generate",
-                json={"model": name, "prompt": "ping", "stream": False},
+                json={
+                    "model": name, "prompt": "ping", "stream": False,
+                    # An already-loaded model would otherwise generate a
+                    # full reply to "ping" just to prove it's alive.
+                    "options": {"num_predict": 1},
+                },
                 timeout=30,
             )
             if r.status_code == 200:
@@ -883,6 +917,10 @@ def extract_config(config_data: dict) -> dict:
         # None means "send no seed", which keeps default snapshots
         # byte-identical to the pre-seed request body.
         "vlm_seed": _optional_seed(adaptive.get("vlm_seed")),
+        # Server-side residency only -- never affects a score, so unlike the
+        # other vlm_* keys above it is free to default to something other
+        # than "no keep_alive sent" (see Task 7 in the throughput plan).
+        "vlm_keep_alive": str(adaptive.get("vlm_keep_alive", "30m")),
         "score_prompt_mode": normalize_score_prompt_mode(
             adaptive.get("score_prompt_mode", "default")
         ),
@@ -1886,6 +1924,7 @@ def run_pipeline(
                 timestamp=timestamp,
                 frame_path=frame_path,
                 retry_delay_s=vlm_retry_delay_s,
+                keep_alive=cfg.get("vlm_keep_alive"),
             )
 
     scored = list(resumed_scored or [])
@@ -3658,7 +3697,8 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
     if vlm_rt.manage_lifecycle and vlm_rt.launch_mode != "none":
         if is_local_llm():
             stop_model(llm_model_name().split("/")[-1].split(":")[0], vlm_rt)
-        stop_model("nomic-embed-text", vlm_rt)
+        if vlm_rt.free_vram_before_load:
+            stop_model("nomic-embed-text", vlm_rt)
         time.sleep(5)
         if not wait_model(vlm_model, vlm_rt, timeout_s=300):
             print("ERROR: VLM not responding")
@@ -3686,6 +3726,7 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
             options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
             timestamp=ts, frame_path=fpath,
             retry_delay_s=vlm_retry_delay,
+            keep_alive=cfg.get("vlm_keep_alive"),
         )
 
         if payload is not None:
@@ -3878,6 +3919,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 options=VLM_OPTIONS, threshold=WORTHINESS_THRESHOLD,
                 timestamp=rf["timestamp"], frame_path=rf["path"],
                 retry_delay_s=vlm_retry_delay,
+                keep_alive=cfg.get("vlm_keep_alive"),
             )
             if payload is not None:
                 refine_responded += 1
@@ -4324,6 +4366,7 @@ def _stage_rank_dedup(
                         retry_delay_s=float(
                             provider.get("retry_delay_s", 2.0)
                         ),
+                        keep_alive=cfg.get("vlm_keep_alive"),
                     )
                 if payload is None:
                     print(

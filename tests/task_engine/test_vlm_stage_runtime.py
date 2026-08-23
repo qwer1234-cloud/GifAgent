@@ -71,6 +71,7 @@ class _StubServer:
                 server.requests.append({
                     "path": self.path, "model": payload.get("model", ""),
                     "options": payload.get("options"),
+                    "keep_alive": payload.get("keep_alive"),
                 })
                 resp = json.dumps(server.response_payload).encode("utf-8")
                 self.send_response(200)
@@ -144,6 +145,29 @@ def _load_stage_module():
     sys.modules["tva_vlm_stage"] = mod  # required for dataclass eval in 3.14
     spec.loader.exec_module(mod)
     return mod
+
+
+def _one_frame_sample_fixture(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """Build a minimal sample_manifest + one frame for driving ``_stage_vlm``.
+
+    Returns ``(work_dir, frames_dir, frame_path, sample_manifest_path)``.
+    """
+    work_dir = tmp_path / "vlm_work"
+    frames_dir = work_dir / "frames"
+    frames_dir.mkdir(parents=True)
+    frame_path = frames_dir / "ts_000010.jpg"
+    frame_path.write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 200)
+    sm = {
+        "schema_version": 1, "stage": "sample",
+        "frame_count": 1, "timestamps": [10],
+        "frame_paths": [str(frame_path)],
+        "frame_entries": [
+            {"artifact_id": "aid-1", "timestamp": 10, "path": str(frame_path)},
+        ],
+    }
+    sm_path = work_dir / "sample_manifest.json"
+    sm_path.write_text(json.dumps(sm))
+    return work_dir, frames_dir, frame_path, sm_path
 
 
 class TestVlmStageRuntimeInjection:
@@ -810,13 +834,38 @@ class _StatusResponse:
 
 
 class _PsResponse(list):
-    """Fake httpx response for /api/ps."""
+    """Fake httpx response for /api/ps, always reporting nothing loaded."""
     status_code = 200
     def raise_for_status(self): pass
 
     @staticmethod
     def json():
         return {"models": []}
+
+
+class _PsResponseLoaded:
+    """Fake httpx response for /api/ps reporting the model IS loaded."""
+    status_code = 200
+    def raise_for_status(self): pass
+
+    @staticmethod
+    def json():
+        return {"models": [{"name": "m:latest"}]}
+
+
+def _loaded_then_unloaded_ps(monkeypatch, mod):
+    """Patch ``httpx.get`` to report loaded once, then unloaded thereafter.
+
+    Exercises the real stop_model retry path (command sent, then confirmed
+    stopped) instead of short-circuiting before any command is issued.
+    """
+    calls = {"n": 0}
+
+    def fake_get(*_a, **_kw):
+        calls["n"] += 1
+        return _PsResponseLoaded() if calls["n"] == 1 else _PsResponse()
+
+    monkeypatch.setattr(mod.httpx, "get", fake_get)
 
 
 class TestVlmLifecycle:
@@ -902,8 +951,7 @@ class TestVlmLifecycle:
         monkeypatch.setattr(mod.subprocess, "run",
                             lambda cmd, **kw: calls.append(cmd)
                             or subprocess.CompletedProcess(cmd, 0))
-        monkeypatch.setattr(mod.httpx, "get",
-                            lambda *a, **kw: _PsResponse())
+        _loaded_then_unloaded_ps(monkeypatch, mod)
         monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
         assert mod.stop_model("m", runtime) is True
         assert calls == [["ollama", "stop", "m"]], calls
@@ -918,8 +966,7 @@ class TestVlmLifecycle:
         monkeypatch.setattr(mod.subprocess, "run",
                             lambda cmd, **kw: calls.append(cmd)
                             or subprocess.CompletedProcess(cmd, 0))
-        monkeypatch.setattr(mod.httpx, "get",
-                            lambda *a, **kw: _PsResponse())
+        _loaded_then_unloaded_ps(monkeypatch, mod)
         monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
         assert mod.stop_model("m", runtime) is True
         assert calls == [["wsl", "ollama", "stop", "m"]], calls
@@ -1004,6 +1051,177 @@ class TestVlmLifecycle:
                 "provider": "ollama", "model": "m",
                 "base_url": "http://stub", "launch_mode": "auto",
             }})
+
+
+class TestModelLifecycleRepair:
+    """Task 7: wasted-probe, keep_alive, stop_model short-circuit, and the
+    ``free_vram_before_load`` budget gate around the ``nomic-embed-text``
+    unload in ``_stage_vlm``.
+    """
+
+    def test_wait_model_probe_caps_num_predict(self, monkeypatch):
+        """The readiness probe itself must not generate a full reply."""
+        mod = _load_stage_module()
+        runtime = mod.VlmRuntimeConfig(
+            provider="ollama", model="m", base_url="http://127.0.0.1:45678",
+            manage_lifecycle=True, launch_mode="native", retry_delay_s=0,
+        )
+        bodies = []
+
+        def fake_post(url, json, **kw):  # noqa: A002
+            bodies.append(json)
+            return _StatusResponse()
+
+        monkeypatch.setattr(mod.httpx, "post", fake_post)
+        assert mod.wait_model("m", runtime, timeout_s=1) is True
+        assert len(bodies) == 1
+        assert bodies[0].get("options") == {"num_predict": 1}, bodies[0]
+
+    def test_score_vlm_frame_sends_keep_alive_when_configured(self):
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            payload, error = mod._score_vlm_frame(
+                base_url=stub.base_url, model="stub-vlm",
+                image_bytes=b"\xff\xd8\xff\xe0" + b"\x00" * 50,
+                prompt="score this", options={},
+                threshold=0.5, timestamp=1.0, frame_path="x.jpg",
+                retry_delay_s=0.0, keep_alive="30m",
+            )
+            assert error is None
+            assert stub.requests[-1]["keep_alive"] == "30m"
+        finally:
+            stub.stop()
+
+    def test_score_vlm_frame_omits_keep_alive_by_default(self):
+        """Backward compat: callers that don't pass keep_alive send no key."""
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            payload, error = mod._score_vlm_frame(
+                base_url=stub.base_url, model="stub-vlm",
+                image_bytes=b"\xff\xd8\xff\xe0" + b"\x00" * 50,
+                prompt="score this", options={},
+                threshold=0.5, timestamp=1.0, frame_path="x.jpg",
+                retry_delay_s=0.0,
+            )
+            assert error is None
+            assert stub.requests[-1]["keep_alive"] is None
+        finally:
+            stub.stop()
+
+    def test_stop_model_short_circuits_when_already_unloaded(self, monkeypatch):
+        """No subprocess call and no sleep when /api/ps already agrees."""
+        mod = _load_stage_module()
+        runtime = mod.VlmRuntimeConfig(
+            provider="ollama", model="m", base_url="http://stub",
+            manage_lifecycle=True, launch_mode="native", retry_delay_s=0,
+        )
+        calls = []
+        sleeps = []
+        monkeypatch.setattr(mod.subprocess, "run",
+                            lambda cmd, **kw: calls.append(cmd)
+                            or subprocess.CompletedProcess(cmd, 0))
+        monkeypatch.setattr(mod.httpx, "get",
+                            lambda *a, **kw: _PsResponse())
+        monkeypatch.setattr(mod.time, "sleep", lambda s: sleeps.append(s))
+        assert mod.stop_model("m", runtime) is True
+        assert calls == [], "already-unloaded model must not run any stop command"
+        assert sleeps == [], "already-unloaded model must not sleep at all"
+
+    def test_stop_model_still_stops_a_loaded_model(self, monkeypatch):
+        """Sanity: the short-circuit must not swallow the real stop path."""
+        mod = _load_stage_module()
+        runtime = mod.VlmRuntimeConfig(
+            provider="ollama", model="m", base_url="http://stub",
+            manage_lifecycle=True, launch_mode="native", retry_delay_s=0,
+        )
+        calls = []
+        monkeypatch.setattr(mod.subprocess, "run",
+                            lambda cmd, **kw: calls.append(cmd)
+                            or subprocess.CompletedProcess(cmd, 0))
+        _loaded_then_unloaded_ps(monkeypatch, mod)
+        monkeypatch.setattr(mod.time, "sleep", lambda _s: None)
+        assert mod.stop_model("m", runtime) is True
+        assert calls == [["ollama", "stop", "m"]], calls
+
+    def test_stage_vlm_skips_embed_unload_when_budget_allows(self, tmp_path, monkeypatch):
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            work_dir, frames_dir, frame_path, sm_path = _one_frame_sample_fixture(tmp_path)
+            cfg = mod.extract_config({"adaptive": {}, "preference_memory": {}})
+            inputs = {
+                "sample_manifest": [{"artifact_id": "a", "path": str(sm_path),
+                                     "clip_id": None}],
+                "sample_frames": [{"artifact_id": "aid-1", "path": str(frame_path),
+                                   "sha256": hashlib.sha256(
+                                       frame_path.read_bytes()).hexdigest(),
+                                   "size_bytes": frame_path.stat().st_size,
+                                   "clip_id": None}],
+            }
+            config_data = {
+                "vlm": {
+                    "provider": "ollama", "model": "stub-vlm",
+                    "base_url": stub.base_url,
+                    "manage_lifecycle": True,
+                    "launch_mode": "native",
+                    "retry_delay_s": 0.0,
+                    "free_vram_before_load": False,
+                },
+            }
+            stopped = []
+            monkeypatch.setattr(mod, "stop_model",
+                                lambda name, runtime=None: stopped.append(name) or True)
+            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+
+            result = mod._stage_vlm(str(frames_dir), str(work_dir), cfg,
+                                    inputs, config_data)
+            assert result["output_key"] == "vlm"
+            assert "nomic-embed-text" not in stopped, stopped
+        finally:
+            stub.stop()
+
+    def test_stage_vlm_still_unloads_embed_by_default(self, tmp_path, monkeypatch):
+        mod = _load_stage_module()
+        stub = _StubServer(_VLM_RESPONSE)
+        stub.start()
+        try:
+            work_dir, frames_dir, frame_path, sm_path = _one_frame_sample_fixture(tmp_path)
+            cfg = mod.extract_config({"adaptive": {}, "preference_memory": {}})
+            inputs = {
+                "sample_manifest": [{"artifact_id": "a", "path": str(sm_path),
+                                     "clip_id": None}],
+                "sample_frames": [{"artifact_id": "aid-1", "path": str(frame_path),
+                                   "sha256": hashlib.sha256(
+                                       frame_path.read_bytes()).hexdigest(),
+                                   "size_bytes": frame_path.stat().st_size,
+                                   "clip_id": None}],
+            }
+            config_data = {
+                "vlm": {
+                    "provider": "ollama", "model": "stub-vlm",
+                    "base_url": stub.base_url,
+                    "manage_lifecycle": True,
+                    "launch_mode": "native",
+                    "retry_delay_s": 0.0,
+                    # free_vram_before_load omitted -> defaults True.
+                },
+            }
+            stopped = []
+            monkeypatch.setattr(mod, "stop_model",
+                                lambda name, runtime=None: stopped.append(name) or True)
+            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+
+            result = mod._stage_vlm(str(frames_dir), str(work_dir), cfg,
+                                    inputs, config_data)
+            assert result["output_key"] == "vlm"
+            assert "nomic-embed-text" in stopped, stopped
+        finally:
+            stub.stop()
 
 
 _LEGACY_OMIT = object()
