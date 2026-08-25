@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from app.services.transition_guard import guard_candidate_window
+from app.services.transition_guard import GuardSegment, guard_candidate_window
 from app.services.temporal_evidence import TemporalEvidenceCache, TemporalScanConfig
 
 
@@ -90,6 +90,24 @@ def write_bright_intermediate_shot_video(path: Path) -> Path:
     return _write_video(path, [_scene(8)] * 24 + [np.full_like(_scene(8), 255)] * 16 + [_scene(9)] * 24)
 
 
+def write_handheld_pov_video(path: Path) -> Path:
+    """Pan the camera while a large foreground subject also moves."""
+    source = _scene(3)
+    frames = []
+    for frame_index in range(32):
+        frame = cv2.warpAffine(
+            source,
+            np.float32([[1, 0, 0], [0, 1, frame_index * -2.0]]),
+            FRAME_SIZE,
+            borderMode=cv2.BORDER_REFLECT,
+        )
+        x = 20 + frame_index * 6
+        cv2.rectangle(frame, (x, 40), (x + 90, 150), (0, 255, 255), -1)
+        cv2.circle(frame, (x + 45, 32), 18, (255, 0, 255), -1)
+        frames.append(frame)
+    return _write_video(path, frames)
+
+
 def write_moving_subject_video(path: Path) -> Path:
     background = _scene(7)
     frames = []
@@ -112,17 +130,18 @@ def test_hard_cut_splits_window(tmp_path: Path) -> None:
     assert all(segment.end_s - segment.start_s >= 2.0 for segment in result.segments)
 
 
-def test_boundary_at_anchor_drops_candidate_instead_of_selecting_other_shot(tmp_path: Path) -> None:
+def test_boundary_at_anchor_keeps_original_window_instead_of_other_shot(tmp_path: Path) -> None:
     video = write_hard_cut_video(tmp_path / "hard_cut_at_anchor.mp4")
     # The post-cut side is shorter than the two-second minimum, leaving only
-    # the pre-cut segment; it must not be silently selected for an anchor in
-    # the boundary safety margin.
+    # the pre-cut segment.  Do not silently select that other shot, and do
+    # not drop the candidate: keep the original scored window.
     result = guard_candidate_window(video, 0.0, 4.0, 3.0, BASE_CFG)
 
-    assert result.transition_action == "drop"
-    assert result.segments == ()
-    assert result.anchor_segment is None
+    assert result.transition_action == "keep"
+    assert result.segments == (GuardSegment(0.0, 4.0, "original_window"),)
+    assert result.anchor_segment == result.segments[0]
     assert result.anchor_ts_s == 3.0
+    assert "retaining original window" in result.guard_reason
 
 
 def test_static_media_is_kept_without_transition_evidence(tmp_path: Path) -> None:
@@ -194,6 +213,28 @@ def test_local_subject_motion_is_not_a_cut(tmp_path: Path) -> None:
     result = guard_candidate_window(video, 0.0, 4.0, 2.0, BASE_CFG)
 
     assert result.hard_cut_count == 0
+
+
+def test_handheld_pov_motion_is_not_a_cut(tmp_path: Path) -> None:
+    video = write_handheld_pov_video(tmp_path / "handheld_pov.mp4")
+    result = guard_candidate_window(video, 0.0, 4.0, 2.0, BASE_CFG)
+
+    assert result.hard_cut_count == 0
+    assert result.transition_action in {"keep", "trim"}
+    assert result.segments
+    assert result.segments[0].end_s - result.segments[0].start_s >= 2.0
+
+
+def test_unexportable_margins_retain_the_original_window(tmp_path: Path) -> None:
+    video = write_hard_cut_video(tmp_path / "tiny_after_cut.mp4")
+    config = {**BASE_CFG, "transition_min_duration_s": 3.5}
+    result = guard_candidate_window(video, 0.0, 6.0, 1.0, config)
+
+    assert result.transition_action == "keep"
+    assert result.segments[0].reason == "original_window"
+    assert result.segments[0].start_s == 0.0
+    assert result.segments[0].end_s == 6.0
+    assert "retaining original window" in result.guard_reason
 
 
 def test_precomputed_evidence_must_cover_the_requested_window(tmp_path: Path) -> None:

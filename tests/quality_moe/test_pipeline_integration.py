@@ -1023,6 +1023,30 @@ def test_quality_stage_rejects_unfrozen_endpoint_sentinel_before_judge_http():
         adaptive._quality_config_from_pipeline_cfg(cfg)
 
 
+def test_direct_pipeline_binds_vlm_runtime_url_for_inherit_vlm_judge():
+    """Direct mode must expose the live VLM URL the same way stage mode does."""
+    cfg = adaptive.extract_config({
+        "quality_moe": {
+            "enabled": True,
+            "judge": {"model_id": "llava:13b", "base_url": "inherit_vlm"},
+        },
+    })
+    runtime = adaptive.VlmRuntimeConfig(
+        provider="ollama",
+        model="llava:13b",
+        base_url="http://172.27.227.98:11434/",
+        manage_lifecycle=False,
+        launch_mode="none",
+        retry_delay_s=0.0,
+    )
+    live = str(runtime.base_url).strip()
+    if live.startswith(("http://", "https://")):
+        cfg["_live_vlm_base_url"] = live.rstrip("/")
+
+    quality = adaptive._quality_config_from_pipeline_cfg(cfg)
+    assert quality.judge["base_url"] == "http://172.27.227.98:11434"
+
+
 def test_quality_stage_materializes_inherit_vlm_from_live_vlm_url():
     cfg = adaptive.extract_config({
         "quality_moe": {

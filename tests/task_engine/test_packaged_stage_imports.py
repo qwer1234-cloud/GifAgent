@@ -13,6 +13,7 @@ from pathlib import Path
 _SPEC_PATH = Path(__file__).resolve().parents[2] / "build_exe.spec"
 
 _STAGE_DIRECT_IMPORTS = [
+    "app.services.grid_select",
     "app.services.clip_merge",
     "app.services.action_pipeline",
     "app.services.export_ranking",

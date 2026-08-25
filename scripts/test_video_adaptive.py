@@ -44,7 +44,8 @@ sys.path.insert(0, ".")
 from app.db import init_db, get_connection
 from app.config import load_config
 from app.services.embedding import compute_text_embedding
-from app.services.clip_dedup import temporal_dedup_clips
+from app.services.clip_dedup import embedding_dedup_clips, temporal_dedup_clips
+from app.services.grid_select import select_grid_frames
 from app.services.clip_merge import merge_scored_frames_into_clips
 from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
 from app.services.action_boundary import ActionBoundaryConfig
@@ -63,6 +64,7 @@ from app.services.score_calibration import (
 )
 from app.services.export_ranking import (
     make_adult_moe_scorer,
+    normalize_vlm_unit_score,
     rank_clips_for_export,
     sex_act_score,
 )
@@ -157,18 +159,28 @@ def parse_vlm_response(raw_text: str) -> dict:
     return cleaned
 
 
+_SCORE_INTEGER_RULES = (
+    "gif_worthiness and any other score fields are integers from 0 to 100 inclusive. "
+    "Never output 0.0-1.0 decimals. Do not round to tens (50/60/70). "
+    "Use the full 0-100 range; nearby frames in the same scene should differ "
+    "when action or framing differs.\n"
+)
+
 SCORE_PROMPT = (
-    "Evaluate this film frame for GIF potential. Use the full 0.0-1.0 scale.\n"
+    "Evaluate this film frame for GIF potential.\n"
     "Output ONLY valid JSON with real, specific content. No template text.\n\n"
     '{"caption":"describe actual visible subjects, lighting, and composition",'
-    '"emotional_core":"one lowercase word","gif_worthiness":0.5,'
-    '"aesthetic_notes":["2-3 concrete visual observations"],'
+    '"emotional_core":"one lowercase word","gif_worthiness":47,'
+    '"aesthetic_notes":["concrete visual observation one","concrete visual observation two"],'
     '"reason":"why this specific moment works as a GIF (or why not)"}\n\n'
-    "gif_worthiness scale:\n"
-    "  0.0-0.2: BAD - static, dark, blurry, nothing happening. Skip.\n"
-    "  0.3-0.5: AVERAGE - some emotion, decent composition.\n"
-    "  0.6-0.8: GOOD - clear emotion/action, cinematic framing.\n"
-    "  0.9-1.0: EXCELLENT - iconic moment, beautiful lighting, peak drama.\n\n"
+    + _SCORE_INTEGER_RULES
+    + "gif_worthiness = how good THIS frame is as a GIF relative to other "
+    "moments in the SAME video:\n"
+    "  0 = static, dark, blurry, nothing happening. Skip.\n"
+    "  50 = some emotion, decent composition; borderline keep.\n"
+    "  100 = the single best GIF moment in this video "
+    "(iconic beat, beautiful lighting, peak drama).\n"
+    "Interpolate. Typical keepable frames should land across 55-95, not all on 60.\n\n"
     "CRITICAL: emotional_core = EXACTLY ONE lowercase word from: "
     "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|"
     "admiration|intimacy|vulnerability|longing|desire|other\n"
@@ -180,21 +192,28 @@ SCORE_PROMPT_ADULT = (
     "Evaluate this adult-video frame for short-GIF potential.\n"
     "Output ONLY valid JSON. No markdown. Be literal; do not euphemize or refuse sex.\n\n"
     '{"caption":"describe visible bodies, acts, clothing, and camera",'
-    '"emotional_core":"desire","gif_worthiness":0.5,"sex_act":0.0,'
+    '"emotional_core":"desire","gif_worthiness":47,"sex_act":12,'
     '"aesthetic_notes":["concrete visual observation one","concrete visual observation two"],'
     '"reason":"why this moment is or is not a good sex-action GIF"}\n\n'
-    "sex_act = how much sexual activity is visible in THIS frame:\n"
-    "  0.0: no sexual contact (talking, walking, cooking, clothed portrait, empty room)\n"
-    "  0.2-0.4: kissing, undressing, implied sex, bodies close but no sex act\n"
-    "  0.5-0.7: nude grinding, oral, hands on genitals, clear sexual contact\n"
-    "  0.8-1.0: penetrative sex, peak thrusting, orgasm, explicit sex in motion\n\n"
-    "gif_worthiness = should we export this as a GIF:\n"
-    "  0.0-0.25: SKIP daily life, kitchen, phone, walking, talking-head, no sex.\n"
-    "  0.3-0.5: weak kissing/undressing or static nude with little motion.\n"
-    "  0.6-0.8: GOOD clear sexual contact, readable motion, strong body framing.\n"
-    "  0.9-1.0: EXCELLENT peak sex action, climax, distinctive position, high motion.\n"
+    + _SCORE_INTEGER_RULES
+    + "sex_act = how explicit the sexual activity is IN THIS frame, "
+    "relative to a typical adult scene:\n"
+    "  0 = no sexual contact (talking, walking, cooking, clothed portrait, empty room)\n"
+    "  25 = kissing, undressing, implied sex, bodies close but no sex act\n"
+    "  50 = nude grinding, oral, hands on genitals, clear sexual contact\n"
+    "  75 = penetrative sex, thrusting, explicit sex in motion\n"
+    "  100 = peak climax / the most explicit peak motion in a scene\n"
+    "Interpolate. A slightly better thrust than the last frame should score "
+    "a few points higher, not the same number.\n\n"
+    "gif_worthiness = should we export THIS frame as a GIF, relative to other "
+    "moments in the SAME video:\n"
+    "  0 = daily life, kitchen, phone, walking, talking-head, no sex\n"
+    "  50 = weak kissing/undressing or static nude with little motion; borderline keep\n"
+    "  100 = the single best GIF moment in this video "
+    "(peak sex, distinctive position, high readable motion)\n"
     "Do NOT give high gif_worthiness to cooking, conversation, or walking.\n"
-    "Moody low-light sex can score HIGH. Do not penalize darkness when the act is visible.\n\n"
+    "Moody low-light sex can score HIGH. Do not penalize darkness when the act is visible.\n"
+    "Typical keepable sex-action frames should land across 55-95, not all on 60.\n\n"
     "CRITICAL: emotional_core = EXACTLY ONE lowercase word from: "
     "tension|melancholy|awe|joy|sadness|catharsis|serenity|excitement|dread|nostalgia|"
     "admiration|intimacy|vulnerability|longing|desire|other\n"
@@ -205,33 +224,42 @@ SCORE_PROMPT_ADULT = (
 # coarse/refine so the model spends tokens on gif_worthiness instead of
 # discarded prose. Caption/notes are backfilled later on best frames.
 SCORE_PROMPT_FAST = (
-    "Evaluate this film frame for GIF potential. Use the full 0.0-1.0 scale.\n"
-    "Output ONLY valid JSON with numeric fields. No markdown. No extra keys.\n\n"
-    '{"gif_worthiness":0.5}\n\n'
-    "gif_worthiness scale:\n"
-    "  0.0-0.2: BAD - static, dark, blurry, nothing happening. Skip.\n"
-    "  0.3-0.5: AVERAGE - some emotion, decent composition.\n"
-    "  0.6-0.8: GOOD - clear emotion/action, cinematic framing.\n"
-    "  0.9-1.0: EXCELLENT - iconic moment, beautiful lighting, peak drama.\n"
+    "Evaluate this film frame for GIF potential.\n"
+    "Output ONLY valid JSON with integer fields. No markdown. No extra keys.\n\n"
+    '{"gif_worthiness":47}\n\n'
+    + _SCORE_INTEGER_RULES
+    + "gif_worthiness = how good THIS frame is as a GIF relative to other "
+    "moments in the SAME video:\n"
+    "  0 = static, dark, blurry, nothing happening. Skip.\n"
+    "  50 = some emotion, decent composition; borderline keep.\n"
+    "  100 = the single best GIF moment in this video "
+    "(iconic beat, beautiful lighting, peak drama).\n"
+    "Interpolate. Typical keepable frames should land across 55-95, not all on 60.\n"
 )
 
 SCORE_PROMPT_ADULT_FAST = (
     "Evaluate this adult-video frame for short-GIF potential.\n"
-    "Output ONLY valid JSON with numeric fields. No markdown. "
+    "Output ONLY valid JSON with integer fields. No markdown. "
     "Be literal; do not euphemize or refuse sex.\n\n"
-    '{"gif_worthiness":0.5,"sex_act":0.0}\n\n'
-    "sex_act = how much sexual activity is visible in THIS frame:\n"
-    "  0.0: no sexual contact (talking, walking, cooking, clothed portrait, empty room)\n"
-    "  0.2-0.4: kissing, undressing, implied sex, bodies close but no sex act\n"
-    "  0.5-0.7: nude grinding, oral, hands on genitals, clear sexual contact\n"
-    "  0.8-1.0: penetrative sex, peak thrusting, orgasm, explicit sex in motion\n\n"
-    "gif_worthiness = should we export this as a GIF:\n"
-    "  0.0-0.25: SKIP daily life, kitchen, phone, walking, talking-head, no sex.\n"
-    "  0.3-0.5: weak kissing/undressing or static nude with little motion.\n"
-    "  0.6-0.8: GOOD clear sexual contact, readable motion, strong body framing.\n"
-    "  0.9-1.0: EXCELLENT peak sex action, climax, distinctive position, high motion.\n"
+    '{"gif_worthiness":47,"sex_act":12}\n\n'
+    + _SCORE_INTEGER_RULES
+    + "sex_act = how explicit the sexual activity is IN THIS frame, "
+    "relative to a typical adult scene:\n"
+    "  0 = no sexual contact (talking, walking, cooking, clothed portrait, empty room)\n"
+    "  25 = kissing, undressing, implied sex, bodies close but no sex act\n"
+    "  50 = nude grinding, oral, hands on genitals, clear sexual contact\n"
+    "  75 = penetrative sex, thrusting, explicit sex in motion\n"
+    "  100 = peak climax / the most explicit peak motion in a scene\n"
+    "Interpolate. Nearby frames should differ by a few points when the act changes.\n\n"
+    "gif_worthiness = should we export THIS frame as a GIF, relative to other "
+    "moments in the SAME video:\n"
+    "  0 = daily life, kitchen, phone, walking, talking-head, no sex\n"
+    "  50 = weak kissing/undressing or static nude with little motion; borderline keep\n"
+    "  100 = the single best GIF moment in this video "
+    "(peak sex, distinctive position, high readable motion)\n"
     "Do NOT give high gif_worthiness to cooking, conversation, or walking.\n"
     "Moody low-light sex can score HIGH. Do not penalize darkness when the act is visible.\n"
+    "Typical keepable sex-action frames should land across 55-95, not all on 60.\n"
 )
 
 
@@ -451,17 +479,16 @@ def _score_vlm_frame(
     * ``parse_vlm_response`` returning ``_parse_error`` is treated as a
       retryable failure, NOT a success.
     * A successful HTTP+JSON response whose ``gif_worthiness`` is missing,
-      boolean, non-numeric, non-finite, or outside ``[0.0, 1.0]`` is a
-      FAILURE -- the caller NEVER gets a default 0.5 score
+      boolean, non-numeric, non-finite, or not a unit float / 0-100 integer
+      is a FAILURE -- the caller NEVER gets a default 0.5 score
       (seventh-review Task 2 Step 1: removed ``safe_worth(0.5)`` fallback).
+      Integers ``0–100`` are divided by 100 before thresholds see them.
     * Quality-gate errors in non-score fields are informational, not fatal.
     * ``keep_alive`` is omitted from the request entirely when ``None``, so
       callers that don't pass it keep the byte-identical legacy body
       (Task 7: lets Ollama hold the VLM resident between stages instead of
       evicting and reloading it on its own default timeout).
     """
-    import math
-
     if not str(base_url or "").strip().lower().startswith(("http://", "https://")):
         base_url = _expand_vlm_base_url(
             base_url or "auto",
@@ -530,16 +557,11 @@ def _score_vlm_frame(
                     return None, last_error
 
                 # Strict worthiness validation (seventh-review Task 2 Step 1).
-                worth = raw_worthiness
-                if (
-                    isinstance(worth, bool)
-                    or not isinstance(worth, (int, float))
-                    or not math.isfinite(float(worth))
-                    or not 0.0 <= float(worth) <= 1.0
-                ):
+                worth = normalize_vlm_unit_score(raw_worthiness)
+                if worth is None:
                     last_error = (
                         f"invalid gif_worthiness: expected finite number in "
-                        f"[0, 1], got {worth!r}"
+                        f"[0, 1] or integer 0-100, got {raw_worthiness!r}"
                     )
                     if attempt < 2:
                         time.sleep(retry_delay_s)
@@ -907,6 +929,24 @@ def collect_refine_timestamps(
     return [ordered[(i * (n - 1)) // (cap - 1)] for i in range(cap)]
 
 
+def frame_passes_keep_gate(
+    frame: dict,
+    *,
+    worthiness_threshold: float,
+    sex_act_threshold: float = 0.0,
+) -> bool:
+    """Return True when a scored frame may enter merge / refine / export.
+
+    ``sex_act_threshold <= 0`` disables the sex-act floor so cinematic
+    snapshots and tests without ``sex_act`` keep historical behavior.
+    """
+    if float(frame.get("gif_worthiness") or 0.0) < float(worthiness_threshold):
+        return False
+    if float(sex_act_threshold) <= 0.0:
+        return True
+    return sex_act_score(frame) >= float(sex_act_threshold)
+
+
 def extract_config(config_data: dict) -> dict:
     """Extract flat pipeline config from the full config dict."""
     adaptive = config_data.get("adaptive", {}) or {}
@@ -932,6 +972,9 @@ def extract_config(config_data: dict) -> dict:
             )
         ),
         "worthiness_threshold": float(adaptive.get("worthiness_threshold", 0.2)),
+        # 0 = off (cinematic / historical snapshots). Adult 0-100 scoring
+        # needs a floor so 0.87-worth setup cannot pass the keep gate.
+        "sex_act_threshold": float(adaptive.get("sex_act_threshold", 0.0)),
         "merge_gap": int(adaptive.get("merge_gap", 12)),
         "merge_score_threshold": float(
             adaptive.get("merge_score_threshold", 0.55)
@@ -957,6 +1000,10 @@ def extract_config(config_data: dict) -> dict:
         ),
         "temporal_dedup_min_gap_s": float(
             adaptive.get("temporal_dedup_min_gap_s", 12)
+        ),
+        # 0 = collapse caption twins at any distance (historical).
+        "embed_dedup_max_gap_s": float(
+            adaptive.get("embedding_dedup_max_gap_s", 0)
         ),
         "output_ratio": float(adaptive.get("output_ratio", 1.0)),
         "max_output": int(adaptive.get("max_output", 0)),
@@ -2073,6 +2120,35 @@ def _should_manage_vlm_lifecycle(config_data: dict | None, launch_mode: str | No
     return False
 
 
+def _clip_embedding_text(clip: dict) -> str:
+    best = clip.get("best_frame")
+    frame = best if isinstance(best, dict) else {}
+    return " ".join(
+        filter(
+            None,
+            [
+                frame.get("caption") or clip.get("caption") or "",
+                frame.get("emotional_core") or clip.get("emotional_core") or "",
+                frame.get("scene_type") or "",
+            ],
+        )
+    )
+
+
+def _compute_clip_embeddings(clips: list[dict]) -> list:
+    embeddings = []
+    for clip in clips:
+        text = _clip_embedding_text(clip)
+        if not text:
+            embeddings.append(None)
+            continue
+        try:
+            embeddings.append(compute_text_embedding(text))
+        except Exception:
+            embeddings.append(None)
+    return embeddings
+
+
 # ---- Core pipeline (shared by both modes) -------------------------
 
 
@@ -2097,6 +2173,7 @@ def run_pipeline(
     MAX_DURATION = cfg["max_duration"]
     MIN_DURATION = cfg["min_duration"]
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
+    SEX_ACT_THRESHOLD = float(cfg.get("sex_act_threshold", 0.0))
     MERGE_GAP = cfg["merge_gap"]
     MERGE_SCORE_THRESHOLD = cfg["merge_score_threshold"]
     MAX_MERGE_SPAN_S = float(cfg.get("max_merge_span_s", 24))
@@ -2107,6 +2184,7 @@ def run_pipeline(
     EMBED_DEDUP_ENABLED = cfg["embed_dedup_enabled"]
     TEMPORAL_DEDUP_ENABLED = cfg["temporal_dedup_enabled"]
     TEMPORAL_DEDUP_MIN_GAP_S = cfg["temporal_dedup_min_gap_s"]
+    EMBED_DEDUP_MAX_GAP_S = float(cfg.get("embed_dedup_max_gap_s", 0))
     OUTPUT_RATIO = cfg["output_ratio"]
     MAX_OUTPUT = cfg["max_output"]
     # 0 disables dark filter; default 25 matches legacy hard-coded threshold.
@@ -2127,6 +2205,11 @@ def run_pipeline(
 
     VLM_MODEL = vlm_runtime.model if vlm_runtime else "llava:13b"
     VLM_BASE_URL = vlm_runtime.base_url if vlm_runtime else OLLAMA_BASE
+    live = str(VLM_BASE_URL or "").strip()
+    if live.startswith(("http://", "https://")):
+        # Direct mode never rewrites the frozen inherit_vlm/auto snapshot;
+        # Quality MoE still needs the live endpoint the VLM is already using.
+        cfg["_live_vlm_base_url"] = live.rstrip("/")
     LLM_MODEL = llm_model_name()
     score_calibrator = _resolve_score_calibrator(cfg, VLM_MODEL)
     print(f"  VLM: {VLM_MODEL}  prompt={SCORE_PROMPT_MODE}")
@@ -2240,11 +2323,16 @@ def run_pipeline(
         scored = [
             item
             for item in scored
-            if float(item.get("gif_worthiness") or 0) >= WORTHINESS_THRESHOLD
+            if frame_passes_keep_gate(
+                item,
+                worthiness_threshold=WORTHINESS_THRESHOLD,
+                sex_act_threshold=SEX_ACT_THRESHOLD,
+            )
         ]
         print(
             f"  Resumed {before} checkpoint frames, "
-            f"{len(scored)} kept at threshold={WORTHINESS_THRESHOLD}"
+            f"{len(scored)} kept at worthiness>={WORTHINESS_THRESHOLD} "
+            f"sex_act>={SEX_ACT_THRESHOLD}"
         )
     else:
         progress_kept: list[dict] = []
@@ -2253,7 +2341,11 @@ def run_pipeline(
         def _progress(done: int, total: int, item: _ScoredItem) -> None:
             if item.payload is None:
                 print(f"  [{done}] FAILED: {item.error}")
-            elif item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+            elif frame_passes_keep_gate(
+                item.payload,
+                worthiness_threshold=WORTHINESS_THRESHOLD,
+                sex_act_threshold=SEX_ACT_THRESHOLD,
+            ):
                 with kept_lock:
                     progress_kept.append(item.payload)
             if done % 30 == 0:
@@ -2272,10 +2364,17 @@ def run_pipeline(
             on_progress=_progress,
         )
         for item in results:
-            if item.payload is not None and item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+            if item.payload is not None and frame_passes_keep_gate(
+                item.payload,
+                worthiness_threshold=WORTHINESS_THRESHOLD,
+                sex_act_threshold=SEX_ACT_THRESHOLD,
+            ):
                 scored.append(item.payload)
 
-    print(f"  Scored: {len(scored)} frames kept (threshold={WORTHINESS_THRESHOLD})")
+    print(
+        f"  Scored: {len(scored)} frames kept "
+        f"(worthiness>={WORTHINESS_THRESHOLD}, sex_act>={SEX_ACT_THRESHOLD})"
+    )
 
     bins = {"0.0-0.3": 0, "0.3-0.5": 0, "0.5-0.7": 0, "0.7-0.9": 0, "0.9-1.0": 0}
     for s in scored:
@@ -2345,7 +2444,11 @@ def run_pipeline(
                 nonlocal refine_kept
                 if item.payload is None:
                     print(f"  refine [{done}] FAILED: {item.error}", flush=True)
-                elif item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD:
+                elif frame_passes_keep_gate(
+                    item.payload,
+                    worthiness_threshold=WORTHINESS_THRESHOLD,
+                    sex_act_threshold=SEX_ACT_THRESHOLD,
+                ):
                     with refine_lock:
                         refine_kept += 1
                 if done % 10 == 0 or done == total:
@@ -2365,7 +2468,11 @@ def run_pipeline(
             for item in refine_results:
                 if (
                     item.payload is not None
-                    and item.payload["gif_worthiness"] >= WORTHINESS_THRESHOLD
+                    and frame_passes_keep_gate(
+                        item.payload,
+                        worthiness_threshold=WORTHINESS_THRESHOLD,
+                        sex_act_threshold=SEX_ACT_THRESHOLD,
+                    )
                 ):
                     scored.append(item.payload)
 
@@ -2564,69 +2671,19 @@ def run_pipeline(
     # ---- Phase 2.7: Embedding dedup -------------------------------------
 
     if EMBED_DEDUP_ENABLED and len(clips) > 1:
-        print(f"\n[2.7/4] Embedding dedup (threshold={EMBED_SIM_THRESHOLD})...")
-        import numpy as np
-
-        clip_embeddings = []
-        for clip in clips:
-            bf = clip.get("best_frame", {})
-            text = " ".join(
-                filter(
-                    None,
-                    [
-                        bf.get("caption", ""),
-                        bf.get("emotional_core", ""),
-                        bf.get("scene_type", ""),
-                    ],
-                )
-            )
-            if not text:
-                clip_embeddings.append(None)
-                continue
-            try:
-                emb = compute_text_embedding(text)
-                clip_embeddings.append(np.array(emb, dtype=np.float32))
-            except Exception:
-                clip_embeddings.append(None)
-
-        order = sorted(
-            range(len(clips)),
-            key=lambda i: clips[i]["gif_worthiness"],
-            reverse=True,
+        print(
+            f"\n[2.7/4] Embedding dedup (threshold={EMBED_SIM_THRESHOLD}, "
+            f"max_gap={EMBED_DEDUP_MAX_GAP_S:.1f}s)..."
         )
-        kept_indices = []
-        kept_embs = []
-        duplicate_groups = []
-
-        for idx in order:
-            emb = clip_embeddings[idx]
-            if emb is None:
-                kept_indices.append(idx)
-                kept_embs.append(None)
-                continue
-            is_dup = False
-            for ki, ke_emb in zip(kept_indices, kept_embs):
-                if ke_emb is None:
-                    continue
-                norm = np.linalg.norm(emb) * np.linalg.norm(ke_emb) + 1e-8
-                sim = float(np.dot(emb, ke_emb) / norm)
-                if sim >= EMBED_SIM_THRESHOLD:
-                    is_dup = True
-                    for dg in duplicate_groups:
-                        if dg["keeper"] == ki:
-                            dg["duplicates"].append(idx)
-                            dg["max_sim"] = max(dg["max_sim"], sim)
-                            break
-                    else:
-                        duplicate_groups.append(
-                            {"keeper": ki, "duplicates": [idx], "max_sim": sim}
-                        )
-                    break
-            if not is_dup:
-                kept_indices.append(idx)
-                kept_embs.append(emb)
-
-        deduped_clips = [clips[i] for i in kept_indices]
+        clip_embeddings = _compute_clip_embeddings(clips)
+        deduped_clips, duplicate_groups = embedding_dedup_clips(
+            clips,
+            clip_embeddings,
+            threshold=EMBED_SIM_THRESHOLD,
+            max_gap_s=EMBED_DEDUP_MAX_GAP_S,
+        )
+        kept_lookup = {id(clip): index for index, clip in enumerate(clips)}
+        kept_indices = [kept_lookup[id(clip)] for clip in deduped_clips]
         clusters = [
             {
                 "center_emb": ki,
@@ -2746,29 +2803,25 @@ def run_pipeline(
     sample_dir = os.path.join(export_dir, "Sample")
     os.makedirs(sample_dir, exist_ok=True)
 
-    ranked_frames = sorted(
-        scored, key=lambda x: x.get("gif_worthiness", 0), reverse=True
-    )
-
-    selected = []
-    selected_hashes = []
-    for frame in ranked_frames:
-        if len(selected) >= GRID_SIZE * GRID_SIZE:
-            break
+    def _grid_phash(frame):
         fp = frame.get("path", "")
         if not fp or not os.path.exists(fp):
-            continue
+            return None
         try:
             with PILImage.open(fp) as img:
-                ph = imagehash.phash(img)
+                return imagehash.phash(img)
         except Exception:
-            continue
-        if any(ph - sh <= GRID_DEDUP_THRESHOLD for sh in selected_hashes):
-            continue
-        selected.append(frame)
-        selected_hashes.append(ph)
+            return None
 
-    print(f"  Selected {len(selected)} diverse frames (from {len(ranked_frames)} scored)")
+    selected = select_grid_frames(
+        scored,
+        count=GRID_SIZE * GRID_SIZE,
+        phash_fn=_grid_phash,
+        phash_threshold=GRID_DEDUP_THRESHOLD,
+    )
+    grid_sample_timestamps = [frame.get("timestamp") for frame in selected]
+
+    print(f"  Selected {len(selected)} time-spread frames (from {len(scored)} scored)")
 
     if selected:
         grid = PILImage.new(
@@ -3073,8 +3126,10 @@ def run_pipeline(
         "score_prompt_mode": SCORE_PROMPT_MODE,
         "embed_dedup_threshold": EMBED_SIM_THRESHOLD,
         "embed_dedup_enabled": EMBED_DEDUP_ENABLED,
+        "embed_dedup_max_gap_s": EMBED_DEDUP_MAX_GAP_S,
         "temporal_dedup_enabled": TEMPORAL_DEDUP_ENABLED,
         "temporal_dedup_min_gap_s": TEMPORAL_DEDUP_MIN_GAP_S,
+        "grid_sample_timestamps": grid_sample_timestamps,
         "potplayer_pbf_enabled": POTPLAYER_PBF_ENABLED,
         "potplayer_pbf_path": potplayer_pbf_path,
         "dedup_input_clips": dedup_input_clips,
@@ -3167,9 +3222,17 @@ def run_pipeline(
 # ---- Direct mode (original end-to-end behavior) -------------------
 
 
-def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
+def run_direct_mode(
+    video_path: str,
+    export_dir: str | None = None,
+    *,
+    config_path: str | None = None,
+    frames_dir: str | None = None,
+) -> dict:
     """Run the full adaptive pipeline with lock, cleanup, and result persistence."""
-    config_data = _resolve_quality_runtime_snapshot(load_config())
+    config_data = _resolve_quality_runtime_snapshot(
+        load_config(config_path or "configs/models.yaml")
+    )
     init_db()
 
     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -3177,7 +3240,7 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
         EXPORT_DIR = os.path.join(export_dir, video_name)
     else:
         EXPORT_DIR = "data/exports/adaptive_test"
-    FRAMES_DIR = f"data/frames/adaptive_test/{video_name}"
+    FRAMES_DIR = frames_dir or f"data/frames/adaptive_test/{video_name}"
     os.makedirs(FRAMES_DIR, exist_ok=True)
     os.makedirs(EXPORT_DIR, exist_ok=True)
 
@@ -3223,7 +3286,11 @@ def run_direct_mode(video_path: str, export_dir: str | None = None) -> dict:
         output["timings"] = timing_payload
 
     # Save result
+    os.makedirs("data", exist_ok=True)
     with open("data/adaptive_test_result.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+    export_result_path = os.path.join(EXPORT_DIR, f"{video_name}_result.json")
+    with open(export_result_path, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
     # Print final stats
@@ -4001,6 +4068,7 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
         ]
 
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
+    SEX_ACT_THRESHOLD = float(cfg.get("sex_act_threshold", 0.0))
 
     # Task 4 (seventh-review): resolve the entire VLM runtime from the frozen
     # config.  Provider validation, model, base_url, lifecycle and launch_mode
@@ -4062,7 +4130,11 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
             print(f"  [{done}] FAILED: {item.error}")
         else:
             worth = item.payload.get("gif_worthiness", 0.0)
-            if worth >= WORTHINESS_THRESHOLD:
+            if frame_passes_keep_gate(
+                item.payload,
+                worthiness_threshold=WORTHINESS_THRESHOLD,
+                sex_act_threshold=SEX_ACT_THRESHOLD,
+            ):
                 with scored_lock:
                     progress_kept.append(item.payload)
                 print(f"  [{done}] score={worth:.2f} KEPT")
@@ -4085,7 +4157,11 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
         if item.payload is not None:
             response_count += 1
             parsed_count += 1
-            if item.payload.get("gif_worthiness", 0.0) >= WORTHINESS_THRESHOLD:
+            if frame_passes_keep_gate(
+                item.payload,
+                worthiness_threshold=WORTHINESS_THRESHOLD,
+                sex_act_threshold=SEX_ACT_THRESHOLD,
+            ):
                 scored.append(item.payload)
         else:
             failed_count += 1
@@ -4099,7 +4175,10 @@ def _stage_vlm(frames_dir: str, work_dir: str, cfg: dict, inputs: dict, config_d
             f"outage or configuration error, NOT a legitimate zero result."
         )
 
-    print(f"  Scored: {len(scored)} frames kept (threshold={WORTHINESS_THRESHOLD})")
+    print(
+        f"  Scored: {len(scored)} frames kept "
+        f"(worthiness>={WORTHINESS_THRESHOLD}, sex_act>={SEX_ACT_THRESHOLD})"
+    )
     kept_count = len(scored)
 
     manifest = {
@@ -4152,6 +4231,7 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
     REFINE_INTERVAL = cfg["refine_interval"]
     MAX_REFINE_FRAMES = int(cfg.get("max_refine_frames", DEFAULT_MAX_REFINE_FRAMES))
     WORTHINESS_THRESHOLD = cfg["worthiness_threshold"]
+    SEX_ACT_THRESHOLD = float(cfg.get("sex_act_threshold", 0.0))
     MIN_BRIGHTNESS = float(cfg.get("min_brightness", 25))
 
     # P0 (sixth-review §4): validate provider via shared helper, then use
@@ -4274,7 +4354,12 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
                 print(f"  refine[{done}] FAILED: {item.error}", flush=True)
             else:
                 worth = item.payload.get("gif_worthiness", 0.0)
-                label = "KEPT" if worth >= WORTHINESS_THRESHOLD else "below threshold"
+                kept = frame_passes_keep_gate(
+                    item.payload,
+                    worthiness_threshold=WORTHINESS_THRESHOLD,
+                    sex_act_threshold=SEX_ACT_THRESHOLD,
+                )
+                label = "KEPT" if kept else "below threshold"
                 print(f"  refine[{done}] score={worth:.2f} {label}", flush=True)
             if done % 10 == 0 or done == total:
                 print(
@@ -4294,7 +4379,11 @@ def _stage_refine(video_path: str, frames_dir: str, work_dir: str, cfg: dict, in
             if item.payload is not None:
                 refine_responded += 1
                 refine_parsed += 1
-                if item.payload.get("gif_worthiness", 0.0) >= WORTHINESS_THRESHOLD:
+                if frame_passes_keep_gate(
+                    item.payload,
+                    worthiness_threshold=WORTHINESS_THRESHOLD,
+                    sex_act_threshold=SEX_ACT_THRESHOLD,
+                ):
                     scored_frames.append(item.payload)
             else:
                 refine_failed += 1
@@ -4612,6 +4701,7 @@ def _stage_rank_dedup(
     EMBED_DEDUP_ENABLED = cfg["embed_dedup_enabled"]
     TEMPORAL_DEDUP_ENABLED = cfg["temporal_dedup_enabled"]
     TEMPORAL_DEDUP_MIN_GAP_S = cfg["temporal_dedup_min_gap_s"]
+    EMBED_DEDUP_MAX_GAP_S = float(cfg.get("embed_dedup_max_gap_s", 0))
     OUTPUT_RATIO = cfg["output_ratio"]
     MAX_OUTPUT = cfg["max_output"]
 
@@ -4880,54 +4970,16 @@ def _stage_rank_dedup(
         clean_clips, video_path, cfg, evidence_cache,
     )
 
-    import numpy as np
-
     # Embedding dedup
     deduped_clips = list(clean_clips)
     if EMBED_DEDUP_ENABLED and len(clean_clips) > 1:
-        clip_embeddings = []
-        for clip in clean_clips:
-            text = " ".join(filter(None, [
-                clip.get("caption", ""),
-                clip.get("emotional_core", ""),
-            ]))
-            if not text:
-                clip_embeddings.append(None)
-                continue
-            try:
-                emb = compute_text_embedding(text)
-                clip_embeddings.append(np.array(emb, dtype=np.float32))
-            except Exception:
-                clip_embeddings.append(None)
-
-        order = sorted(
-            range(len(clean_clips)),
-            key=lambda i: clean_clips[i]["gif_worthiness"],
-            reverse=True,
+        clip_embeddings = _compute_clip_embeddings(clean_clips)
+        deduped_clips, _duplicate_groups = embedding_dedup_clips(
+            clean_clips,
+            clip_embeddings,
+            threshold=EMBED_SIM_THRESHOLD,
+            max_gap_s=EMBED_DEDUP_MAX_GAP_S,
         )
-        kept_indices = []
-        kept_embs = []
-
-        for idx in order:
-            emb = clip_embeddings[idx]
-            if emb is None:
-                kept_indices.append(idx)
-                kept_embs.append(None)
-                continue
-            is_dup = False
-            for ki, ke_emb in zip(kept_indices, kept_embs):
-                if ke_emb is None:
-                    continue
-                norm = np.linalg.norm(emb) * np.linalg.norm(ke_emb) + 1e-8
-                sim = float(np.dot(emb, ke_emb) / norm)
-                if sim >= EMBED_SIM_THRESHOLD:
-                    is_dup = True
-                    break
-            if not is_dup:
-                kept_indices.append(idx)
-                kept_embs.append(emb)
-
-        deduped_clips = [clean_clips[i] for i in kept_indices]
         print(f"  Embedding dedup: {len(clean_clips)} -> {len(deduped_clips)} clips")
 
     # Temporal dedup
@@ -5656,6 +5708,16 @@ def parse_cli_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--export-dir", default=None, help="Export directory for GIFs"
     )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="YAML config path (default: configs/models.yaml)",
+    )
+    parser.add_argument(
+        "--frames-dir",
+        default=None,
+        help="Frame/checkpoint directory (default: data/frames/adaptive_test/<video>)",
+    )
     # Stage-mode arguments
     parser.add_argument(
         "--task-stage",
@@ -5724,7 +5786,12 @@ def main() -> None:
         # Direct mode (original behavior)
         if not args.video:
             args.video = "C:/Users/sunhao/Desktop/ToWatch/JUR-639.mp4"
-        run_direct_mode(args.video, args.export_dir)
+        run_direct_mode(
+            args.video,
+            args.export_dir,
+            config_path=args.config,
+            frames_dir=args.frames_dir,
+        )
 
 
 if __name__ == "__main__":

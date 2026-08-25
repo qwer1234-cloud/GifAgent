@@ -12,13 +12,30 @@ DEFAULT_ADULT_BLEND_WEIGHT = 0.80
 DEFAULT_CINEMATIC_BLEND_WEIGHT = 0.20
 
 
-def _finite_unit_score(value: Any) -> float | None:
+def normalize_vlm_unit_score(value: Any) -> float | None:
+    """Map a VLM JSON number onto ``[0, 1]``.
+
+    Scoring prompts ask for integers ``0–100``. Legacy stubs and older
+    models emit unit floats. JSON ``1`` is therefore 1/100; JSON ``1.0``
+    stays a unit maximum. Non-whole values above 1.0 (e.g. ``1.1``) are
+    rejected so over-range unit scores cannot sneak through as percents.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    score = float(value)
-    if not math.isfinite(score) or score < 0.0 or score > 1.0:
+    raw = float(value)
+    if not math.isfinite(raw) or raw < 0.0:
         return None
-    return score
+    if isinstance(value, int) and 0 <= value <= 100:
+        return value / 100.0
+    if raw == math.floor(raw) and 2.0 <= raw <= 100.0:
+        return raw / 100.0
+    if raw <= 1.0:
+        return raw
+    return None
+
+
+def _finite_unit_score(value: Any) -> float | None:
+    return normalize_vlm_unit_score(value)
 
 
 def sex_act_score(payload: dict[str, Any] | None) -> float:

@@ -7,7 +7,7 @@ media:
 
 vlm:
   provider: "ollama"
-  model: "huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0"
+  model: "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q2_K_P"
   # Resolved once through the lifecycle-aware Ollama runtime when a job starts.
   # Use "auto" for WSL Ollama. Never pin a 172.x address; it changes every reboot.
   base_url: "auto"
@@ -21,7 +21,7 @@ vlm:
   launch_mode: "wsl"
   # 16GB VRAM has headroom for the VLM + nomic-embed-text simultaneously,
   # so skip the unload-before-load step (Task 7: model lifecycle repair).
-  free_vram_before_load: false
+  free_vram_before_load: true
 
 llm:
   provider: "openai_compatible"
@@ -103,7 +103,7 @@ quality_moe:
       version: builtin-v1
   judge:
     # Same uncensored vision model as scoring; llava refuses NSFW sheets.
-    model_id: "huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0"
+    model_id: "fredrezones55/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:Q2_K_P"
     temperature: 0
     timeout_seconds: 120
     base_url: inherit_vlm
@@ -122,16 +122,13 @@ adaptive:
   # Baseline values preserved in data/backups/before_adult_opt_* .
   sample_interval: 7
   merge_gap: 15
-  # Q8 VL adult scores sit in 0.50-0.60 (IQ2_M was a flat 0.70).
-  merge_score_threshold: 0.50
+  merge_score_threshold: 0.58
   # Prevent dense high-score runs from collapsing into one mega-clip.
   max_merge_span_s: 18
   # Multi-frame groups must contain a peak at/above this (else demote to single).
-  merge_peak_threshold: 0.58
-  worthiness_threshold: 0.55
-  # 0-100 scoring collapses gif_worthiness to ~0.87; drop setup via sex_act.
-  sex_act_threshold: 0.40
-  refine_threshold: 0.58
+  merge_peak_threshold: 0.70
+  worthiness_threshold: 0.62
+  refine_threshold: 0.70
   refine_radius: 8
   refine_interval: 8
   # Hard cap so dense adult scores cannot explode 35B refine past one hour.
@@ -150,7 +147,7 @@ adaptive:
   action_scan_fps: 4
   action_boundary_confidence_threshold: 0.65
   action_loop_adjust_s: 0.75
-  action_vlm_min_worthiness: 0.50
+  action_vlm_min_worthiness: 0.60
   action_fallback_mode: fixed_window
   # Dark-frame prefilter (grayscale mean). 0 = disable. Legacy default was 25.
   min_brightness: 10
@@ -204,7 +201,7 @@ adaptive:
   frame_extract_workers: 6
   # Overlap two VLM HTTP calls inside vlm/refine. Pair with OLLAMA_NUM_PARALLEL=2.
   # Fall back to 1 if p50 latency rises (KV cache / VRAM pressure).
-  vlm_score_workers: 2
+  vlm_score_workers: 1
   # two_tier: coarse/refine emit numeric scores; captions are backfilled
   # only on each clip's best_frame. legacy = previous full-schema scoring.
   score_schema_mode: two_tier

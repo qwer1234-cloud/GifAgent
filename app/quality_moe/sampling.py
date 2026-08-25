@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 import hashlib
 import math
 from pathlib import Path
+import shutil
+import subprocess
+import tempfile
 from types import MappingProxyType
 from typing import Mapping
 
@@ -133,11 +136,17 @@ def sample_clip_frames(
     candidate_id: str,
     *,
     sample_count: int = _DEFAULT_SAMPLE_COUNT,
+    backend: str = "ffmpeg",
 ) -> SampledClip:
     """Random-access sample one media file without reading neighbouring files.
 
     The generated timestamps are validated before and after frame decoding, so a
     caller cannot accidentally submit frames outside its exact candidate range.
+
+    ``backend="ffmpeg"`` (default) uses accurate ``-ss`` after ``-i`` so a
+    4K keyframe miss cannot report a PTS outside a 2s window.
+    ``backend="opencv"`` is the historical seek path, kept for unit tests
+    that inject a fake ``VideoCapture``.
     """
     start_ts = _finite_timestamp(start_ts, name="start_ts")
     end_ts = _finite_timestamp(end_ts, name="end_ts")
@@ -151,6 +160,8 @@ def sample_clip_frames(
         raise ValueError("sample_count must be an integer from six to eight")
     if not isinstance(candidate_id, str) or not candidate_id:
         raise ValueError("candidate_id must be a non-empty string")
+    if backend not in {"ffmpeg", "opencv"}:
+        raise ValueError("backend must be 'ffmpeg' or 'opencv'")
 
     timestamps = tuple(float(value) for value in np.linspace(start_ts, end_ts, sample_count))
     if any(timestamp < start_ts or timestamp > end_ts for timestamp in timestamps):
@@ -161,7 +172,117 @@ def sample_clip_frames(
             candidate_id=candidate_id, video_path=video_path, start_ts=start_ts,
             end_ts=end_ts, code="media_unavailable",
         )
+    if backend == "ffmpeg":
+        return _sample_via_ffmpeg(
+            path, video_path, start_ts, end_ts, candidate_id, timestamps,
+        )
+    return _sample_via_opencv(
+        path, video_path, start_ts, end_ts, candidate_id, timestamps,
+    )
 
+
+def _format_window_timestamp(value: float) -> str:
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return str(numeric)
+
+
+def _sample_via_ffmpeg(
+    path: Path,
+    video_path: str | Path,
+    start_ts: float,
+    end_ts: float,
+    candidate_id: str,
+    timestamps: tuple[float, ...],
+) -> SampledClip:
+    # One window decode beats six independent seeks through a 4K file.
+    # ``-ss`` stays before ``-i`` so a late window does not decode from t=0.
+    duration = end_ts - start_ts
+    tmp = tempfile.mkdtemp(prefix="quality_sample_")
+    pattern = str(Path(tmp) / "frame_%06d.jpg")
+    command = [
+        "ffmpeg", "-y",
+        # Seek first so a late 4K window does not decode from t=0.
+        "-ss", _format_window_timestamp(start_ts),
+        "-i", str(path),
+        "-t", _format_window_timestamp(duration),
+        "-vf", f"scale={_MAX_LONGEST_SIDE}:-1",
+        "-an", "-sn",
+        "-q:v", "3",
+        pattern,
+    ]
+    timeout_s = max(60.0, duration * 8.0 + 30.0)
+    try:
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired:
+            return _unavailable(
+                candidate_id=candidate_id, video_path=video_path,
+                start_ts=start_ts, end_ts=end_ts, code="frame_decode_failed",
+            )
+        except Exception:
+            return _unavailable(
+                candidate_id=candidate_id, video_path=video_path,
+                start_ts=start_ts, end_ts=end_ts, code="frame_decode_failed",
+            )
+        if getattr(completed, "returncode", 1) != 0:
+            return _unavailable(
+                candidate_id=candidate_id, video_path=video_path,
+                start_ts=start_ts, end_ts=end_ts, code="frame_decode_failed",
+            )
+        files = sorted(Path(tmp).glob("frame_*.jpg"))
+        if len(files) < len(timestamps):
+            return _unavailable(
+                candidate_id=candidate_id, video_path=video_path,
+                start_ts=start_ts, end_ts=end_ts, code="frame_decode_failed",
+            )
+        last = len(files) - 1
+        indexes = [
+            round(index * last / (len(timestamps) - 1))
+            for index in range(len(timestamps))
+        ]
+        frames: list[np.ndarray] = []
+        chosen_ts: list[float] = []
+        for index in indexes:
+            image = cv2.imread(str(files[index]), cv2.IMREAD_COLOR)
+            if image is None:
+                return _unavailable(
+                    candidate_id=candidate_id, video_path=video_path,
+                    start_ts=start_ts, end_ts=end_ts, code="frame_decode_failed",
+                )
+            stamp = start_ts + (index / last) * duration
+            stamp = min(end_ts, max(start_ts, stamp))
+            frames.append(_resize(image))
+            chosen_ts.append(stamp)
+        return SampledClip(
+            candidate_id=candidate_id,
+            video_path=video_path,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            timestamps=tuple(chosen_ts),
+            frames=tuple(frames),
+            diagnostics={
+                "code": "sampled",
+                "sample_count": len(frames),
+                "backend": "ffmpeg",
+                "window_frames": len(files),
+            },
+        )
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _sample_via_opencv(
+    path: Path,
+    video_path: str | Path,
+    start_ts: float,
+    end_ts: float,
+    candidate_id: str,
+    timestamps: tuple[float, ...],
+) -> SampledClip:
     capture = cv2.VideoCapture(str(path))
     if not capture.isOpened():
         capture.release()

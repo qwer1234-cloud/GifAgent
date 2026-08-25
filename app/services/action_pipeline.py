@@ -218,6 +218,29 @@ def _fallback_result(
     )
 
 
+def _safe_segments(
+    guard_result: TransitionGuardResult,
+    scan_start_s: float,
+    scan_end_s: float,
+) -> tuple[GuardSegment, ...]:
+    """Use guard segments, or the original scan window when the guard dropped."""
+    if guard_result.transition_action != "drop":
+        return guard_result.segments
+    start = guard_result.original_start_s
+    end = guard_result.original_end_s
+    if (
+        isinstance(start, (int, float))
+        and isinstance(end, (int, float))
+        and math.isfinite(float(start))
+        and math.isfinite(float(end))
+        and float(end) > float(start)
+    ):
+        return (GuardSegment(float(start), float(end), "original_window"),)
+    if scan_end_s > scan_start_s:
+        return (GuardSegment(scan_start_s, scan_end_s, "original_window"),)
+    return ()
+
+
 def _hard_cut_timestamps(guard_result: TransitionGuardResult) -> list[float]:
     return [
         float(boundary.timestamp_s)
@@ -582,9 +605,7 @@ def materialize_action_candidates(
     fallback_reasons: Counter[str] = Counter()
     vlm_attempted_globally = False
     worthiness = _finite(clip.get("gif_worthiness"), 0.0)
-    safe_segments = (
-        () if guard_result.transition_action == "drop" else guard_result.segments
-    )
+    safe_segments = _safe_segments(guard_result, scan_start_s, scan_end_s)
     for segment in safe_segments:
         safe_start_s = float(segment.start_s)
         safe_end_s = float(segment.end_s)

@@ -8,7 +8,7 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 
 ### 核心能力
 
-- **自动打标**：VLM（默认 `Qwen3.6-35B-A3B-Uncensored` IQ2_M，经 Ollama）逐帧分析 → LLM（`deepseek-v4-flash`）综合生成标签，所有输出经过质量门禁校验
+- **自动打标**：VLM（默认 `huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0`，经 Ollama）逐帧分析 → LLM（`deepseek-v4-flash`）综合生成标签，所有输出经过质量门禁校验
 - **质量门禁**：统一的 JSON 解析器 + placeholder 检测 + Pydantic 模型校验，placeholder 率从 89% 降至 <1%
 - **向量索引**：基于 nomic-embed-text 的 FAISS 语义向量库，支持文本到 GIF 的跨模态检索（8109 向量 / 9221 媒体）
 - **自适应提取**：两阶段 GIF 提取，per-frame VLM 严格评分 + 时域 clip 合并 + embedding/时域去重；库内 FAISS 检索不注入打分或合成
@@ -17,7 +17,7 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 - **Preference Memory**：候选 GIF 物化 → 人工反馈收集 → 偏好画像构建 → 重排序，含 holdout 评估门禁
 - **批量处理**：视频目录批量处理 + checkpoint 断点续跑，支持 200+ 视频无人值守处理
 - **视频去重**：基于时长 + 关键帧 pHash 的内容指纹，即使文件名不同也能识别重复视频（抗重编码/换容器）
-- **9 宫格缩略图**：每个视频自动选 9 张评分最高且视觉不重复的帧，生成 3x3 网格缩略图 + 9 张独立帧图
+- **9 宫格缩略图**：按时间分成 9 桶各取最高分再 pHash 去重，避免同分时预览全挤在片头；生成 3x3 网格 + 9 张独立帧图
 
 ### 数据流
 
@@ -25,7 +25,7 @@ GifAgent 是一个运行在本地的影视片段智能管理工具。它自动�
 E:\data\originals\（8000+ GIF）
   → SHA256 + pHash 去重 → SQLite 入库
   → ffmpeg GIF 抽帧（6-12 帧/张）
-  → 本地 VLM 逐帧审美分析（默认 uncensored Qwen 35B A3B IQ2_M）
+  → 本地 VLM 逐帧审美分析（默认 Qwen3-VL 8B Q8 abliterated）
   → json_guard 统一解析 → quality 门禁校验
   → deepseek-v4-flash 综合标注（tags + emotional_core + aesthetic_notes）
   → nomic-embed-text 向量化 → FAISS 索引
@@ -40,13 +40,14 @@ E:\data\originals\（8000+ GIF）
 
 | 项 | 当前默认 |
 |----|----------|
-| VLM / Quality 视觉裁判 | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M` |
+| VLM / Quality 视觉裁判 | `huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0`（约 9.2GB VRAM；16GB 卡上整模常驻） |
 | VLM `base_url` | `auto`（运行时发现 WSL 地址，禁止写死 `172.x`） |
 | LLM | `openai_compatible` / `deepseek-v4-flash`（`DEEPSEEK_API_KEY`） |
-| 打分提示 | `adaptive.score_prompt_mode: adult`；`score_schema_mode: two_tier`（粗/细采样只出分数，caption 在 refine 回填） |
+| 打分提示 | `adaptive.score_prompt_mode: adult`；`score_schema_mode: two_tier`；模型吐整数 `0–100`，解析层除以 100 |
 | 粗采样 / 细采样 | `sample_interval=7`，`refine_interval=8`，`refine_radius=8`，`max_refine_frames=120` |
-| 准入 | `worthiness_threshold=0.62`，`refine_threshold=0.70` |
-| Merge | `merge_score_threshold=0.58`，`max_merge_span_s=18`，`merge_peak_threshold=0.70` |
+| 准入 | `worthiness_threshold=0.55`，`sex_act_threshold=0.40`，`refine_threshold=0.58` |
+| Merge | `merge_score_threshold=0.50`，`max_merge_span_s=18`，`merge_peak_threshold=0.58` |
+| 去重 | `embedding_dedup_threshold=0.88`，`embedding_dedup_max_gap_s=15`，`temporal_dedup_min_gap_s=15` |
 | 导出 | `output_ratio=1.0`，`max_output=100`；`gif_fps=25`（须整除 100；24 会令 GIF 延时不均） |
 | 并发 | `frame_extract_workers=6`，`vlm_score_workers=2`（需 `OLLAMA_NUM_PARALLEL=2`），`gpu_stage_workers=1`，`cpu_stage_workers=3` |
 | 默认关闭 | `boundary_snap_enabled`、`score_calibration_enabled`（缺省即旧行为；未做盲测前不要打开） |
@@ -57,7 +58,7 @@ E:\data\originals\（8000+ GIF）
 
 每个新键在 `extract_config()` 里的默认值都复现改之前的行为。Retry **不会**改写已冻结的 `config_json`，因此历史任务继续按当时的快照跑。`vlm_score_workers` 和 `cpu_stage_workers` 依赖显存与磁盘，必须在本机量过再改，不要直接抄 16GB 机器上的数字。`clear_output_dir: true` 时基准测试要用拷贝或新目录，不要原地覆盖历史导出。
 
-`configs/models.adult_candidate.yaml` 是独立 **preset**，不是 `models.yaml` 的镜像。当前主要分歧：`worthiness_threshold` 0.42 / 0.62，`refine_threshold` 0.55 / 0.70，`merge_score_threshold` 0.50 / 0.58，`merge_peak_threshold` 0.55 / 0.70，`max_merge_span_s` 24 / 18，`output_ratio` 0.45 / 1.0，`max_output` 35 / 100；adult preset 没有 `max_refine_frames`。
+`configs/models.adult_candidate.yaml` 是独立 **preset**，不是 `models.yaml` 的镜像。当前主要分歧：`worthiness_threshold` 0.42 / 0.55，`sex_act_threshold` 缺省 0 / 0.40，`refine_threshold` 0.55 / 0.58，`merge_peak_threshold` 0.55 / 0.58，`max_merge_span_s` 24 / 18，`output_ratio` 0.45 / 1.0，`max_output` 35 / 100；adult preset 没有 `max_refine_frames`。不要用 35B IQ2_M / Q2_K_P 或 `llava:13b` 做成人打分与 Quality 裁判。
 
 Ollama 侧与 `vlm_score_workers` 对齐：在 WSL 里设置 `OLLAMA_NUM_PARALLEL`（当前 YAML 为 2）。若单帧 p50 变长，把两者都降回 1。
 
@@ -73,13 +74,13 @@ Ollama 侧与 `vlm_score_workers` 对齐：在 WSL 里设置 `OLLAMA_NUM_PARALLE
 | uv | 最新版 | `powershell -c "irm https://astral.sh/uv/install.ps1 \| iex"` |
 | ffmpeg | 任意版本 | PATH 中可用 |
 | Ollama | 最新版 | 推荐 WSL distro `Ubuntu-20.04`，Windows 经 WSL IP 访问 `11434` |
-| GPU | 12GB+ VRAM | 默认 IQ2_M 约 12GB；LLM 文本合成走云端 `deepseek-v4-flash` |
+| GPU | 16GB VRAM（已验证） | 8B Q8 约 9.2GB；LLM 文本合成走云端 `deepseek-v4-flash` |
 
 ### 必需模型
 
 ```bash
 # 视觉打分 / Quality 裁判（与 configs/models.yaml 一致）
-ollama pull hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M
+ollama pull huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0
 ollama pull nomic-embed-text:latest                      # Embedding 向量化
 ```
 
@@ -106,7 +107,7 @@ media:
 
 vlm:
   provider: "ollama"
-  model: "hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M"
+  model: "huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0"
   base_url: "auto"                    # auto = 运行时发现 WSL 地址；不要写死 172.x
   manage_lifecycle: true              # 启动/停止模型（true/false）
   launch_mode: "wsl"                  # none（不管理）| native（ollama）| wsl（wsl ollama）
@@ -138,6 +139,14 @@ preference_memory:
 
 adaptive:
   score_prompt_mode: adult            # default = 影视向；adult = 成人向中性 GIF 潜力（写入任务快照）
+  score_schema_mode: two_tier
+  worthiness_threshold: 0.55
+  sex_act_threshold: 0.40             # YAML-only；Settings 页没有这项
+  refine_threshold: 0.58
+  merge_score_threshold: 0.50
+  merge_peak_threshold: 0.58
+  embedding_dedup_max_gap_s: 15
+  gif_fps: 25
 
 database:
   path: "data/library.db"
@@ -299,24 +308,31 @@ from leftover `GifAgentUI.exe` processes; it never kills a foreign holder
 `dist/GifAgentUI` can block `rm -rf` during rebuild — stop those keepers
 first (this also drops the WSL VM / Ollama). Do not replace only
 `GifAgentUI.exe`; ship the matching `_internal/` tree. Smoke-test at least
-one real queued video through `discover`/`sample`.
+one real queued video through `discover`/`sample`. After rebuild, the
+writable `configs/models.yaml` is the pre-rebuild copy (Settings edits are
+kept). To pick up repo defaults (8B Q8, `sex_act_threshold: 0.40`), copy
+`configs/models.yaml` over `dist/GifAgentUI/configs/models.yaml`.
 
 ### Adaptive duplicate reduction tuning (2026-07-05 / 2026-07-25)
 
 - Adaptive export now clears generated artifacts in the target video output
   folder before reprocessing, preventing stale GIFs from earlier runs from
   mixing with the new run.
-- Current adult-candidate defaults (`configs/models.yaml`, 2026-08):
-  `sample_interval=7`, `worthiness_threshold=0.62`, `refine_threshold=0.70`,
-  `refine_interval=8`, `refine_radius=8`, `max_refine_frames=120`,
-  `max_merge_span_s=18`, `merge_peak_threshold=0.70`,
-  `merge_score_threshold=0.58`, `output_ratio=1.0`, `max_output=100`,
-  `min_brightness=10`.
+- Current production defaults (`configs/models.yaml`, 2026-08):
+  `sample_interval=7`, `worthiness_threshold=0.55`, `sex_act_threshold=0.40`,
+  `refine_threshold=0.58`, `refine_interval=8`, `refine_radius=8`,
+  `max_refine_frames=120`, `max_merge_span_s=18`, `merge_peak_threshold=0.58`,
+  `merge_score_threshold=0.50`, `output_ratio=1.0`, `max_output=100`,
+  `min_brightness=10`, `gif_fps=25`.
+- Adult/cinematic prompts ask the VLM for integers `0–100`.
+  `normalize_vlm_unit_score` maps them to `0.0–1.0` (`47` → `0.47`; JSON `1`
+  is `0.01`; legacy unit floats `0.0–1.0` stay). `score_calibration` stays off.
 - Region-aware merge lives in `app/services/clip_merge.py` (span cap + peak
   demotion) so dense high-score timelines do not collapse into one mega-clip.
-- Embedding dedup uses `embedding_dedup_threshold=0.88`, then temporal dedup
-  keeps the highest-scored clip within a 15s peak-time window.
-- Optional adult VLM scoring prompt: set `adaptive.score_prompt_mode: adult` in `configs/models.yaml` or the Settings dropdown. The value is frozen into the job snapshot and result JSON; scoring does not read environment variables.
+- Embedding dedup uses `embedding_dedup_threshold=0.88` and only compares
+  clips within `embedding_dedup_max_gap_s=15`. Temporal dedup then keeps the
+  highest-scored clip within a 15s peak-time window.
+- Optional adult VLM scoring prompt: set `adaptive.score_prompt_mode: adult` in `configs/models.yaml` or the Settings dropdown. The value is frozen into the job snapshot and result JSON; scoring does not read environment variables. Checkpoint identity is `vlm_model` + `score_prompt_mode` only — changing prompt text needs a new `frames_dir` (or a deleted checkpoint) to rescore. Changing only `sex_act_threshold` can resume.
 - Result JSON records both `embedding_deduped_clips` and final `deduped_clips`
   so each run shows how much was removed.
 
@@ -326,9 +342,11 @@ one real queued video through `discover`/`sample`.
 `adaptive.transition_min_duration_s`（切分后最短可导出时长）和
 `adaptive.transition_boundary_margin_s`（转场边界安全间隔）；更细的扫描、
 运动补偿和阈值仍保留在 YAML 与任务快照中。保护器会在去重和导出前检测硬切与
-软转场：可安全的窗口会保留或修边，跨转场的窗口会切分，边界余量不足或锚点落在
-安全区内时会丢弃。连贯的慢速镜头运动会被识别为 `coherent_camera_motion`，不会仅因
-画面运动而切分或丢弃。
+软转场：可安全的窗口会保留或修边，跨转场的窗口会切分。边界余量不足、锚点落在
+安全区内、或切分后没有可导出片段时，**保留原始窗口**（`original_window`），
+而不是整段丢弃——否则 POV / 手持镜头会被误杀。连贯的镜头运动（仿射残差低且
+确有平移/缩放）会被识别为 `coherent_camera_motion`，不会判成 `hard_cut` /
+`soft_change`。
 
 结果 JSON 的 `transition_guard` 汇总 `input`、`split`、`trim`、`drop`、
 `unverified`、`hard_cut`、`soft_transition` 和 `motion`，每个导出结果也记录
@@ -471,6 +489,10 @@ GifAgent/
 │   │   ├── scenario.py               # 场景标签管理
 │   │   ├── video_fingerprint.py      # 视频指纹（时长+关键帧pHash，去重用）
 │   │   ├── clip_merge.py             # 自适应区域 merge（span 封顶 + 峰值降级）
+│   │   ├── clip_dedup.py             # embedding 去重（含 max_gap_s）
+│   │   ├── grid_select.py            # 9 宫格时间分桶选帧
+│   │   ├── transition_guard.py       # 硬切/软转场/POV 镜头保护
+│   │   ├── export_ranking.py         # 导出排序 + 0–100 分数归一化
 │   │   ├── score_prompt.py           # 冻结 VLM 打分提示词模式（default / adult）
 │   │   ├── candidates.py             # 候选 GIF 物化服务
 │   │   ├── preference_schema.py      # Preference Memory 数据库 DDL
@@ -635,7 +657,7 @@ uv run pytest tests/ -v
 
 | 角色 | 模型 | 说明 |
 |------|------|------|
-| VLM | `Qwen3.6-35B-A3B-Uncensored` IQ2_M | 逐帧视觉分析 + Quality 裁判；`llava:13b` 会拒成人内容 |
+| VLM | `huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0` | 逐帧视觉分析 + Quality 裁判；勿用 `llava:13b` 或 35B IQ2_M / Q2_K_P |
 | LLM | `deepseek-v4-flash` | 云端 OpenAI-compatible 综合标注 + 标签生成 |
 | Embedding | `nomic-embed-text:latest` | 文本/帧向量化（FAISS 索引） |
 

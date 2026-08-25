@@ -161,6 +161,28 @@ def _result_error(message: str, start_s: object = 0.0, end_s: object = 0.0, anch
     )
 
 
+def _structure_recovered(residual: float, inlier_ratio: float) -> bool:
+    return residual < 0.18 and inlier_ratio >= 0.45
+
+
+def _coherent_camera_motion(
+    residual: float,
+    inlier_ratio: float,
+    translate_x: float,
+    translate_y: float,
+    scale: float,
+) -> bool:
+    """Global pan/handheld, not a shot change.
+
+    POV and body-scale motion raise histogram scores like a cut, but the
+    affine model still tracks a moving camera.  Real hard cuts between two
+    scenes fit poorly *and* have near-zero camera translation.
+    """
+    if not _structure_recovered(residual, inlier_ratio):
+        return False
+    return abs(translate_x) + abs(translate_y) >= 0.5 or abs(scale - 1.0) >= 0.01
+
+
 def _evidence(metric: TemporalPairEvidence, config: TransitionGuardConfig) -> BoundaryEvidence:
     residual, inlier_ratio, dx, dy, scale = (
         (metric.compensated_residual, metric.inlier_ratio, metric.translate_x, metric.translate_y, metric.scale)
@@ -175,8 +197,10 @@ def _evidence(metric: TemporalPairEvidence, config: TransitionGuardConfig) -> Bo
         + 0.30 * min(1.0, metric.edge_distance / 0.35)
         + 0.25 * min(1.0, metric.luma_change / 0.18),
     )
-    structure_recovered = residual < 0.18 and inlier_ratio >= 0.45
-    if score >= config.hard_threshold and residual >= 0.08:
+    camera_motion = _coherent_camera_motion(residual, inlier_ratio, dx, dy, scale)
+    if camera_motion:
+        kind = "coherent_camera_motion"
+    elif score >= config.hard_threshold and residual >= 0.08:
         kind = "hard_cut"
     # The public soft threshold controls the normalized per-pair change
     # strength.  Histogram/edge floors keep coherent pans (large pixel/edge
@@ -187,7 +211,7 @@ def _evidence(metric: TemporalPairEvidence, config: TransitionGuardConfig) -> Bo
         and metric.edge_distance >= 0.05
     ):
         kind = "soft_change"
-    elif structure_recovered:
+    elif _structure_recovered(residual, inlier_ratio):
         kind = "coherent_camera_motion"
     else:
         kind = "none"
@@ -225,6 +249,26 @@ def _flash_indexes(evidence: list[BoundaryEvidence], pairs: list[TemporalPairEvi
 def _has_stable_affine_model(item: BoundaryEvidence) -> bool:
     """Use a tight residual bound so a blend cannot masquerade as a pan."""
     return item.compensated_residual < 0.012 and item.inlier_ratio >= 0.45
+
+
+def _retain_original_window(
+    start_s: float,
+    end_s: float,
+    anchor_ts_s: float,
+    unique: list[BoundaryEvidence],
+    hard_count: int,
+    soft_count: int,
+    motion_type: str,
+    risk: float,
+    reason: str,
+) -> TransitionGuardResult:
+    """Keep the scored window when the guard cannot isolate a clean segment."""
+    segment = GuardSegment(start_s, end_s, "original_window")
+    return TransitionGuardResult(
+        "keep", (segment,), tuple(unique), hard_count, soft_count, motion_type, risk,
+        reason, original_start_s=start_s, original_end_s=end_s,
+        anchor_ts_s=anchor_ts_s, anchor_segment=segment,
+    )
 
 
 def _segments(start_s: float, end_s: float, boundaries: list[BoundaryEvidence], config: TransitionGuardConfig) -> tuple[GuardSegment, ...]:
@@ -298,9 +342,8 @@ def guard_candidate_window(
     run: list[BoundaryEvidence] = []
     for item in evidence:
         # Sustained palette/edge changes are a dissolve/fade only if a stable
-        # global affine model cannot explain them.  The tighter residual bound
-        # preserves coherent pans while a blend's persistent image residual
-        # remains eligible for soft-boundary confirmation.
+        # global affine model cannot explain them.  Coherent camera motion is
+        # already excluded from soft_change above.
         unstable = item.boundary_type == "soft_change" and not _has_stable_affine_model(item)
         run = run + [item] if unstable else []
         if len(run) == config.soft_run_frames:
@@ -326,24 +369,25 @@ def guard_candidate_window(
     motion_type = "coherent_camera_motion" if stable_motion else "static_or_local_motion"
     risk = max((item.confidence for item in unique), default=0.0)
     if not segments:
-        return TransitionGuardResult(
-            "drop", (), tuple(unique), hard_count, soft_count, motion_type, risk,
-            "transition margins left no exportable segment", original_start_s=start_s,
-            original_end_s=end_s, anchor_ts_s=anchor_ts_s,
+        return _retain_original_window(
+            start_s, end_s, anchor_ts_s, unique, hard_count, soft_count,
+            motion_type, risk,
+            "transition margins left no exportable segment; retaining original window",
         )
     anchor_segment = next(
         (segment for segment in segments if segment.start_s <= anchor_ts_s <= segment.end_s),
         None,
     )
     # Splits deliberately retain every viable segment for the downstream
-    # candidate fan-out.  A single retained segment, however, must still be
-    # the segment that contains the original score anchor; otherwise keeping
-    # it would silently move the candidate to the other side of an edit.
+    # candidate fan-out.  A single retained segment on the other side of an
+    # edit must not replace the scored shot; keep the original window instead
+    # of dropping the candidate.
     if anchor_segment is None and len(segments) == 1:
-        return TransitionGuardResult(
-            "drop", (), tuple(unique), hard_count, soft_count, motion_type, risk,
-            "anchor timestamp falls inside a transition safety margin",
-            original_start_s=start_s, original_end_s=end_s, anchor_ts_s=anchor_ts_s,
+        return _retain_original_window(
+            start_s, end_s, anchor_ts_s, unique, hard_count, soft_count,
+            motion_type, risk,
+            "anchor timestamp falls inside a transition safety margin; "
+            "retaining original window",
         )
     if len(segments) > 1:
         action, reason = "split", "confirmed transition boundaries split the candidate window"

@@ -105,6 +105,8 @@ def _guard(
         motion_type=motion_type,
         transition_risk=0.0,
         guard_reason="clean",
+        original_start_s=safe_segments[0].start_s if safe_segments else 0.0,
+        original_end_s=safe_segments[-1].end_s if safe_segments else 0.0,
         anchor_segment=safe_segments[0] if safe_segments else None,
     )
 
@@ -801,7 +803,7 @@ def test_media_fallback_is_fixed_40_60_and_never_exceeds_twenty_seconds(
     assert result.action_metrics["fallback"] == 1
 
 
-def test_transition_drop_never_materializes_defensive_segments(monkeypatch):
+def test_transition_drop_retains_original_window(monkeypatch):
     monkeypatch.setattr(
         action_pipeline,
         "guard_candidate_window",
@@ -815,9 +817,10 @@ def test_transition_drop_never_materializes_defensive_segments(monkeypatch):
 
     result = _run()
 
-    assert result.clips == ()
+    assert len(result.clips) == 1
+    assert result.clips[0]["end_ts"] - result.clips[0]["start_ts"] >= 2.0
     assert result.transition_metrics["drop"] == 1
-    assert result.action_metrics["output"] == 0
+    assert result.action_metrics["output"] == 1
 
 
 def test_child_rescore_failure_discards_only_that_child(monkeypatch):

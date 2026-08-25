@@ -35,6 +35,26 @@ def test_adaptive_action_defaults_are_frozen():
     assert cfg["action_fallback_mode"] == "fixed_window"
 
 
+def test_sex_act_keep_gate_defaults_off():
+    cfg = extract_config({"adaptive": {}})
+    assert cfg["sex_act_threshold"] == 0.0
+    from scripts.test_video_adaptive import frame_passes_keep_gate
+
+    setup = {"gif_worthiness": 0.87, "sex_act": 0.12}
+    action = {"gif_worthiness": 0.87, "sex_act": 0.75}
+    weak = {"gif_worthiness": 0.47, "sex_act": 0.75}
+    assert frame_passes_keep_gate(setup, worthiness_threshold=0.55) is True
+    assert frame_passes_keep_gate(
+        setup, worthiness_threshold=0.55, sex_act_threshold=0.40
+    ) is False
+    assert frame_passes_keep_gate(
+        action, worthiness_threshold=0.55, sex_act_threshold=0.40
+    ) is True
+    assert frame_passes_keep_gate(
+        weak, worthiness_threshold=0.55, sex_act_threshold=0.40
+    ) is False
+
+
 def test_implicit_preferred_action_maximum_never_exceeds_configured_maximum():
     cfg = extract_config({"adaptive": {"max_duration": 10}})
 
@@ -351,6 +371,8 @@ def test_get_score_prompt_uses_frozen_mode_not_environment(monkeypatch):
     assert get_score_prompt("optimized") == SCORE_PROMPT_ADULT
     assert "sex_act" in SCORE_PROMPT_ADULT
     assert "equally eligible" not in SCORE_PROMPT_ADULT
+    assert "integers from 0 to 100" in SCORE_PROMPT_ADULT
+    assert "0.6-0.8" not in SCORE_PROMPT_ADULT
 
 
 def test_extract_config_freezes_quality_moe_from_the_job_snapshot():
@@ -393,7 +415,8 @@ def test_models_yaml_enables_active_adult_quality_moe_by_default():
     assert cfg["quality_ranking_cinematic_weight"] == 0.20
     assert cfg["quality_moe"]["repairability"]["photometric_mode"] == "clip_global"
     assert config_data["quality_moe"]["judge"]["base_url"] == "inherit_vlm"
-    assert "Uncensored" in str(config_data["quality_moe"]["judge"]["model_id"])
+    assert "abliterated" in str(config_data["quality_moe"]["judge"]["model_id"])
+    assert config_data["vlm"]["model"] == config_data["quality_moe"]["judge"]["model_id"]
     assert config_data["vlm"]["base_url"] == "auto"
     assert "172.27.227.98" not in config_path.read_text(encoding="utf-8")
 
@@ -405,15 +428,17 @@ def test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity():
     cfg = extract_config(config_data)
 
     assert cfg["sample_interval"] <= 7
-    assert cfg["merge_score_threshold"] >= 0.58
-    assert cfg["merge_peak_threshold"] >= 0.65
+    assert cfg["merge_score_threshold"] >= 0.50
+    assert cfg["merge_peak_threshold"] >= 0.58
     assert cfg["max_merge_span_s"] <= 18
-    assert cfg["worthiness_threshold"] >= 0.62
-    assert cfg["refine_threshold"] >= 0.70
+    assert cfg["worthiness_threshold"] >= 0.55
+    assert cfg["sex_act_threshold"] >= 0.40
+    assert cfg["refine_threshold"] >= 0.58
     assert cfg["action_preferred_min_duration_s"] == 5.0
     assert cfg["action_preferred_max_duration_s"] == 8.0
     assert cfg["vlm_temperature"] <= 0.25
     assert cfg["embed_sim_threshold"] <= 0.88
+    assert cfg["embed_dedup_max_gap_s"] == 15
     assert cfg["temporal_dedup_min_gap_s"] >= 15
     assert cfg["gif_fps"] == 25
     assert cfg["gif_max_width"] == 720
@@ -728,6 +753,7 @@ def test_extract_config_concurrency_and_quality_defaults():
     assert cfg["vlm_score_workers"] == 1
     assert cfg["frame_extract_workers"] == 1
     assert cfg["score_schema_mode"] == "legacy"
+    assert cfg["embed_dedup_max_gap_s"] == 0.0
     assert cfg["boundary_snap_enabled"] is False
     assert cfg["boundary_snap_radius_s"] == 0.6
     assert cfg["score_calibration_enabled"] is False

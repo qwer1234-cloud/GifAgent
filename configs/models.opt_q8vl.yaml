@@ -1,3 +1,7 @@
+# Promoted into configs/models.yaml on 2026-08-24. Kept as a named copy
+# of the Q8 VL adult profile. Historical job snapshots stay on whatever
+# model they froze; do not rewrite them.
+
 media:
   source_dir: "E:/data/originals"
   image_max_side: 1344
@@ -122,14 +126,13 @@ adaptive:
   # Baseline values preserved in data/backups/before_adult_opt_* .
   sample_interval: 7
   merge_gap: 15
-  # Q8 VL adult scores sit in 0.50-0.60 (IQ2_M was a flat 0.70).
+  # Retuned for Q8 VL 0.50-0.60 worthiness (IQ2_M was a flat 0.70).
   merge_score_threshold: 0.50
   # Prevent dense high-score runs from collapsing into one mega-clip.
   max_merge_span_s: 18
   # Multi-frame groups must contain a peak at/above this (else demote to single).
   merge_peak_threshold: 0.58
   worthiness_threshold: 0.55
-  # 0-100 scoring collapses gif_worthiness to ~0.87; drop setup via sex_act.
   sex_act_threshold: 0.40
   refine_threshold: 0.58
   refine_radius: 8

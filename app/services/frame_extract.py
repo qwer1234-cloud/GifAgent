@@ -59,11 +59,20 @@ def _build_command(
     *,
     width: int,
     jpeg_quality: int,
+    accurate_seek: bool = False,
 ) -> list[str]:
+    # Fast seek (-ss before -i) is the historical coarse/refine path.
+    # Accurate seek (-ss after -i) is for short Quality windows where a
+    # keyframe miss would land outside the candidate interval.
+    seek = ["-ss", _format_timestamp(timestamp_s)]
+    input_args = ["-i", video_path]
+    prefix = ["ffmpeg", "-y"]
+    if accurate_seek:
+        positioned = prefix + input_args + seek
+    else:
+        positioned = prefix + seek + input_args
     return [
-        "ffmpeg", "-y",
-        "-ss", _format_timestamp(timestamp_s),
-        "-i", video_path,
+        *positioned,
         "-vf", f"scale={width}:-1",
         "-vframes", "1",
         # Previously missing: skip demuxing audio/subtitle streams and pin
@@ -83,6 +92,7 @@ def _extract_one(
     jpeg_quality: int,
     timeout_s: float,
     runner: Callable,
+    accurate_seek: bool = False,
 ) -> FrameExtractResult:
     out_path = os.path.abspath(
         os.path.join(out_dir, _frame_filename(timestamp_s))
@@ -90,6 +100,7 @@ def _extract_one(
     cmd = _build_command(
         video_path, timestamp_s, out_path,
         width=width, jpeg_quality=jpeg_quality,
+        accurate_seek=accurate_seek,
     )
     try:
         completed = runner(cmd, capture_output=True, timeout=timeout_s)
@@ -133,6 +144,7 @@ def extract_frames(
     workers: int = 1,
     timeout_s: float = 15.0,
     runner: Callable | None = None,
+    accurate_seek: bool = False,
 ) -> list[FrameExtractResult]:
     """Extract one frame per timestamp, optionally with bounded concurrency.
 
@@ -159,6 +171,7 @@ def extract_frames(
             video_path, ts, out_dir,
             width=width, jpeg_quality=jpeg_quality,
             timeout_s=timeout_s, runner=runner,
+            accurate_seek=accurate_seek,
         )
 
     if worker_count == 1:

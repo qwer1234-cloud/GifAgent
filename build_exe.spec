@@ -65,6 +65,7 @@ hiddenimports += [
     "app.services.reranker",
     "app.services.scenario",
     "app.services.clip_dedup",
+    "app.services.grid_select",
     "app.services.export_cleanup",
     # Packaged stage-mode closure: scripts/test_video_adaptive.py is bundled
     # as data (PyInstaller does not statically analyze scripts/), so its

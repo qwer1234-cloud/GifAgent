@@ -10,15 +10,16 @@ Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/video
 
 | Role | Model | Provider | Endpoint |
 |------|-------|----------|----------|
-| VLM | `hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M` | Ollama (WSL) | `vlm.base_url: auto` (never pin `172.x`) |
+| VLM | `huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0` | Ollama (WSL) | `vlm.base_url: auto` (never pin `172.x`) |
 | Quality judge | same uncensored VLM | Ollama | `quality_moe.judge.base_url: inherit_vlm` |
 | LLM | `deepseek-v4-flash` (lowercase) | DeepSeek (cloud) | `https://api.deepseek.com/v1` |
 | Embedding | `nomic-embed-text:latest` | Ollama (WSL) | `embedding.base_url: auto` |
 
 - **Do not use `llava:13b` for adult scoring** — it G-rates captions and refuses NSFW judge sheets.
+- **Do not use 35B IQ2_M / Q2_K_P on 16GB** — score collapse plus CPU offload. Dense 8B Q8 stays in VRAM (~9.2GB).
 - LLM provider is `openai_compatible`. Model name must be lowercase (`DeepSeek-V4-Flash` returns 400).
 - API key env var: `DEEPSEEK_API_KEY`
-- GPU: IQ2_M is ~12GB VRAM. Stage subprocess timeouts: default 1h, `vlm` 4h, `refine` 6h (`app/task_engine/adaptive_adapter.py`).
+- GPU: 8B Q8 is ~9.2GB VRAM on a 16GB card. Stage subprocess timeouts: default 1h, `vlm` 4h, `refine` 6h (`app/task_engine/adaptive_adapter.py`).
 
 ## Key Parameters (`configs/models.yaml` → `adaptive`)
 
@@ -29,11 +30,12 @@ each job snapshot; Retry does **not** pick up later YAML edits.
 ```python
 SAMPLE_INTERVAL = 7           # coarse sampling every N seconds
 MERGE_GAP = 15                # max gap to continue a merge group
-MERGE_SCORE_THRESHOLD = 0.58  # both frames must be >= this to merge
+MERGE_SCORE_THRESHOLD = 0.50  # both frames must be >= this to merge
 MAX_MERGE_SPAN_S = 18         # hard cap: flush group before span exceeds this
-MERGE_PEAK_THRESHOLD = 0.70   # multi-frame groups below this demote to best single
-WORTHINESS_THRESHOLD = 0.62   # min score to keep a frame
-REFINE_THRESHOLD = 0.70       # min score to trigger refinement sampling
+MERGE_PEAK_THRESHOLD = 0.58   # multi-frame groups below this demote to best single
+WORTHINESS_THRESHOLD = 0.55   # min score to keep a frame
+SEX_ACT_THRESHOLD = 0.40      # YAML-only keep gate; Settings tab does not expose it
+REFINE_THRESHOLD = 0.58       # min score to trigger refinement sampling
 REFINE_RADIUS = 8             # seconds around high-score frame
 REFINE_INTERVAL = 8           # fine sampling interval
 MAX_REFINE_FRAMES = 120       # cap extra VLM calls (dense adult scores)
@@ -41,6 +43,7 @@ MIN_BRIGHTNESS = 10           # grayscale mean; 0 disables dark prefilter
 OUTPUT_RATIO = 1.0            # fraction of deduped clips to export
 MAX_OUTPUT = 100              # hard cap per video (0 = unlimited in direct mode)
 EMBED_SIM_THRESHOLD = 0.88    # text embedding duplicate threshold
+EMBEDDING_DEDUP_MAX_GAP_S = 15  # only compare clips within this peak-time gap
 TEMPORAL_DEDUP_MIN_GAP_S = 15 # keep highest score within peak-time window
 POTPLAYER_PBF_ENABLED = True  # write PotPlayer bookmark file beside exports
 SCORE_PROMPT_MODE = "adult"   # frozen via extract_config(); default|adult
@@ -61,8 +64,8 @@ created with.
 
 `configs/models.adult_candidate.yaml` is an adaptive **preset**, not a
 mirror of `models.yaml`. Current divergences include
-`worthiness_threshold` 0.42 vs 0.62, `refine_threshold` 0.55 vs 0.70,
-`merge_score_threshold` 0.50 vs 0.58, `merge_peak_threshold` 0.55 vs 0.70,
+`worthiness_threshold` 0.42 vs 0.55, `sex_act_threshold` omitted vs 0.40,
+`refine_threshold` 0.55 vs 0.58, `merge_peak_threshold` 0.55 vs 0.58,
 `max_merge_span_s` 24 vs 18, `output_ratio` 0.45 vs 1.0, `max_output` 35 vs
 100, and no `max_refine_frames` on the adult preset.
 
@@ -78,7 +81,14 @@ best-frame clip. This prevents dense high-score runs from collapsing into one
 mega-clip.
 
 **Adult scoring prompt**: set `adaptive.score_prompt_mode: adult` in
-`configs/models.yaml` (also exposed on the Settings tab). The value is frozen
+`configs/models.yaml` (also exposed on the Settings tab). Prompts ask for
+integers `0–100`; `normalize_vlm_unit_score` in
+`app/services/export_ranking.py` maps them to unit scores (`47` → `0.47`;
+JSON `1` is `0.01`; legacy `0.0–1.0` floats stay). `sex_act_threshold` is
+YAML-only (`extract_config()` defaults to `0.0` / off; production YAML is
+`0.40`). Checkpoint identity is `vlm_model` + `score_prompt_mode` only —
+changing prompt text needs a new `frames_dir` or a deleted checkpoint to
+rescore. Changing only `sex_act_threshold` can resume. The value is frozen
 into the job snapshot and result JSON; scoring does not read
 `GIFAGENT_SCORE_PROMPT_MODE`. Default / omitted keeps the cinematic
 `SCORE_PROMPT`. A/B helper: `scripts/ab_lil_karina_run.ps1 -Phase optimized_v3`.
@@ -95,10 +105,14 @@ temporal dedup. The result JSON records `embedding_deduped_clips` and final
 `adaptive.transition_guard_enabled`, `adaptive.transition_min_duration_s`, and
 `adaptive.transition_boundary_margin_s`; scan/motion thresholds remain in YAML
 and the frozen job snapshot. It runs before dedup/export: clean windows are
-kept or trimmed, transition-crossing windows are split, and windows with no
-exportable segment or an anchor in a safety margin are dropped. Coherent slow
-camera motion is classified as `coherent_camera_motion`, so motion alone does
-not cause a split/drop. Result JSON records `transition_guard` counts
+kept or trimmed, transition-crossing windows are split. If protection fails
+(no exportable segment, or an anchor in a safety margin), **keep the original
+window** (`GuardSegment(..., "original_window")`) instead of dropping the
+clip — otherwise POV / handheld shots are discarded. Affine-recovered camera
+motion (`residual < 0.18` and `inlier_ratio >= 0.45`) **and** a real camera
+move (`|dx|+|dy| >= 0.5` or `|scale-1| >= 0.01`) is
+`coherent_camera_motion`; do **not** skip hard cuts on `residual < 0.18`
+alone. Result JSON records `transition_guard` counts
 (`input`, `split`, `trim`, `drop`, `unverified`, `hard_cut`,
 `soft_transition`, `motion`) plus per-result action/risk/reason. Validate with:
 
@@ -177,7 +191,7 @@ remain out of scope.
 
 ### Prerequisites
 ```bash
-ollama pull hf.co/HauhauCS/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive:IQ2_M
+ollama pull huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0
 ollama pull nomic-embed-text:latest
 export DEEPSEEK_API_KEY=sk-...     # DeepSeek native API key
 ```
@@ -585,7 +599,7 @@ logs — state is derived solely from the task client. Key methods:
 1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter (`min_brightness`)
 2. **VLM scoring**: shared `_score_vlm_frame` (strict `gif_worthiness`, no 0.5 fallback) → refinement around high-score regions; prompt comes from frozen `score_prompt_mode`
 3. **LLM synthesis**: region-aware merge (`clip_merge`) → DeepSeek synthesizes summary/tags from VLM captions (non-fatal; no live FAISS retrieval)
-3.5. **9-grid thumbnail**: select top-9 scored frames with pHash dedup (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` subfolder
+3.5. **9-grid thumbnail**: `app/services/grid_select.py` splits the timeline into 9 time buckets, takes the highest-scored frame per bucket, then pHash-dedups (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` (avoids all-high-score frames clustering at the start)
 4. **GIF export**: embedding + temporal dedup → Quality MoE on the full set → truncate by `output_ratio` / `max_output` → ffmpeg palette two-pass
 
 **Non-fatal LLM**: if LLM fails, GIFs still export. Synthesis metadata is skipped.
@@ -770,9 +784,13 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
 4. **Export dir nesting**: `test_video_batch.py` now nests output as `adaptive_test/{input_folder}/{video}/`. Old runs have flat `adaptive_test/{video}/` structure.
 
 5. **VLM scoring distribution**: `llava:13b` tends to score everything 0.5-0.7
-   and G-rate adult captions. Production adult scoring uses the uncensored
-   Qwen 35B IQ2_M plus `score_prompt_mode: adult`. Frozen job snapshots keep
-   the VLM that was current at publish time.
+   and G-rate adult captions. Production adult scoring uses
+   `huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0` plus
+   `score_prompt_mode: adult` with 0–100 integer scores. 35B IQ2_M/Q2_K_P
+   collapses worthiness and offloads on 16GB. Frozen job snapshots keep the
+   VLM that was current at publish time. Worthiness can still blob (e.g.
+   0.87); `sex_act` is the ranking discriminator. Do not raise
+   `vlm_temperature` or enable `score_calibration` to invent spread.
 
 6. **Merge count vs threshold**: Lowering `MERGE_SCORE_THRESHOLD` from 0.6 to 0.55 barely increased merges (92→90 clips) because low-score frames (0.3-0.5) interspersed in the timeline break merge chains. The bottleneck is score distribution, not threshold.
 
@@ -801,6 +819,13 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
     / `needs_attention` stages only. It does not rewrite `config_json`. New
     keys (`vlm_score_workers`, `boundary_snap_*`, `score_calibration_*`, …)
     default to old behavior, so historical snapshots are unchanged.
+
+14. **Integer 0–100 scores vs checkpoint**: adult/cinematic prompts ask for
+    integers 0–100. `frame_passes_keep_gate()` applies `worthiness_threshold`
+    and `sex_act_threshold`. Checkpoint identity is `vlm_model` +
+    `score_prompt_mode` only (not prompt text, not `sex_act_threshold`).
+    Changing prompt text requires a new `frames_dir` or a deleted checkpoint.
+    `test_video_batch.py` does not pass `--config` or `--frames-dir`.
 
 ## API Endpoints (26+ total)
 
@@ -929,6 +954,21 @@ Lil Karina A/B (`scripts/ab_lil_karina_run.ps1`) on 3 videos:
 
 Also added: configurable `min_brightness`, `SCORE_PROMPT_ADULT` via
 `adaptive.score_prompt_mode: adult`, and `app/services/clip_merge.py`.
+
+## Production stack (2026-08)
+
+Promoted on 16GB VRAM after Q8 vs 35B A/B:
+
+| Piece | Production |
+|-------|------------|
+| VLM / Quality judge | `huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0` (~9.2GB) |
+| Score scale | integers 0–100 → `/100` (`normalize_vlm_unit_score`) |
+| Keep gate | `worthiness_threshold=0.55`, `sex_act_threshold=0.40` |
+| Merge | `merge_score_threshold=0.50`, `merge_peak_threshold=0.58` |
+| 9-grid | time buckets (`app/services/grid_select.py`) |
+| Transition guard | POV/handheld retain original window on failure |
+
+Do not promote 35B IQ2_M / Q2_K_P. Overlay copies: `configs/models.opt_q8vl.yaml`.
 
 ## Production Release Gate (2026-07-18)
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
-from app.services.transition_guard import TransitionGuardResult
+from app.services.transition_guard import GuardSegment, TransitionGuardResult
 
 
 def _frames_in_segment(
@@ -36,7 +37,26 @@ def build_guarded_clips(
     except (TypeError, ValueError):
         export_min_duration = 0.0
     if guard_result.transition_action == "drop":
-        return []
+        retained = _original_window_segment(guard_result, clip)
+        if retained is None:
+            return []
+        guard_result = TransitionGuardResult(
+            transition_action="keep",
+            segments=(retained,),
+            boundaries=guard_result.boundaries,
+            hard_cut_count=guard_result.hard_cut_count,
+            soft_transition_count=guard_result.soft_transition_count,
+            motion_type=guard_result.motion_type,
+            transition_risk=guard_result.transition_risk,
+            guard_reason=guard_result.guard_reason or (
+                "transition guard dropped the window; retaining original"
+            ),
+            guard_error=guard_result.guard_error,
+            original_start_s=retained.start_s,
+            original_end_s=retained.end_s,
+            anchor_ts_s=guard_result.anchor_ts_s,
+            anchor_segment=retained,
+        )
     candidates: list[dict[str, Any]] = []
 
     for segment in guard_result.segments:
@@ -80,3 +100,31 @@ def build_guarded_clips(
         candidates.append(candidate)
 
     return candidates
+
+
+def _original_window_segment(
+    guard_result: TransitionGuardResult,
+    clip: dict[str, Any],
+) -> GuardSegment | None:
+    start = guard_result.original_start_s
+    end = guard_result.original_end_s
+    if (
+        isinstance(start, (int, float))
+        and isinstance(end, (int, float))
+        and math.isfinite(float(start))
+        and math.isfinite(float(end))
+        and float(end) > float(start)
+    ):
+        return GuardSegment(float(start), float(end), "original_window")
+    try:
+        clip_start = float(clip.get("start_ts"))
+        clip_end = float(clip.get("end_ts"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        not math.isfinite(clip_start)
+        or not math.isfinite(clip_end)
+        or clip_end <= clip_start
+    ):
+        return None
+    return GuardSegment(clip_start, clip_end, "original_window")

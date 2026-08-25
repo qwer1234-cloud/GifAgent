@@ -129,6 +129,19 @@ def test_gif_worthiness_out_of_range():
     assert any("out of range" in e for e in errors)
 
 
+def test_gif_worthiness_accepts_integer_0_100():
+    payload = {
+        "caption": "A car chase scene through narrow streets",
+        "emotional_core": "excitement",
+        "aesthetic_notes": ["fast camera movement", "tight framing creates urgency"],
+        "why_i_like_it": "the kinetic energy makes you feel inside the chase",
+        "gif_worthiness": 72,
+    }
+    cleaned, errors = validate_frame_analysis(payload)
+    assert cleaned["gif_worthiness"] == pytest.approx(0.72)
+    assert not any("out of range" in e for e in errors)
+
+
 # ── validate_media_annotation ──────────────────────────────────────────
 
 def test_clean_media_passes():

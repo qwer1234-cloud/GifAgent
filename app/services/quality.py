@@ -1,6 +1,7 @@
 """VLM/LLM output quality validation — placeholder detection and field checks."""
 from __future__ import annotations
 
+from app.services.export_ranking import normalize_vlm_unit_score
 from app.services.schemas import VALID_EMOTIONS, FrameAnalysis, MediaAnnotation
 
 
@@ -98,20 +99,18 @@ def validate_frame_analysis(payload: dict) -> tuple[dict | None, list[str]]:
         errors.append(f"why_i_like_it too short: {len(why)} chars")
 
     gif_worth = payload.get("gif_worthiness")
+    worth = None
     if gif_worth is not None:
-        try:
-            w = float(gif_worth)
-            if w < 0.0 or w > 1.0:
-                errors.append(f"gif_worthiness out of range: {w}")
-        except (TypeError, ValueError):
-            errors.append(f"gif_worthiness not a float: {gif_worth}")
+        worth = normalize_vlm_unit_score(gif_worth)
+        if worth is None:
+            errors.append(f"gif_worthiness out of range: {gif_worth}")
 
     cleaned = {
         "caption": caption,
         "emotional_core": emo,
         "aesthetic_notes": clean_notes,
         "why_i_like_it": why,
-        "gif_worthiness": float(gif_worth) if gif_worth is not None else None,
+        "gif_worthiness": worth,
         "reason": (payload.get("reason") or "").strip(),
         "timestamp": payload.get("timestamp"),
         "frame_name": payload.get("frame_name"),

@@ -26,9 +26,12 @@
 - `configs/models.adult_candidate.yaml` has **already drifted** from `configs/models.yaml` (it still carries `worthiness_threshold: 0.42`, `refine_threshold: 0.55`, `merge_score_threshold: 0.50`, `vlm_temperature: 0.50`, `gif_fps: 24`, `max_duration: 20`, and no `max_refine_frames`), even though `README.md` and `Agent.md` describe it as a mirror. Do not assume parity. When this plan says to set a value "in both YAML files", set it explicitly in each; do not copy one over the other.
 - Target hardware: 16GB VRAM, VLM ~12GB.
 
+
+
 ## File Map
 
 **Create**
+
 - `app/services/frame_extract.py`: single `extract_frames()` entry point with bounded thread pool, deterministic ordering, per-timestamp error attribution.
 - `app/services/gif_encode.py`: `build_palette_filters()` — whitelisted `palettegen` / `paletteuse` argument construction shared by Direct and Staged.
 - `app/services/stage_timing.py`: lightweight timing collector serialized into manifest `timings`.
@@ -44,6 +47,7 @@
 - `tests/task_engine/test_stage_class_concurrency.py`
 
 **Modify**
+
 - `scripts/test_video_adaptive.py`: `extract_config()`, `_score_vlm_frame()`, `get_score_prompt()`, `wait_model()`, `stop_model()`, six frame-extraction call sites, both GIF export call sites, `_stage_vlm`, `_stage_refine`, `_stage_rank_dedup`, `_stage_gif_clip`, `run_pipeline`. `_stage_synthesize` is deliberately **not** modified — see Task 9 Step 4.
 - `app/services/gif_windows.py`: `single_frame_max_duration_s` parameter.
 - `app/quality_moe/repair.py`: keep `build_ffmpeg_filter` prefix-only; palette args move to `gif_encode.py`.
@@ -58,19 +62,26 @@
 - `README.md`, `Agent.md`: document new keys, tuning guidance, and the benchmark procedure.
 
 **Create at the end (only after real runs succeed)**
+
 - `docs/reports/pipeline-throughput-baseline-2026-08-23.md`
 
 ---
 
+
+
 ## Phase A — Measurement and Zero-Risk Corrections
+
+
 
 ### Task 1: Stage and loop timing instrumentation
 
 **Files:**
+
 - Create: `app/services/stage_timing.py`, `tests/test_stage_timing.py`
 - Modify: `scripts/test_video_adaptive.py`
 
 **Interfaces:**
+
 - `StageTimings.span(name)` context manager; `record(name, ms)`; `observe_vlm(eval_count, total_ms)`.
 - `StageTimings.to_dict()` → `{"totals_ms": {...}, "p50_ms": {...}, "counts": {...}, "vlm_output_tokens": int}`.
 
@@ -78,13 +89,14 @@
 
 Cover: totals accumulate across spans, p50 is computed from recorded samples, `to_dict()` is JSON-serializable and key-ordered (so manifests stay byte-reproducible), a zero-sample metric is omitted rather than emitting `null`, and the collector never raises when a span body raises (it must record then re-raise).
 
-- [ ] **Step 2: Implement `stage_timing.py`**
+- [ ] **Step 2: Implement** `stage_timing.py`
 
 No new dependency. Use `time.perf_counter()`. Keep it allocation-cheap: it will wrap ~900 VLM calls per video.
 
 - [ ] **Step 3: Wire into the pipeline**
 
 Instrument, in both Direct and Staged paths:
+
 - frame extraction loops (`extract_ms`),
 - `_score_vlm_frame` call sites (`vlm_ms`, `vlm_calls`),
 - `wait_model` / `stop_model` (`model_wait_ms`),
@@ -110,9 +122,12 @@ git commit -m "Add stage and VLM timing instrumentation to adaptive pipeline"
 
 ---
 
+
+
 ### Task 2: Capture the pre-change baseline
 
 **Files:**
+
 - Create: `docs/reports/pipeline-throughput-baseline-2026-08-23.md`
 
 **Interfaces:** none (measurement only).
@@ -146,13 +161,17 @@ git commit -m "Record pre-change adaptive pipeline throughput baseline"
 
 ---
 
+
+
 ### Task 3: GIF encode correctness
 
 **Files:**
+
 - Create: `app/services/gif_encode.py`, `tests/test_gif_encode.py`
 - Modify: `scripts/test_video_adaptive.py`, `app/quality_moe/repair.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `tests/test_batch_logging.py`, `tests/test_adaptive_config.py`
 
 **Interfaces:**
+
 - `build_palette_filters(*, stats_mode: str, dither: str, diff_mode: str) -> tuple[str, str]` returning the `palettegen=...` and `paletteuse=...` fragments.
 - Unknown values raise `ValueError`. No configuration string is ever interpolated into a filtergraph unvalidated.
 
@@ -182,7 +201,7 @@ def test_unknown_value_is_rejected():
 
 Also assert that a non-divisible `gif_fps` is flagged: add `is_divisible_gif_fps(fps) -> bool` and test that `24` is False while `25`, `20`, `10`, `50` are True.
 
-- [ ] **Step 2: Implement `gif_encode.py`**
+- [ ] **Step 2: Implement** `gif_encode.py`
 
 Whitelists: `stats_mode ∈ {full, diff, single}`, `dither ∈ {none, bayer, floyd_steinberg, sierra2_4a}`, `diff_mode ∈ {none, rectangle}`. Emit the bare `palettegen` / `paletteuse` token when every value is the FFmpeg default, so default-config command arrays stay byte-identical to today.
 
@@ -211,12 +230,16 @@ git commit -m "Fix GIF frame-rate rounding and expose palette generation flags"
 
 ---
 
+
+
 ### Task 4: Evidence-bounded export duration
 
 **Files:**
+
 - Modify: `app/services/gif_windows.py`, `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `app/ui/tabs/settings.py`, `tests/test_gif_windows.py`, `tests/test_config_help_annotations.py`, `tests/test_adaptive_config.py`
 
 **Interfaces:**
+
 - `build_export_window(clip, *, total_duration_s, min_duration_s, max_duration_s, single_frame_max_duration_s=None)`.
 - `None` falls back to `max_duration_s`, preserving every existing caller.
 
@@ -275,12 +298,16 @@ git commit -m "Bound single-frame export duration by its own evidence cap"
 
 ---
 
+
+
 ### Task 5: Deterministic VLM scoring
 
 **Files:**
+
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `tests/test_adaptive_config.py`, `tests/task_engine/test_vlm_stage_runtime.py`
 
 **Interfaces:**
+
 - `extract_config()` gains `vlm_seed` (default `None`).
 - The scoring options dict includes `seed` only when configured, so default snapshots produce byte-identical request bodies to today.
 
@@ -315,6 +342,8 @@ git commit -m "Make VLM scoring deterministic via seeded greedy decoding"
 
 ---
 
+
+
 ### Task 6: Phase A regression gate
 
 - [ ] **Step 1: Full gate**
@@ -335,14 +364,20 @@ Re-run the 3-video benchmark on fresh copies. Append a Phase A column to the bas
 
 ---
 
+
+
 ## Phase B — Lifecycle Repair, Parallel Extraction, Two-Tier Prompt
+
+
 
 ### Task 7: Ollama lifecycle repair
 
 **Files:**
+
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `tests/task_engine/test_vlm_stage_runtime.py`
 
 **Interfaces:**
+
 - `extract_config()` gains `vlm_keep_alive` (default `"30m"`).
 - New `vlm.free_vram_before_load` (default `true` = current behavior).
 
@@ -353,6 +388,7 @@ Assert the `wait_model` probe request carries `{"num_predict": 1}`; `_score_vlm_
 - [ ] **Step 2: Implement**
 
 Three independent changes:
+
 1. Add `"options": {"num_predict": 1}` to the `wait_model` probe POST so an already-loaded model does not generate a full reply to `"ping"`.
 2. Add `"keep_alive"` to the `_score_vlm_frame` request body.
 3. Query `/api/ps` first in `stop_model` and short-circuit; gate the `_stage_vlm` unload sequence on `free_vram_before_load`.
@@ -378,9 +414,12 @@ git commit -m "Remove wasted model probe generation and keep the VLM resident be
 
 ---
 
+
+
 ### Task 8: Shared parallel frame extraction
 
 **Files:**
+
 - Create: `app/services/frame_extract.py`, `tests/test_frame_extract.py`
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `app/ui/tabs/settings.py`, `tests/test_config_help_annotations.py`, `tests/test_adaptive_config.py`, `build_exe.spec`
 
@@ -445,13 +484,17 @@ git commit -m "Consolidate frame extraction into one bounded parallel service"
 
 ---
 
+
+
 ### Task 9: Two-tier scoring prompt
 
 **Files:**
+
 - Create: `tests/test_two_tier_scoring.py`
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `app/ui/tabs/settings.py`, `tests/test_config_help_annotations.py`, `tests/test_adaptive_config.py`, `tests/task_engine/test_full_production_stage_chain.py`
 
 **Interfaces:**
+
 - `get_score_prompt(mode, *, schema="full")` where `schema ∈ {"score", "full"}`.
 - `_score_vlm_frame(..., schema="full")`.
 - New `SCORE_PROMPT_FAST` and `SCORE_PROMPT_ADULT_FAST` retaining the full scoring rubric text but requesting only `{"gif_worthiness": 0.0}` (plus `"sex_act": 0.0` in adult mode).
@@ -492,7 +535,7 @@ Add two Staged-path tests: `two_tier` and `legacy` produce the same clip time in
 
 In `score` mode, skip the `parse_vlm_response` caption quality gate but keep the strict `gif_worthiness` validation, `sex_act_score()` extraction, the three-attempt retry loop, and identical error strings. Apply `vlm_num_predict_score` / `vlm_num_predict_caption` when configured.
 
-- [ ] **Step 3: Implement `backfill_clip_captions()`**
+- [ ] **Step 3: Implement** `backfill_clip_captions()`
 
 Runs after merge, over each clip's `best_frame`, in descending score order, bounded by `caption_backfill_max_frames`. Merges `caption`, `emotional_core`, `aesthetic_notes`, and `reason` back into the frame dict. Any failure leaves the field empty and records a counter — it must never raise.
 
@@ -500,7 +543,7 @@ Runs after merge, over each clip's `best_frame`, in descending score order, boun
 
 Direct: immediately after `merge_scored_frames_into_clips`, before action/transition handling.
 
-Staged: at the **tail of `_stage_refine`**, not in `_stage_synthesize`. This placement is forced by artifact lineage. `STAGE_INPUT_KINDS["synthesize"]` is `("refine_manifest",)`; `STAGE_ARTIFACT_KINDS["refine"]` is `("refine_manifest",)`, so refine's extracted JPEGs are never registered as artifacts; and `_stage_synthesize(work_dir, cfg, inputs)` takes no `config_data`, so it cannot reach the VLM runtime. Backfilling there would require an unvalidated cross-work-dir file read, breaking the "stages only read validated upstream artifacts" invariant enforced by `tests/task_engine/test_production_artifact_contract.py`.
+Staged: at the **tail of** `_stage_refine`, not in `_stage_synthesize`. This placement is forced by artifact lineage. `STAGE_INPUT_KINDS["synthesize"]` is `("refine_manifest",)`; `STAGE_ARTIFACT_KINDS["refine"]` is `("refine_manifest",)`, so refine's extracted JPEGs are never registered as artifacts; and `_stage_synthesize(work_dir, cfg, inputs)` takes no `config_data`, so it cannot reach the VLM runtime. Backfilling there would require an unvalidated cross-work-dir file read, breaking the "stages only read validated upstream artifacts" invariant enforced by `tests/task_engine/test_production_artifact_contract.py`.
 
 `_stage_refine` already holds `config_data`, already calls `wait_model`, and already owns the frame files locally.
 
@@ -533,6 +576,8 @@ git commit -m "Add two-tier scoring so coarse frames emit scores instead of disc
 
 ---
 
+
+
 ### Task 10: Phase B regression gate
 
 - [ ] **Step 1: Full gate** (same five commands as Task 6)
@@ -544,11 +589,16 @@ Append a Phase B column. Expected: `vlm_output_tokens` at or below 25% of baseli
 
 ---
 
+
+
 ## Phase C — Concurrency
+
+
 
 ### Task 11: Intra-stage VLM scoring concurrency
 
 **Files:**
+
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `app/ui/tabs/settings.py`, `tests/test_config_help_annotations.py`, `tests/test_adaptive_config.py`, `tests/task_engine/test_vlm_stage_runtime.py`
 
 - [ ] **Step 1: Write failing tests**
@@ -582,13 +632,17 @@ git commit -m "Allow bounded concurrent VLM scoring within vlm and refine stages
 
 ---
 
+
+
 ### Task 12: Stage-class worker concurrency
 
 **Files:**
+
 - Create: `tests/task_engine/test_stage_class_concurrency.py`
 - Modify: `app/task_engine/repository.py`, `app/task_engine/worker.py`, `scripts/task_worker.py`, `app/ui/launcher.py`, `configs/models.yaml`, `tests/task_engine/test_lease_isolation.py`, `tests/task_engine/test_repository.py`
 
 **Interfaces:**
+
 - `TaskRepository.claim_stage(..., stage_names: Sequence[str] | None = None)`. `None` preserves today's unfiltered FIFO claim.
 - `GPU_STAGES = ("vlm", "refine", "rank_dedup")`; `CPU_STAGES = ("discover", "sample", "synthesize", "gif_clip", "materialize")`.
 
@@ -608,7 +662,7 @@ def test_busy_timeout_absorbs_multi_worker_contention(tmp_path): ...
 
 Drive real threads against a temporary SQLite database. The duplicate-stage test must exercise the `ensure_stage` idempotency key `f"from:rank_dedup:clip:{cid}"` from two threads simultaneously.
 
-- [ ] **Step 2: Add the `stage_names` filter**
+- [ ] **Step 2: Add the** `stage_names` **filter**
 
 Extend the `claim_stage` SQL with an optional `AND stage_name IN (...)`. Keep `ORDER BY created_at ASC, stage_id ASC` and the `BEGIN IMMEDIATE` transaction exactly as they are.
 
@@ -637,6 +691,8 @@ git commit -m "Run one GPU-class and several CPU-class stage workers concurrentl
 
 ---
 
+
+
 ### Task 13: Phase C regression gate and packaged smoke test
 
 - [ ] **Step 1: Full gate** (same five commands as Task 6)
@@ -656,15 +712,21 @@ Stop the running packaged GUI and any WSL `sleep infinity` keeper rooted in `dis
 
 ---
 
+
+
 ## Phase D — Quality Ceiling
+
+
 
 ### Task 14: Sub-second boundary snapping
 
 **Files:**
+
 - Create: `app/services/boundary_snap.py`, `tests/test_boundary_snap.py`
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `configs/models.adult_candidate.yaml`, `tests/test_adaptive_config.py`, `build_exe.spec`
 
 **Interfaces:**
+
 - `snap_window(video_path, start_s, end_s, *, radius_s, guard_result, config, cache) -> SnapResult` carrying the new bounds plus `snap_action ∈ {"snapped", "kept", "unavailable"}` and the reason.
 
 - [ ] **Step 1: Write failing tests**
@@ -698,13 +760,17 @@ git commit -m "Add opt-in sub-second export boundary snapping"
 
 ---
 
+
+
 ### Task 15: Score calibration
 
 **Files:**
+
 - Create: `app/services/score_calibration.py`, `scripts/fit_score_calibration.py`, `tests/test_score_calibration.py`
 - Modify: `scripts/test_video_adaptive.py`, `configs/models.yaml`, `tests/test_adaptive_config.py`, `build_exe.spec`
 
 **Interfaces:**
+
 - `load_calibrator(path, *, model_id, prompt_mode) -> Calibrator | None` — returns `None` and logs when provenance does not match the frozen snapshot.
 - `Calibrator.apply(score: float) -> float`.
 
@@ -741,9 +807,12 @@ git commit -m "Apply frozen isotonic score calibration before worthiness thresho
 
 ---
 
+
+
 ### Task 16: Blind A/B validation and model experiment
 
 **Files:**
+
 - Modify: `docs/reports/pipeline-throughput-baseline-2026-08-23.md`
 
 - [ ] **Step 1: Freeze a benchmark manifest**
@@ -766,9 +835,12 @@ A/B the current `IQ2_M` 35B against a 7B-class uncensored vision model at Q5_K_M
 
 ---
 
+
+
 ### Task 17: Documentation and release
 
 **Files:**
+
 - Modify: `README.md`, `Agent.md`
 
 - [ ] **Step 1: Document the new keys**
@@ -804,6 +876,8 @@ git commit -m "Document throughput and GIF quality configuration"
 ```
 
 ---
+
+
 
 ## Rollback
 

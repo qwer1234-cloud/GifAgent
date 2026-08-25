@@ -1,5 +1,29 @@
-from app.services.export_ranking import rank_clips_for_export
+from app.services.export_ranking import (
+    normalize_vlm_unit_score,
+    rank_clips_for_export,
+    sex_act_score,
+)
 import pytest
+
+
+def test_normalize_vlm_unit_score_accepts_legacy_floats_and_0_100_ints():
+    assert normalize_vlm_unit_score(0.71) == pytest.approx(0.71)
+    assert normalize_vlm_unit_score(1.0) == pytest.approx(1.0)
+    assert normalize_vlm_unit_score(0) == pytest.approx(0.0)
+    assert normalize_vlm_unit_score(1) == pytest.approx(0.01)
+    assert normalize_vlm_unit_score(47) == pytest.approx(0.47)
+    assert normalize_vlm_unit_score(100) == pytest.approx(1.0)
+    assert normalize_vlm_unit_score(72.0) == pytest.approx(0.72)
+    assert normalize_vlm_unit_score(1.1) is None
+    assert normalize_vlm_unit_score(101) is None
+    assert normalize_vlm_unit_score(True) is None
+    assert normalize_vlm_unit_score("60") is None
+
+
+def test_sex_act_score_accepts_integer_0_100():
+    assert sex_act_score({"sex_act": 81}) == pytest.approx(0.81)
+    assert sex_act_score({"sex_act": 0.7}) == pytest.approx(0.7)
+
 
 
 def test_rank_clips_for_export_applies_preference_score_before_top_n_selection():

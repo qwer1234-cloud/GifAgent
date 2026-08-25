@@ -66,7 +66,9 @@ def test_score_schema_requests_only_numeric_fields():
     prompt = get_score_prompt("adult", schema="score")
     assert '"gif_worthiness"' in prompt and '"sex_act"' in prompt
     assert '"caption"' not in prompt and '"aesthetic_notes"' not in prompt
-    assert "0.8-1.0" in prompt
+    assert "integers from 0 to 100" in prompt
+    assert "0.8-1.0" not in prompt
+    assert "Do not round to tens" in prompt
     assert get_score_prompt("adult", schema="full") == SCORE_PROMPT_ADULT
     assert get_score_prompt("default", schema="full") == SCORE_PROMPT
     default_fast = get_score_prompt("default", schema="score")
@@ -100,6 +102,33 @@ def test_score_schema_skips_caption_quality_gate(tmp_path):
     assert parsed is not None
     assert parsed["gif_worthiness"] == pytest.approx(0.71)
     assert parsed.get("caption", "") == ""
+
+
+def test_score_schema_accepts_integer_0_100(tmp_path):
+    from tests.task_engine.test_vlm_stage_runtime import _StubServer
+
+    stub = _StubServer({"response": json.dumps({"gif_worthiness": 72, "sex_act": 81})})
+    stub.start()
+    try:
+        parsed, error = _score_vlm_frame(
+            base_url=stub.base_url,
+            model="stub-vlm",
+            image_bytes=_jpeg_bytes(),
+            prompt=get_score_prompt("adult", schema="score"),
+            options={},
+            threshold=0.2,
+            timestamp=4.0,
+            frame_path=str(tmp_path / "frame.jpg"),
+            retry_delay_s=0.0,
+            schema="score",
+        )
+    finally:
+        stub.stop()
+
+    assert error is None
+    assert parsed is not None
+    assert parsed["gif_worthiness"] == pytest.approx(0.72)
+    assert parsed["sex_act"] == pytest.approx(0.81)
 
 
 def test_score_schema_still_rejects_invalid_worthiness(tmp_path):

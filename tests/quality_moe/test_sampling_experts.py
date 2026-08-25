@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 import time
 
 import cv2
@@ -195,20 +196,30 @@ def test_expert_scores_are_always_finite_and_bounded():
 
 
 def test_missing_or_corrupt_media_is_typed_unavailable(tmp_path):
+    missing = sample_clip_frames(
+        video_path=tmp_path / "does-not-exist.mp4",
+        start_ts=1.0,
+        end_ts=2.0,
+        candidate_id="candidate-missing",
+    )
+    assert missing.status is EvidenceStatus.UNAVAILABLE
+    assert missing.frames == ()
+    assert missing.diagnostics["code"] == "media_unavailable"
+
     corrupt_path = tmp_path / "corrupt.mp4"
     corrupt_path.write_bytes(b"not a video")
-
-    for media_path in (tmp_path / "does-not-exist.mp4", corrupt_path):
-        result = sample_clip_frames(
-            video_path=media_path,
-            start_ts=1.0,
-            end_ts=2.0,
-            candidate_id="candidate-missing",
-        )
-
-        assert result.status is EvidenceStatus.UNAVAILABLE
-        assert result.frames == ()
-        assert result.diagnostics["code"] == "media_unavailable"
+    corrupt = sample_clip_frames(
+        video_path=corrupt_path,
+        start_ts=1.0,
+        end_ts=2.0,
+        candidate_id="candidate-missing",
+    )
+    assert corrupt.status is EvidenceStatus.UNAVAILABLE
+    assert corrupt.frames == ()
+    assert corrupt.diagnostics["code"] in {
+        "media_unavailable",
+        "frame_decode_failed",
+    }
 
 
 def test_sampling_is_deterministic_bounded_and_stays_in_candidate_interval(tmp_path):
@@ -221,8 +232,12 @@ def test_sampling_is_deterministic_bounded_and_stays_in_candidate_interval(tmp_p
         writer.write(np.full((400, 800, 3), value * 10, dtype=np.uint8))
     writer.release()
 
-    first = sample_clip_frames(video_path, 0.4, 1.3, "candidate-video")
-    second = sample_clip_frames(video_path, 0.4, 1.3, "candidate-video")
+    first = sample_clip_frames(
+        video_path, 0.4, 1.3, "candidate-video", backend="opencv",
+    )
+    second = sample_clip_frames(
+        video_path, 0.4, 1.3, "candidate-video", backend="opencv",
+    )
 
     assert first.status is EvidenceStatus.AVAILABLE
     assert first.timestamps == second.timestamps
@@ -285,7 +300,9 @@ def test_sampling_is_unavailable_when_random_access_seek_is_rejected(tmp_path, m
     capture = _FakeCapture(seek_result=False)
     monkeypatch.setattr("app.quality_moe.sampling.cv2.VideoCapture", lambda _path: capture)
 
-    result = sample_clip_frames(video_path, 0.4, 1.3, "candidate-video")
+    result = sample_clip_frames(
+        video_path, 0.4, 1.3, "candidate-video", backend="opencv",
+    )
 
     assert result.status is EvidenceStatus.UNAVAILABLE
     assert result.diagnostics["code"] == "random_access_unavailable"
@@ -298,8 +315,43 @@ def test_sampling_is_unavailable_when_decoded_pts_is_outside_candidate_interval(
     capture = _FakeCapture(pts_ms=5000.0)
     monkeypatch.setattr("app.quality_moe.sampling.cv2.VideoCapture", lambda _path: capture)
 
-    result = sample_clip_frames(video_path, 0.4, 1.3, "candidate-video")
+    result = sample_clip_frames(
+        video_path, 0.4, 1.3, "candidate-video", backend="opencv",
+    )
 
     assert result.status is EvidenceStatus.UNAVAILABLE
     assert result.diagnostics["code"] == "decoded_timestamp_outside_interval"
     assert capture.released
+
+
+def test_ffmpeg_backend_decodes_the_window_once(tmp_path, monkeypatch):
+    video_path = tmp_path / "source.mp4"
+    video_path.write_bytes(b"fake-media")
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = list(cmd)
+        seen["timeout"] = kwargs.get("timeout")
+        out_dir = Path(cmd[-1]).parent
+        for index in range(1, 9):
+            cv2.imwrite(
+                str(out_dir / f"frame_{index:06d}.jpg"),
+                np.full((32, 32, 3), 80, dtype=np.uint8),
+            )
+        return type("Completed", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr("app.quality_moe.sampling.subprocess.run", fake_run)
+
+    result = sample_clip_frames(video_path, 1.0, 3.0, "candidate-ffmpeg")
+
+    assert seen["cmd"][0] == "ffmpeg"
+    assert seen["cmd"].index("-ss") < seen["cmd"].index("-i")
+    assert result.status is EvidenceStatus.AVAILABLE
+    assert result.diagnostics["backend"] == "ffmpeg"
+    assert all(1.0 <= ts <= 3.0 for ts in result.timestamps)
+    assert len(result.frames) == 6
+
+
+def test_sample_clip_frames_rejects_unknown_backend(tmp_path):
+    with pytest.raises(ValueError, match="backend"):
+        sample_clip_frames(tmp_path / "x.mp4", 0.4, 1.3, "c", backend="vlc")

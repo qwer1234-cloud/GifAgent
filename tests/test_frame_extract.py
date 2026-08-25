@@ -170,6 +170,23 @@ def test_empty_timestamps_returns_empty_list_without_touching_out_dir(tmp_path):
     assert not missing_dir.exists()
 
 
+def test_accurate_seek_places_ss_after_input(tmp_path):
+    captured = {}
+
+    def runner(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _FakeCompleted(0)
+
+    results = extract_frames(
+        "video.mp4", [10], str(tmp_path),
+        workers=1, runner=runner, accurate_seek=True,
+    )
+    cmd = captured["cmd"]
+    assert cmd.index("-i") < cmd.index("-ss")
+    assert cmd[cmd.index("-ss") + 1] == "10"
+    assert results[0].ok is True
+
+
 def test_out_dir_is_created_when_missing(tmp_path):
     target_dir = tmp_path / "fresh" / "nested"
     extract_frames(
