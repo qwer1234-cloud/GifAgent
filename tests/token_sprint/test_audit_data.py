@@ -543,6 +543,28 @@ def test_mojibake_classifier_levels():
     assert scan_text_for_mojibake("17м=BDRip")[0] == "clean"  # legit Cyrillic
 
 
+def test_aggregate_observations_collapses_repeated_per_record_entries():
+    from scripts.token_sprint.audit_data import _aggregate_observations
+
+    repeated = [
+        {"kind": "ts_pair_mixed_tz_uncomparable", "source": "library_snapshot",
+         "record_ref": f"candidate_gifs#{i}", "field": "updated_at<created_at"}
+        for i in range(79)
+    ]
+    aggregated = _aggregate_observations(repeated + [
+        {"kind": "source_video_missing", "source": "adaptive_test_result",
+         "record_ref": "$.video", "field": "video", "path": "C:/prod/x.mp4"},
+        {"kind": "score_column_nulls", "source": "library_snapshot",
+         "table": "candidate_gifs", "counts": {"final_score": 12833}},
+    ])
+    mixed = [o for o in aggregated
+             if o["kind"] == "ts_pair_mixed_tz_uncomparable"]
+    assert len(mixed) == 1
+    assert mixed[0]["count"] == 79
+    assert len(mixed[0]["sample_record_refs"]) == 3
+    assert len(aggregated) == 3  # 1 mixed + 1 video + 1 unaggregated kind
+
+
 # ---------------------------------------------------------------------------
 # Publishing (.ready) and refusal to modify published artifacts
 # ---------------------------------------------------------------------------

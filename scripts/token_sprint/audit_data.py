@@ -966,17 +966,28 @@ _AGGREGATABLE_OBSERVATIONS = (
 
 
 def _aggregate_observations(observations):
-    """Collapse repeated per-record observations into counted entries."""
-    aggregated, counts = [], {}
+    """Collapse repeated per-record observations into counted entries (max 3 refs)."""
+    aggregated, grouped, order = [], {}, []
     for observation in observations:
-        if observation.get("kind") in _AGGREGATABLE_OBSERVATIONS:
-            key = json.dumps(observation, sort_keys=True, ensure_ascii=False)
-            counts[key] = counts.get(key, 0) + 1
-        else:
+        if observation.get("kind") not in _AGGREGATABLE_OBSERVATIONS:
             aggregated.append(observation)
-    for key, count in counts.items():
-        merged = json.loads(key)
-        merged["count"] = count
+            continue
+        key = json.dumps(
+            {k: v for k, v in observation.items() if k != "record_ref"},
+            sort_keys=True, ensure_ascii=False,
+        )
+        if key not in grouped:
+            grouped[key] = {"observation": observation, "count": 0, "samples": []}
+            order.append(key)
+        grouped[key]["count"] += 1
+        record_ref = observation.get("record_ref")
+        if record_ref and len(grouped[key]["samples"]) < 3:
+            grouped[key]["samples"].append(record_ref)
+    for key in order:
+        entry = grouped[key]
+        merged = dict(entry["observation"])
+        merged["count"] = entry["count"]
+        merged["sample_record_refs"] = entry["samples"]
         aggregated.append(merged)
     return aggregated
 
@@ -1089,10 +1100,12 @@ def render_report(result: dict) -> str:
             names = ", ".join(f"`{t['table']}`" for t in observation["tables"])
             lines.append(f"- 快照跳过表（镜像/内部）：{names}")
         elif kind == "ts_pair_mixed_tz_uncomparable":
+            samples = ", ".join(f"`{ref}`" for ref in observation.get("sample_record_refs", []))
             lines.append(
-                f"- 混合时区时间戳对（naive vs aware，无法可靠比较，未计命中，"
-                f"共 {observation.get('count', 1)} 处）：{observation['record_ref']} "
-                f"{observation['field']}"
+                f"- 混合时区时间戳对（naive vs aware，无法可靠比较，未计命中）："
+                f"共 {observation.get('count', 1)} 处"
+                + (f"，样例：{samples}" if samples else "")
+                + f"（字段 {observation['field']}）"
             )
         elif kind == "source_video_missing":
             lines.append(
@@ -1102,7 +1115,7 @@ def render_report(result: dict) -> str:
         elif kind == "relative_path_unchecked":
             lines.append(
                 f"- 相对路径无 stat 基准未检查（共 {observation.get('count', 1)} 处）："
-                f"`{observation['record_ref']}` {observation['field']}"
+                f"{observation['field']}"
             )
     lines += [
         "",
@@ -1264,11 +1277,11 @@ def run_audit(args: argparse.Namespace) -> tuple[int, dict]:
             for s in result["shards"]
         ],
     }
+    result["findings_path"] = findings_path.as_posix()
     atomic_write_text(
         findings_path,
         json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
     )
-    result["findings_path"] = findings_path.as_posix()
 
     if args.publish_ready:
         ready = _publish(findings_path, qc_summary)
