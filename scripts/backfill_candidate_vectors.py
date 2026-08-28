@@ -24,8 +24,10 @@ from app.services.preference_schema import apply_preference_schema
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(str(db_path), timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA journal_mode=WAL")
     apply_preference_schema(conn)
     return conn
 
@@ -44,6 +46,16 @@ def main() -> None:
     )
     parser.add_argument("--limit", type=int, default=None, help="Maximum vectors to insert")
     parser.add_argument("--dry-run", action="store_true", help="Count missing vectors without embedding")
+    parser.add_argument(
+        "--retry-excluded",
+        action="store_true",
+        help="Retry candidates previously written to candidate_vector_exclusions",
+    )
+    parser.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="Insert missing vectors only; do not refresh schema/hash-stale blobs",
+    )
     args = parser.parse_args()
 
     load_config()
@@ -74,6 +86,8 @@ def main() -> None:
             only_feedback=args.feedback_only,
             dry_run=args.dry_run,
             limit=args.limit,
+            retry_excluded=args.retry_excluded,
+            missing_only=args.missing_only,
         )
     finally:
         conn.close()

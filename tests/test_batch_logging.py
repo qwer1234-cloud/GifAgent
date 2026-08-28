@@ -180,9 +180,13 @@ def test_failed_gif_log_includes_failure_reason():
 def test_adaptive_exporter_uses_attempt_result_counts_and_nonzero_failure_exit():
     from pathlib import Path
 
-    source = Path("scripts/test_video_adaptive.py").read_text(encoding="utf-8")
+    source = Path("app/pipeline/direct.py").read_text(encoding="utf-8")
+    gif_clip_source = Path("app/pipeline/stages/gif_clip.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert "run_gif_export_attempt(" in source
+    # The export attempt call moved to the shared gif_clip stage handler.
+    assert "run_gif_export_attempt(" in gif_clip_source
     assert '"gif_attempted": gif_attempted' in source
     assert '"gif_succeeded": gif_succeeded' in source
     assert '"gif_failed": gif_failed' in source

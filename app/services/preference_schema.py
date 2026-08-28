@@ -59,14 +59,20 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             vector_blob BLOB NOT NULL,
             normalized INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            text_schema_version INTEGER NOT NULL DEFAULT 0,
+            source_text_hash TEXT,
             PRIMARY KEY(candidate_id, vector_type, embedding_model),
             FOREIGN KEY(candidate_id) REFERENCES candidate_gifs(candidate_id)
         );
 
         CREATE TABLE IF NOT EXISTS candidate_vector_exclusions (
-            candidate_id TEXT PRIMARY KEY,
+            candidate_id TEXT NOT NULL,
+            embedding_model TEXT NOT NULL DEFAULT 'nomic-embed-text:latest',
             reason TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            attempts INTEGER NOT NULL DEFAULT 1,
+            error_class TEXT NOT NULL DEFAULT 'permanent',
+            PRIMARY KEY (candidate_id, embedding_model),
             FOREIGN KEY(candidate_id) REFERENCES candidate_gifs(candidate_id)
         );
 
@@ -179,6 +185,15 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
         ),
     )
     _migrate_preference_events(conn)
+    _ensure_columns(
+        conn,
+        "candidate_vectors",
+        (
+            ("text_schema_version", "INTEGER NOT NULL DEFAULT 0"),
+            ("source_text_hash", "TEXT"),
+        ),
+    )
+    _migrate_vector_exclusions(conn)
 
     conn.commit()
 
@@ -288,4 +303,67 @@ def _migrate_preference_events(conn: sqlite3.Connection) -> None:
 
     except BaseException:
         conn.execute("ROLLBACK TO SAVEPOINT preference_events_migration")
+        raise
+
+
+def _migrate_vector_exclusions(conn: sqlite3.Connection) -> None:
+    """Rebuild exclusions with a (candidate_id, embedding_model) primary key."""
+    existing = _column_names(conn, "candidate_vector_exclusions")
+    if (
+        "embedding_model" in existing
+        and "attempts" in existing
+        and "error_class" in existing
+    ):
+        pk_cols = [
+            name
+            for _pk, name in sorted(
+                (int(row[5]), str(row[1]))
+                for row in conn.execute(
+                    "PRAGMA table_info(candidate_vector_exclusions)"
+                ).fetchall()
+                if row[5] > 0
+            )
+        ]
+        if pk_cols == ["candidate_id", "embedding_model"]:
+            return
+
+    conn.execute("SAVEPOINT vector_exclusions_migration")
+    try:
+        conn.execute(
+            """CREATE TABLE candidate_vector_exclusions_new (
+                candidate_id TEXT NOT NULL,
+                embedding_model TEXT NOT NULL DEFAULT 'nomic-embed-text:latest',
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                attempts INTEGER NOT NULL DEFAULT 1,
+                error_class TEXT NOT NULL DEFAULT 'permanent',
+                PRIMARY KEY (candidate_id, embedding_model),
+                FOREIGN KEY (candidate_id) REFERENCES candidate_gifs(candidate_id)
+            )"""
+        )
+        has_model = "embedding_model" in existing
+        has_attempts = "attempts" in existing
+        has_error_class = "error_class" in existing
+        model_expr = (
+            "embedding_model" if has_model else "'nomic-embed-text:latest'"
+        )
+        attempts_expr = "attempts" if has_attempts else "1"
+        error_expr = "error_class" if has_error_class else "'permanent'"
+        conn.execute(
+            f"""INSERT INTO candidate_vector_exclusions_new (
+                    candidate_id, embedding_model, reason, created_at,
+                    attempts, error_class
+                )
+                SELECT candidate_id, {model_expr}, reason, created_at,
+                       {attempts_expr}, {error_expr}
+                FROM candidate_vector_exclusions"""
+        )
+        conn.execute("DROP TABLE candidate_vector_exclusions")
+        conn.execute(
+            "ALTER TABLE candidate_vector_exclusions_new "
+            "RENAME TO candidate_vector_exclusions"
+        )
+        conn.execute("RELEASE SAVEPOINT vector_exclusions_migration")
+    except BaseException:
+        conn.execute("ROLLBACK TO SAVEPOINT vector_exclusions_migration")
         raise

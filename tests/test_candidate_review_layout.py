@@ -44,14 +44,14 @@ def test_profile_controls_are_declared_in_a_separate_tab():
 
 
 def test_selected_preview_css_keeps_gif_centered():
-    from app.ui.candidate_review import REVIEW_LAYOUT_CSS
+    from app.ui.tabs.review import REVIEW_LAYOUT_CSS
 
     assert "selected-gif-preview" in REVIEW_LAYOUT_CSS
     assert "object-position: center" in REVIEW_LAYOUT_CSS
 
 
 def test_review_shortcuts_include_like_neutral_dislike_and_favorite():
-    from app.ui.candidate_review import REVIEW_SHORTCUTS_JS
+    from app.ui.tabs.review import REVIEW_SHORTCUTS_JS
 
     assert "'1': 'like-btn'" in REVIEW_SHORTCUTS_JS
     assert "'2': 'neutral-btn'" in REVIEW_SHORTCUTS_JS

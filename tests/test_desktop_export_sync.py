@@ -883,7 +883,8 @@ def test_startup_runs_initial_sync_after_db_init_before_task_worker(
     monkeypatch.setattr(launcher, "_start_task_worker", lambda: (None, None))
     monkeypatch.setattr(launcher, "start_api_server", lambda: None)
     monkeypatch.setattr(launcher, "_wait_for_url", lambda *a, **k: True)
-    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app: None)
+    monkeypatch.setattr(launcher, "resolve_gradio_port", lambda **_k: 7861)
+    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app, **_k: None)
     monkeypatch.setattr(
         launcher, "start_background_sync", lambda event: calls.append("bg")
     )
@@ -915,7 +916,8 @@ def test_startup_sync_failure_logs_warning_and_startup_continues(
     monkeypatch.setattr(launcher, "_run_startup_sync", failing_sync)
     monkeypatch.setattr(launcher, "start_api_server", lambda: None)
     monkeypatch.setattr(launcher, "_wait_for_url", lambda *a, **k: True)
-    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app: None)
+    monkeypatch.setattr(launcher, "resolve_gradio_port", lambda **_k: 7861)
+    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app, **_k: None)
     monkeypatch.setattr(
         launcher, "start_background_sync", lambda event: calls.append("bg")
     )
@@ -988,7 +990,8 @@ def test_graceful_shutdown_stops_ollama_runtime(monkeypatch, capsys):
     monkeypatch.setattr(launcher, "_start_task_worker", lambda: (None, None))
     monkeypatch.setattr(launcher, "start_api_server", lambda: None)
     monkeypatch.setattr(launcher, "_wait_for_url", lambda *a, **k: True)
-    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app: None)
+    monkeypatch.setattr(launcher, "resolve_gradio_port", lambda **_k: 7861)
+    monkeypatch.setattr(launcher, "launch_gradio_app", lambda app, **_k: None)
     monkeypatch.setattr(
         launcher, "start_background_sync", lambda event: calls.append("bg")
     )

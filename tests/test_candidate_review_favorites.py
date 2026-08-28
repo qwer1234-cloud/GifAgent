@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 
 def test_ui_favorite_posts_to_favorite_endpoint(monkeypatch):
-    from app.ui import candidate_review
+    from app.ui.tabs import review as candidate_review
 
     calls = []
 

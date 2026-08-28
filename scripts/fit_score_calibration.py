@@ -17,25 +17,19 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.quality_lab.calibration import calibration_curve, fit_monotonic_calibrator
+from app.services.preference_events import load_latest_scoring_events
 
 
 MIN_SAMPLES = 200
 
 
 def _effective_events(conn: sqlite3.Connection) -> list[tuple[str, str]]:
-    rows = conn.execute(
-        """
-        SELECT e.target_id, e.rating
-        FROM preference_events e
-        WHERE e.event_kind = 'feedback'
-          AND e.rating IN ('like', 'dislike', 'favorite')
-          AND e.event_id NOT IN (
-              SELECT supersedes_event_id FROM preference_events
-              WHERE supersedes_event_id IS NOT NULL
-          )
-        """
-    ).fetchall()
-    return [(row[0], row[1]) for row in rows]
+    events = load_latest_scoring_events(conn)
+    return [
+        (str(event["target_id"]), str(event["rating"]))
+        for event in events.values()
+        if event.get("target_type") == "candidate_gif"
+    ]
 
 
 def _worthiness_from_summary(raw: str) -> float | None:

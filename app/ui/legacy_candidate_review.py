@@ -1113,6 +1113,7 @@ def backfill_profile_vectors():
             embed_fn=compute_text_embedding,
             batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
+            missing_only=True,
         )
         return json.dumps(result, indent=2)
     except Exception as e:

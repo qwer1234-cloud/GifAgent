@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.pipeline.stages import gif_clip as gif_clip_stage
+from app.pipeline.stages import rank_dedup as rank_dedup_stage
 from app.services.gif_windows import build_export_window
 from scripts import test_video_adaptive
 
@@ -195,7 +197,7 @@ def test_staged_export_uses_the_bounded_shared_window(tmp_path, monkeypatch):
     }
     captured_attempts = []
     monkeypatch.setattr(
-        test_video_adaptive,
+        gif_clip_stage,
         "_read_upstream_manifest",
         lambda *_args: {"clips": [target_clip]},
     )
@@ -211,7 +213,7 @@ def test_staged_export_uses_the_bounded_shared_window(tmp_path, monkeypatch):
         return SimpleNamespace(success=True, size_bytes=6, error=None)
 
     monkeypatch.setattr(
-        test_video_adaptive, "run_gif_export_attempt", fake_export_attempt
+        gif_clip_stage, "run_gif_export_attempt", fake_export_attempt
     )
     frames_dir = tmp_path / "frames"
     export_dir = tmp_path / "exports"
@@ -244,7 +246,7 @@ def test_staged_export_preserves_guarded_split_window(tmp_path, monkeypatch):
     }
     captured_attempts = []
     monkeypatch.setattr(
-        test_video_adaptive, "_read_upstream_manifest",
+        gif_clip_stage, "_read_upstream_manifest",
         lambda *_args: {"clips": [target_clip]},
     )
     monkeypatch.setattr(
@@ -257,7 +259,7 @@ def test_staged_export_preserves_guarded_split_window(tmp_path, monkeypatch):
         Path(kwargs["output_path"]).write_bytes(b"GIF89a")
         return SimpleNamespace(success=True, size_bytes=6, error=None)
 
-    monkeypatch.setattr(test_video_adaptive, "run_gif_export_attempt", fake_export_attempt)
+    monkeypatch.setattr(gif_clip_stage, "run_gif_export_attempt", fake_export_attempt)
     frames_dir = tmp_path / "frames"
     export_dir = tmp_path / "exports"
     work_dir = tmp_path / "work"
@@ -287,7 +289,7 @@ def test_direct_action_export_uses_exact_guarded_window_capped_at_twenty_seconds
 
     action_clip = _action_clip(2.0, 22.0)
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         lambda **_kwargs: _materialization((action_clip,)),
         raising=False,
@@ -329,7 +331,7 @@ def test_direct_and_staged_action_splits_match_before_ranking(
         return _materialization(action_children, split=1)
 
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         fake_materialize,
     )
@@ -415,7 +417,7 @@ def test_empty_staged_rank_derives_canonical_action_hash(
     cfg["max_duration"] = 20.0
     cfg.pop("action_config_hash")
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "_read_upstream_manifest",
         lambda *_args: {"clips": [], "scored_frames": []},
     )
@@ -470,7 +472,7 @@ def test_nonempty_legacy_staged_rank_uses_normalized_disabled_action_config(
         "guarded_export_window": True,
     }
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "_read_upstream_manifest",
         lambda *_args: {
             "clips": [legacy_clip],
@@ -485,7 +487,7 @@ def test_nonempty_legacy_staged_rank_uses_normalized_disabled_action_config(
         ),
     )
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         lambda **_kwargs: ActionMaterialization(
             clips=(legacy_clip,),

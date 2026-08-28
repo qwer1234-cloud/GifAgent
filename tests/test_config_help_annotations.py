@@ -1,16 +1,15 @@
-from app.ui.candidate_review import (
+from app.ui.tabs.review import REVIEW_LAYOUT_CSS, REVIEW_SHORTCUTS_JS
+from app.ui.tabs.settings import (
     CONFIG_FIELD_HELP,
     CONFIG_FIELD_KEYS,
     CONFIG_TOOLTIP_CSS,
     CONFIG_TOOLTIP_JS,
-    REVIEW_SHORTCUTS_JS,
-    REVIEW_LAYOUT_CSS,
     config_checkbox_kwargs,
     config_field_kwargs,
     config_field_label,
     config_tooltip_icon,
-    launch_kwargs,
 )
+from app.ui.workbench import launch_kwargs
 from app.ui.workbench import load_layout_css
 
 

@@ -1,5 +1,5 @@
 def test_append_batch_directory_adds_to_running_queue(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": True})
     monkeypatch.setattr(candidate_review, "append_queue_job", lambda directory, limit, extensions: {
@@ -19,7 +19,7 @@ def test_append_batch_directory_adds_to_running_queue(monkeypatch, tmp_path):
 
 
 def test_append_batch_directory_restarts_queue_when_worker_exits_during_append(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     statuses = iter(({"running": True}, {"running": False}))
     monkeypatch.setattr(candidate_review, "get_batch_status", lambda: next(statuses))
@@ -35,7 +35,7 @@ def test_append_batch_directory_restarts_queue_when_worker_exits_during_append(m
 
 
 def test_append_batch_directory_leaves_draining_worker_to_adopt_job(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": True})
     monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: {"job_id": "job-2"})
@@ -61,7 +61,7 @@ def test_append_batch_directory_leaves_draining_worker_to_adopt_job(monkeypatch,
 
 
 def test_append_batch_directory_starts_one_successor_after_draining_worker_goes_idle(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": True})
     monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: {"job_id": "job-2"})
@@ -81,7 +81,7 @@ def test_append_batch_directory_starts_one_successor_after_draining_worker_goes_
 
 
 def test_append_batch_directory_reclaims_dead_cleanup_claim_and_starts_successor(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {
         "status": "starting",
@@ -131,7 +131,7 @@ def test_append_batch_directory_reclaims_dead_cleanup_claim_and_starts_successor
 
 
 def test_refresh_batch_status_keeps_summary_and_queue_when_log_cannot_be_read(monkeypatch):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     monkeypatch.setattr(candidate_review, "get_batch_status", lambda: {"running": False})
     monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": []})
@@ -151,7 +151,7 @@ def test_refresh_batch_status_keeps_summary_and_queue_when_log_cannot_be_read(mo
 
 
 def test_append_batch_directory_rejects_blank_or_missing_paths(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     appended = []
     monkeypatch.setattr(candidate_review, "append_queue_job", lambda *_args: appended.append(True))
@@ -168,7 +168,7 @@ def test_append_batch_directory_reports_duplicate_without_starting_worker(
     monkeypatch, tmp_path
 ):
     from app.services.batch_queue import DuplicateQueueJobError
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     existing_job = {"job_id": "job-1", "directory": str(tmp_path)}
     monkeypatch.setattr(
@@ -214,7 +214,7 @@ def test_append_while_direct_worker_runs_launches_queue_successor_without_second
         load_queue_state,
         save_queue_state,
     )
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
     from scripts import test_video_batch
 
     queue_path = tmp_path / "batch_queue.json"
@@ -359,7 +359,7 @@ finally:
 def test_rapid_append_requests_launch_one_successor_worker(monkeypatch, tmp_path):
     import threading
 
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
     saved_statuses = []
@@ -418,7 +418,7 @@ def test_rapid_append_requests_launch_one_successor_worker(monkeypatch, tmp_path
 
 
 def test_start_batch_queue_restores_idle_state_after_launch_failure(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
     saved_statuses = []
@@ -444,7 +444,7 @@ def test_start_batch_queue_restores_idle_state_after_launch_failure(monkeypatch,
 
 
 def test_queue_parent_leaves_pid_persistence_to_child(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
     saved_statuses = []
@@ -488,7 +488,7 @@ def test_queue_parent_leaves_pid_persistence_to_child(monkeypatch, tmp_path):
 
 
 def test_start_batch_queue_keeps_claim_when_worker_cleanup_cannot_be_confirmed(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
     saved_states = []
@@ -536,7 +536,7 @@ def test_start_batch_queue_keeps_claim_when_worker_cleanup_cannot_be_confirmed(m
 def test_start_batch_queue_keeps_claim_when_cleanup_verification_errors(monkeypatch, tmp_path):
     import subprocess
 
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
     launches = []
@@ -579,7 +579,7 @@ def test_start_batch_queue_keeps_claim_when_cleanup_verification_errors(monkeypa
 
 
 def test_start_batch_queue_reclaims_stale_starting_claim_once(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {
         "status": "starting",
@@ -627,7 +627,7 @@ import pytest
 
 @pytest.mark.parametrize("stale_status", ["starting", "running", "draining"])
 def test_stale_active_state_is_recovered_without_losing_pending_job(monkeypatch, stale_status):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state = {
         "status": stale_status,
@@ -651,7 +651,7 @@ def test_stale_active_state_is_recovered_without_losing_pending_job(monkeypatch,
 
 
 def test_starting_claim_recovers_when_spawned_child_dies_before_handshake(monkeypatch):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state = {
         "status": "starting",
@@ -675,7 +675,7 @@ def test_starting_claim_recovers_when_spawned_child_dies_before_handshake(monkey
 
 
 def test_stop_recovers_exact_worker_state_and_preserves_pending_job(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     pid_file = tmp_path / "batch_pid.txt"
     pid_file.write_text("777", encoding="ascii")
@@ -715,7 +715,7 @@ def test_stop_recovers_exact_worker_state_and_preserves_pending_job(monkeypatch,
 
 
 def test_queue_parent_does_not_overwrite_child_first_state(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {"status": "idle", "current_job_id": None, "jobs": {}}
     monkeypatch.setattr(candidate_review, "load_queue", lambda: {"jobs": [{"job_id": "job-1"}]})
@@ -752,7 +752,7 @@ def test_queue_parent_does_not_overwrite_child_first_state(monkeypatch, tmp_path
 
 
 def test_append_launches_queue_child_when_external_direct_pid_is_live(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     launches = []
     monkeypatch.setattr(candidate_review, "BATCH_QUEUE_FILE", str(tmp_path / "queue.json"))
@@ -787,7 +787,7 @@ def test_append_launches_queue_child_when_external_direct_pid_is_live(monkeypatc
 
 
 def test_start_recovers_crashed_running_worker_and_resumes_pending_job(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {
         "status": "running",
@@ -828,7 +828,7 @@ def test_start_recovers_crashed_running_worker_and_resumes_pending_job(monkeypat
 
 
 def test_stop_does_not_clear_new_worker_that_replaced_old_pid(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     pid_file = tmp_path / "batch.pid"
     pid_file.write_text("777", encoding="ascii")
@@ -876,7 +876,7 @@ def test_stop_does_not_clear_new_worker_that_replaced_old_pid(monkeypatch, tmp_p
 
 
 def test_start_queue_accepts_initial_directory_and_options(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     appended = []
     monkeypatch.setattr(
@@ -895,7 +895,7 @@ def test_start_queue_accepts_initial_directory_and_options(monkeypatch, tmp_path
 
 
 def test_stop_then_start_resumes_preserved_pending_job(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     pid_file = tmp_path / "batch.pid"
     pid_file.write_text("777", encoding="ascii")
@@ -944,7 +944,7 @@ def test_stop_then_start_resumes_preserved_pending_job(monkeypatch, tmp_path):
 
 
 def test_successor_launch_waits_for_exact_terminal_pid_handshake(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {
         "status": "idle",
@@ -1003,7 +1003,7 @@ def test_handoff_timeout_launches_successor_while_old_lease_is_still_held(
         load_queue_state,
         save_queue_state,
     )
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
     from scripts import test_video_batch
 
     queue_path = tmp_path / "batch_queue.json"
@@ -1133,7 +1133,7 @@ finally:
 
 
 def test_handoff_timeout_does_not_clear_new_owner_or_old_token(monkeypatch, tmp_path):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     state_store = {
         "status": "idle",

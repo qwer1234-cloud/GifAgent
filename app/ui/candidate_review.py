@@ -4,7 +4,7 @@ Thin launcher: loads config, creates the workbench context, builds the Gradio
 application, and launches it.  All tab logic lives in ``app/ui/tabs/`` and the
 workbench shell in ``app/ui/workbench.py``.
 
-Backward-compatible re-exports (deprecated, will be removed in a future release):
+Thin re-exports (deprecated, will be removed in a future release):
   - ``summarize_checkpoint_status``  -> ``app.ui.tabs.control``
   - ``CONFIG_FIELD_HELP`` / ``CONFIG_FIELD_KEYS`` -> ``app.ui.tabs.settings``
   - ``CONFIG_TOOLTIP_CSS`` / ``CONFIG_TOOLTIP_JS`` -> ``app.ui.tabs.settings``
@@ -15,8 +15,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
-import types
 
 import gradio as gr
 
@@ -138,6 +136,7 @@ def backfill_profile_vectors():
             embed_fn=compute_text_embedding,
             batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
+            missing_only=True,
         )
         return json.dumps(result, indent=2)
     except Exception as exc:
@@ -170,47 +169,6 @@ app = (
     else build_workbench(context)
 )
 
-
-def __getattr__(name: str):
-    """Resolve historical helpers from the dedicated compatibility module."""
-    try:
-        return getattr(_legacy_candidate_review, name)
-    except AttributeError as exc:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
-
-
-class _CompatibilityModule(types.ModuleType):
-    """Mirror test/runtime overrides into the historical implementation.
-
-    Legacy callers patch attributes on ``app.ui.candidate_review``.  Functions
-    resolved through ``__getattr__`` still execute with the compatibility
-    module's globals, so assignments must be mirrored there to preserve the
-    historical monkeypatch and embedding contract.
-    """
-
-    def __setattr__(self, name: str, value) -> None:
-        namespace = self.__dict__
-        mirrored = namespace.setdefault("_compat_mirrored_names", set())
-        originals = namespace.setdefault("_compat_original_values", {})
-        if name in mirrored:
-            setattr(_legacy_candidate_review, name, value)
-        elif name not in namespace and hasattr(_legacy_candidate_review, name):
-            originals[name] = getattr(_legacy_candidate_review, name)
-            mirrored.add(name)
-            setattr(_legacy_candidate_review, name, value)
-        super().__setattr__(name, value)
-
-    def __delattr__(self, name: str) -> None:
-        namespace = self.__dict__
-        mirrored = namespace.get("_compat_mirrored_names", set())
-        originals = namespace.get("_compat_original_values", {})
-        if name in mirrored:
-            setattr(_legacy_candidate_review, name, originals.pop(name))
-            mirrored.remove(name)
-        super().__delattr__(name)
-
-
-sys.modules[__name__].__class__ = _CompatibilityModule
 
 if __name__ == "__main__":
     app.launch(**launch_kwargs())

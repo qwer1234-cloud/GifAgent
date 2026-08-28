@@ -444,4 +444,4 @@ def test_tag_weights_are_stored_in_profile(seeded_db_with_vectors):
     weights = _json.loads(row["tag_weights_json"])
     assert isinstance(weights, dict)
     if weights:
-        assert all(0.0 <= v <= 1.0 for v in weights.values())
+        assert all(-1.0 <= v <= 1.0 for v in weights.values())

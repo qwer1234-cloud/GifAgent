@@ -260,15 +260,30 @@ app/
 │   ├── video_fingerprint.py   # Duration + keyframe pHash dedup (pre-processing)
 │   ├── preference_*.py        # Preference Memory subsystem (6 tables)
 │   ├── reranker.py            # Score-gated preference reranker
+│   ├── vector_math.py         # blob_to_vector; k=1 centroids keep raw weighted-average bytes
 │   ├── provenance.py          # Provenance dataclass (git commit, config hash, model versions)
 │   ├── clip_merge.py          # Region-aware adaptive frame→clip merge
 │   └── candidates.py          # Candidate GIF materialization
 ├── quality_lab/               # Phase 2: Quality Lab benchmarking (see below)
+├── pipeline/                  # Adaptive pipeline implementation behind scripts/test_video_adaptive.py
+│   ├── config.py              # extract_config() — frozen adaptive config (defaults immutable)
+│   ├── prompts.py             # SCORE_PROMPT* + scoring VLM options
+│   ├── vlm_runtime.py         # VlmRuntimeConfig, Ollama lifecycle (stop/wait)
+│   ├── scoring.py             # _score_vlm_frame, keep gate, checkpoints, caption backfill
+│   ├── ranking.py             # preference blend / adult MoE export ranking
+│   ├── export_gif.py          # export windows, palette filters, fps warning
+│   ├── quality_bridge.py      # Quality MoE boundary glue (calls app.quality_moe.*)
+│   ├── timing.py              # stage timing collector
+│   ├── stage_io.py            # manifest I/O, run_stage_mode (config restore in finally), dispatch
+│   ├── stages/                # eight handlers: discover sample vlm refine synthesize rank_dedup gif_clip materialize
+│   ├── direct.py              # run_pipeline / run_direct_mode (same _stage_* in-process)
+│   └── cli.py                 # parse_cli_args / main
 ├── task_engine/               # Phase 1: Reliable task processing engine (see below)
 ├── ui/
 │   ├── launcher.py            # Packaged entry (API 8000 + Gradio 7861 + worker)
-│   ├── local_port.py          # Reclaim port 8000 from leftover GifAgentUI.exe only
-│   ├── candidate_review.py    # Gradio UI: review + batch control (port 7861)
+│   ├── local_port.py          # Reclaim leftover GifAgentUI.exe; Gradio bind-probes 7861–7870
+│   ├── candidate_review.py    # Gradio UI entry (explicit re-exports only; no __getattr__)
+│   ├── legacy_candidate_review.py  # Legacy batch-queue UI (test lock)
 │   ├── review.py              # Gradio UI: original GIF review (port 7860)
 │   ├── control_tab.py         # Control tab (now API-backed; legacy mode via GIFAGENT_LEGACY_QUEUE_UI=1)
 │   └── quality_lab_tab.py     # Quality Lab tab (blind A/B, promotion, history)
@@ -279,7 +294,7 @@ scripts/
 ├── smoke_task_engine.py       # Smoke test for task engine reliability
 ├── smoke_active_preference.py # Smoke test for active preference learning lifecycle
 ├── smoke_quality_lab.py       # Smoke test for Quality Lab lifecycle
-├── test_video_adaptive.py     # Core: adaptive GIF extraction (4 phases)
+├── test_video_adaptive.py     # CLI facade (~180 lines); implementation lives in app/pipeline/
 ├── ab_lil_karina_run.ps1      # Lil Karina A/B runner (baseline / optimized_v*)
 ├── test_video_batch.py        # Batch wrapper with checkpoint
 ├── pipeline_stage2.py         # Post-VLM LLM synthesis + FAISS rebuild
@@ -316,7 +331,7 @@ system for adaptive GIF extraction and pipeline stages.
 | `schema.py` | DDL, migrations, `connect_task_db()` factory |
 | `repository.py` | `TaskRepository` — transactional CRUD, leasing, heartbeat |
 | `fingerprints.py` | `sha256_file()`, `canonical_hash()`, `canonical_json()` |
-| `artifacts.py` | `commit_artifact()` with path-existence + SHA-256 validation |
+| `artifacts/` | Package (2026-08 split): `identity.py` artifact ids, `store.py` dedup insert, `kinds.py` stage kind tables, `resolve.py` input resolvers, `manifests.py` + `quality_schema.py` manifest validation — `from app.task_engine.artifacts import X` unchanged |
 | `legacy_import.py` | Import legacy `batch_queue_state.json` / checkpoint |
 | `stages.py` | `StageAdapter`, `StageContext`, `StageResult` — adapter protocol |
 | `adaptive_adapter.py` | `AdaptivePipelineAdapter` — wraps existing pipeline |
@@ -336,7 +351,7 @@ after every clip reaches a terminal state. Partial output uses
 Materialize accepts `source_file_sha256` sentinels `not_checked` / `unavailable`.
 
 Release gate: compileall, the complete pytest suite, and `git diff --check`.
-The 2026-08 working tree collects **1551** tests. Tests must use temporary data
+The 2026-08-28 working tree collects **1733** tests (`uv run pytest --collect-only -q`). Tests must use temporary data
 and must not mutate historical databases, exports, labels, checkpoints, or
 writable configuration.
 
@@ -594,13 +609,23 @@ logs — state is derived solely from the task client. Key methods:
 - `refresh(run_id)` — queries task engine for latest item state
 - `cancel(run_id)` — cancels all running jobs
 
-## test_video_adaptive.py — 4 Phases
+## test_video_adaptive.py — Direct vs Staged (2026-08-28)
+
+The script is a facade. Implementation: `app/pipeline/`. Eight shared stage
+handlers. Monkeypatch `app.pipeline.direct` / `app.pipeline.stages.<name>`,
+not names on the facade.
 
 1. **Probe + sample**: ffprobe duration → sample at SAMPLE_INTERVAL → dark filter (`min_brightness`)
-2. **VLM scoring**: shared `_score_vlm_frame` (strict `gif_worthiness`, no 0.5 fallback) → refinement around high-score regions; prompt comes from frozen `score_prompt_mode`
-3. **LLM synthesis**: region-aware merge (`clip_merge`) → DeepSeek synthesizes summary/tags from VLM captions (non-fatal; no live FAISS retrieval)
-3.5. **9-grid thumbnail**: `app/services/grid_select.py` splits the timeline into 9 time buckets, takes the highest-scored frame per bucket, then pHash-dedups (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/` (avoids all-high-score frames clustering at the start)
-4. **GIF export**: embedding + temporal dedup → Quality MoE on the full set → truncate by `output_ratio` / `max_output` → ffmpeg palette two-pass
+2. **VLM scoring**: shared `_score_vlm_frame` (strict `gif_worthiness`, no 0.5 fallback) → refinement around high-score regions; prompt comes from frozen `score_prompt_mode`. Honors snapshot `manage_lifecycle`.
+3. **Merge / synthesize**: region-aware merge (`clip_merge`). **Staged** default `clip_llm=True` tags each clip via DeepSeek. **Direct** passes `clip_llm=False` (merge only), then one **video-level** LLM over rank-truncated clips (max 20). Non-fatal; no live FAISS retrieval.
+3.5. **9-grid thumbnail** (Direct-only extra): `app/services/grid_select.py` splits the timeline into 9 time buckets, takes the highest-scored frame per bucket, then pHash-dedups (Hamming > 10) → export 9 individual JPEGs + 3x3 grid to `Sample/`
+4. **GIF export**: embedding + temporal dedup → Quality MoE on the full set → truncate by `output_ratio` / `max_output` → ffmpeg palette two-pass (`-lavfi`)
+
+Direct writes manifests to `{frames_dir}_stage_work` (removed at the next run start). Guard/materialize uses staged action-normalized windows.
+
+**Direct VLM unload before video-level LLM**: only if `vlm_runtime is not None` and `manage_lifecycle` and `launch_mode != "none"`; stop `vlm_runtime.model`. Do not `stop_model("llava")`. Single `wait_for_llm`; failure skips synthesis.
+
+**Staged config isolation**: `run_stage_mode` calls `swap_config_override` then `try/finally` covering `init_db`, `extract_config`, and `stage.log`. Job snapshot must not leak into process-global `_config`.
 
 **Non-fatal LLM**: if LLM fails, GIFs still export. Synthesis metadata is skipped.
 
@@ -621,8 +646,13 @@ Flow: candidate materialize → human feedback (like/dislike/neutral/skip/qualit
 | `quality_reject` | Technical defect | Ignored |
 | `favorite` | Strong positive | Liked centroid, weight=2.0 |
 
-Candidate vectors are required before profile builds can pass. Backfill existing
-reviewed candidates with:
+Candidate vectors are required before profile builds can pass. Read path uses
+`app.services.vector_math.blob_to_vector`. k=1 centroids still store **raw
+weighted-average bytes** (not `vector_to_blob`, which would L2-normalize).
+`GET /api/preference/profiles` SQL lives in
+`PreferenceMemoryService.list_builds()`; the router only does HTTP/503.
+
+Backfill existing reviewed candidates with:
 
 ```bash
 uv run python scripts/backfill_candidate_vectors.py --db dist/GifAgentUI/data/library.db
@@ -812,8 +842,12 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
     that kills `sleep infinity` keepers also drops Ollama; refine then fails
     with WinError 10061 until the VM is kept alive again.
 
-12. **Port 8000**: `reclaim_owned_listen_port` only kills leftover
-    `GifAgentUI.exe`. Afterlow / other foreign listeners are warned, not killed.
+12. **Ports 8000 / 7861**: `reclaim_owned_listen_port` only kills leftover
+    `GifAgentUI.exe`. Afterlow / other foreign holders are warned, not
+    killed. Afterlow often occupies 7861 as an outbound source port
+    (`Bound`/`ESTABLISHED`, not LISTEN), which Gradio reports as
+    `Cannot find empty port in range: 7861-7861`. The launcher then
+    bind-probes and falls back within `7861–7870`.
 
 13. **Retry does not rescore**: `POST /api/tasks/jobs/{id}/retry` resets failed
     / `needs_attention` stages only. It does not rewrite `config_json`. New
@@ -826,6 +860,18 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
     `score_prompt_mode` only (not prompt text, not `sex_act_threshold`).
     Changing prompt text requires a new `frames_dir` or a deleted checkpoint.
     `test_video_batch.py` does not pass `--config` or `--frames-dir`.
+
+15. **Monkeypatch the implementation module**, not `scripts/test_video_adaptive.py`.
+    The facade re-exports names; stage code reads its own globals.
+
+16. **Direct must not double-call DeepSeek per clip.** `_stage_synthesize(..., clip_llm=False)`
+    plus one video-level `_video_level_synthesis`. Staged keeps per-clip LLM.
+
+17. **`run_stage_mode` config restore** must wrap `init_db` / `extract_config` /
+    log setup, not only `_run_stage`. Tests: `tests/test_stage_io.py`.
+
+18. **Do not `stop_model("llava")` in Direct.** Stop `vlm_runtime.model` only when
+    lifecycle is managed. Tests: `tests/test_direct_synthesis.py`.
 
 ## API Endpoints (26+ total)
 
@@ -844,10 +890,10 @@ Key ones (preference/candidate):
 ## Test Suite
 
 ```bash
-uv run pytest tests/ -v   # 1551 collected tests (2026-08)
+uv run pytest tests/ -v   # 1733 collected tests (2026-08-28)
 ```
 
-Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker, task engine repository, artifacts, legacy import, stage adapters, fault injection, worker, version manifest, smoke script, quality lab API, quality lab UI, metrics, calibration, blind A/B, promotion.
+Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker, task engine repository, artifacts, legacy import, stage adapters, fault injection, worker, version manifest, smoke script, quality lab API, quality lab UI, metrics, calibration, blind A/B, promotion, pipeline facade, Direct/Staged parity, stage_io config restore, Direct synthesis lifecycle.
 
 ## Phase 4: Library Workbench (7-Tab Management UI)
 

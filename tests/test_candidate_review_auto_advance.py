@@ -5,7 +5,7 @@ import pytest
 
 
 def test_select_first_candidate_returns_preview_for_next_gif():
-    from app.ui.candidate_review import select_first_candidate
+    from app.ui.tabs.review import select_first_candidate
 
     selected = select_first_candidate(
         [
@@ -26,7 +26,7 @@ def test_select_first_candidate_returns_preview_for_next_gif():
 
 
 def test_next_reviewable_folder_uses_queue_order_then_wraps_remaining_folders():
-    from app.ui.candidate_review import next_reviewable_folder
+    from app.ui.tabs.review import next_reviewable_folder
 
     folders = [
         {"folder": "A"},
@@ -103,7 +103,7 @@ def test_load_folder_choices_shows_fully_rated_folder_when_none_unrated(monkeypa
 
 
 def test_rate_and_advance_selects_next_gif_in_current_folder(monkeypatch):
-    from app.ui import candidate_review
+    from app.ui.tabs import review as candidate_review
 
     next_item = {
         "candidate_id": "cand-next",
@@ -127,7 +127,7 @@ def test_rate_and_advance_selects_next_gif_in_current_folder(monkeypatch):
 
 
 def test_rate_and_advance_loads_next_folder_after_current_folder_is_complete(monkeypatch):
-    from app.ui import candidate_review
+    from app.ui.tabs import review as candidate_review
 
     next_item = {
         "candidate_id": "cand-b",

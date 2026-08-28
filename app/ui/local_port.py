@@ -14,6 +14,47 @@ import sys
 import time
 from typing import Callable, Iterable, Optional
 
+DEFAULT_PORT_SPAN = 10
+
+
+def local_bind_available(host: str, port: int) -> bool:
+    """Return True when *host*:*port* can be bound as a TCP server.
+
+    This matches Gradio's occupancy check. Windows "Bound"/ephemeral client
+    ports (for example Afterlow using 7861 as an outbound source port) are
+    not LISTEN rows, so ``reclaim_owned_listen_port`` cannot see them.
+    """
+    import socket
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host, port))
+    except OSError:
+        return False
+    finally:
+        sock.close()
+    return True
+
+
+def choose_local_port(
+    host: str,
+    preferred: int,
+    *,
+    span: int = DEFAULT_PORT_SPAN,
+    available: Optional[Callable[[str, int], bool]] = None,
+) -> int:
+    """Return *preferred* or the next free port in ``[preferred, preferred+span)``.
+
+    Raises ``RuntimeError`` when every candidate fails the bind probe.
+    """
+    check = available or local_bind_available
+    count = max(1, int(span))
+    last = preferred + count - 1
+    for port in range(preferred, last + 1):
+        if check(host, port):
+            return port
+    raise RuntimeError(f"Cannot find empty port in range: {preferred}-{last}.")
+
 
 def reclaim_owned_listen_port(
     port: int,

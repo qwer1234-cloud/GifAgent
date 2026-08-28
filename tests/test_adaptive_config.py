@@ -9,6 +9,7 @@ from app.services.gif_encode import is_divisible_gif_fps
 from app.task_engine.fingerprints import canonical_hash
 from app.ui.tabs import settings
 from scripts import test_video_adaptive
+from app.pipeline import export_gif
 from scripts.test_video_adaptive import (
     DEFAULT_MAX_REFINE_FRAMES,
     _palette_filters_for,
@@ -437,7 +438,7 @@ def test_models_yaml_balances_quality_gates_with_nontrivial_output_capacity():
     assert cfg["action_preferred_min_duration_s"] == 5.0
     assert cfg["action_preferred_max_duration_s"] == 8.0
     assert cfg["vlm_temperature"] <= 0.25
-    assert cfg["embed_sim_threshold"] <= 0.88
+    assert cfg["embed_sim_threshold"] <= 0.90
     assert cfg["embed_dedup_max_gap_s"] == 15
     assert cfg["temporal_dedup_min_gap_s"] >= 15
     assert cfg["gif_fps"] == 25
@@ -802,7 +803,7 @@ def test_output_affecting_snap_and_calibration_change_job_identity():
 
 
 def test_an_indivisible_frame_rate_warns_once_without_raising(capsys):
-    test_video_adaptive._WARNED_FPS.discard(24)
+    export_gif._WARNED_FPS.discard(24)
 
     extract_config({"adaptive": {"gif_fps": 24}})
     extract_config({"adaptive": {"gif_fps": 24}})

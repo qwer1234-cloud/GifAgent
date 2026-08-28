@@ -54,6 +54,9 @@ class ProfileBuildConfig:
     like_weight: float = 1.0
     dislike_weight: float = 1.0
     scenario_min_feedback: int = 8
+    # 1 = single mean centroid (default). 2–3 = max-sim prototypes; keep
+    # default at 1 until holdout NDCG / pairwise win-rate beats the mean.
+    multi_centroid_k: int = 1
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,9 @@ class VectorExclusion:
     candidate_id: str
     reason: str
     created_at: str
+    embedding_model: str = ""
+    attempts: int = 1
+    error_class: str = ""
 
 
 class BackfillReport(TypedDict, total=False):
@@ -102,5 +108,6 @@ class BackfillReport(TypedDict, total=False):
     inserted: int
     skipped_existing: int
     failed: int
-    exclusions: list[dict[str, str]]
+    inserted_ids: list[str]
+    excluded: list[dict[str, str]]
     batch_commits: int

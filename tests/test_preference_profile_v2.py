@@ -660,3 +660,137 @@ def test_publish_writes_publication_row(seeded_db_with_vectors):
     assert pub is not None
     assert pub["profile_version"] == result["profile_version"]
     assert pub["previous_profile_version"] is None
+
+
+def test_neutral_correction_evicts_like_from_effective_events(profile_db):
+    from app.services.preference_events import (
+        PreferenceEventService,
+        load_latest_scoring_events,
+    )
+
+    conn = profile_db
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec, status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-1", "run-1", "rc-1", "vid-1", "/v/1.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+    svc = PreferenceEventService(conn)
+    liked = svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-1",
+        rating="like",
+        source_video_sha256="vid-1",
+        scenario_keys=[],
+    )
+    assert "candidate_gif:cand-1" in load_latest_scoring_events(conn)
+    svc.correct_feedback(liked.event_id, "neutral", "changed mind")
+    assert "candidate_gif:cand-1" not in load_latest_scoring_events(conn)
+
+
+def test_later_neutral_feedback_evicts_like_from_effective_events(profile_db):
+    from app.services.preference_events import (
+        PreferenceEventService,
+        load_latest_scoring_events,
+    )
+
+    conn = profile_db
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec, status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-1", "run-1", "rc-1", "vid-1", "/v/1.mp4", 0.0, 5.0, "candidate"),
+    )
+    conn.commit()
+    svc = PreferenceEventService(conn)
+    svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-1",
+        rating="like",
+        source_video_sha256="vid-1",
+        scenario_keys=[],
+    )
+    svc.record_feedback(
+        target_type="candidate_gif",
+        target_id="cand-1",
+        rating="neutral",
+        source_video_sha256="vid-1",
+        scenario_keys=[],
+    )
+    assert "candidate_gif:cand-1" not in load_latest_scoring_events(conn)
+
+
+def test_preview_and_build_share_gate_reasons(seeded_db_with_vectors):
+    from app.services.preference_memory import (
+        PreferenceMemoryService,
+        preview_profile,
+    )
+
+    conn = seeded_db_with_vectors
+    config = ProfileBuildConfig()
+    preview = preview_profile(conn, config)
+    memory = PreferenceMemoryService(conn)
+    built = memory.build_profile(dry_run=True, config=config)
+    assert preview.profile_version == built["profile_version"]
+    if preview.status == "ready":
+        assert built["status"] == "built"
+        assert built["gate_reasons"] == []
+    else:
+        assert built["status"] == "blocked"
+        assert list(preview.gate_reasons) == built["gate_reasons"]
+
+
+def test_gate_uses_required_model_coverage_not_row_order(profile_db, monkeypatch):
+    monkeypatch.setattr(
+        "app.services.preference_memory.MIN_EFFECTIVE_FEEDBACK", 1
+    )
+    monkeypatch.setattr("app.services.preference_memory.MIN_LIKE_COUNT", 1)
+    monkeypatch.setattr("app.services.preference_memory.MIN_DISLIKE_COUNT", 0)
+    monkeypatch.setattr("app.services.preference_memory.MIN_SOURCE_VIDEOS", 1)
+    monkeypatch.setattr(
+        "app.services.preference_memory.MAX_SINGLE_VIDEO_SHARE", 1.0
+    )
+    from app.services.preference_memory import PreferenceMemoryService
+
+    conn = profile_db
+    conn.execute(
+        """INSERT INTO candidate_gifs
+           (candidate_id, source_run_id, source_run_candidate_id,
+            source_video_sha256, source_video_path, start_sec, end_sec, status)
+           VALUES (?,?,?,?,?,?,?,?)""",
+        ("cand-1", "run-1", "rc-1", "vid-1", "/v/1.mp4", 0.0, 5.0, "liked"),
+    )
+    conn.execute(
+        """INSERT INTO candidate_vectors
+           (candidate_id, vector_type, embedding_model, embedding_dim, vector_blob)
+           VALUES (?,?,?,?,?)""",
+        (
+            "cand-1",
+            "clip",
+            "other-model:latest",
+            768,
+            np.ones(768, dtype=np.float32).tobytes(),
+        ),
+    )
+    conn.execute(
+        """INSERT INTO preference_events
+           (event_id, target_type, target_id, rating, source_video_sha256,
+            created_at, event_kind)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            "evt-1",
+            "candidate_gif",
+            "cand-1",
+            "like",
+            "vid-1",
+            "2026-07-18T12:00:00",
+            "feedback",
+        ),
+    )
+    conn.commit()
+    result = PreferenceMemoryService(conn).build_profile(dry_run=True)
+    assert result["status"] == "blocked"
+    assert any("coverage=0" in reason for reason in result["gate_reasons"])

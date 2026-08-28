@@ -28,6 +28,8 @@ import threading
 import time
 from pathlib import Path
 
+from app.pipeline.stages import vlm as vlm_stage
+
 import pytest
 
 
@@ -227,7 +229,7 @@ class TestVlmStageRuntimeInjection:
                     f"stage must not spawn subprocess: {a[0] if a else a}"
                 )
             monkeypatch.setattr(mod.subprocess, "run", _no_subprocess)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
 
             result = mod._stage_vlm(
                 str(frames_dir), str(work_dir), cfg, inputs, config_data,
@@ -293,7 +295,7 @@ class TestVlmStageRuntimeInjection:
             spawned = []
             monkeypatch.setattr(mod.subprocess, "run",
                                 lambda *a, **kw: spawned.append(a[0]) or None)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
 
             mod._stage_vlm(str(frames_dir), str(work_dir), cfg, inputs, config_data)
 
@@ -387,7 +389,7 @@ class TestScoreVlmFrameRejectsInvalidWorthiness:
         stub.start()
         try:
             monkeypatch.setattr(
-                mod, "_expand_vlm_base_url",
+                "app.pipeline.scoring._expand_vlm_base_url",
                 lambda *a, **k: stub.base_url,
             )
             payload, error = mod._score_vlm_frame(
@@ -558,7 +560,7 @@ class TestStageVlmAndRefineRejectInvalidScores:
             }
             monkeypatch.setattr(mod.subprocess, "run",
                                 lambda *a, **kw: None)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
             with pytest.raises(RuntimeError):
                 mod._stage_vlm(str(frames_dir), str(work_dir), cfg, inputs,
                                config_data)
@@ -929,7 +931,7 @@ class TestVlmLifecycle:
             spawned = []
             monkeypatch.setattr(mod.subprocess, "run",
                                 lambda *a, **kw: spawned.append(a[0]) or None)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
 
             result = mod._stage_vlm(str(frames_dir), str(work_dir), cfg,
                                     inputs, config_data)
@@ -1174,9 +1176,9 @@ class TestModelLifecycleRepair:
                 },
             }
             stopped = []
-            monkeypatch.setattr(mod, "stop_model",
+            monkeypatch.setattr(vlm_stage, "stop_model",
                                 lambda name, runtime=None: stopped.append(name) or True)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
 
             result = mod._stage_vlm(str(frames_dir), str(work_dir), cfg,
                                     inputs, config_data)
@@ -1212,9 +1214,9 @@ class TestModelLifecycleRepair:
                 },
             }
             stopped = []
-            monkeypatch.setattr(mod, "stop_model",
+            monkeypatch.setattr(vlm_stage, "stop_model",
                                 lambda name, runtime=None: stopped.append(name) or True)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
 
             result = mod._stage_vlm(str(frames_dir), str(work_dir), cfg,
                                     inputs, config_data)
@@ -1343,7 +1345,7 @@ class TestVlmLegacyRelativeArtifactIdRecovery:
             )
             monkeypatch.setattr(mod.subprocess, "run",
                                 lambda *a, **kw: None)
-            monkeypatch.setattr(mod, "is_local_llm", lambda: False)
+            monkeypatch.setattr(vlm_stage, "is_local_llm", lambda: False)
 
             result = mod._stage_vlm(
                 str(frames_dir), str(work_dir), self._cfg(mod), inputs,
@@ -1726,7 +1728,7 @@ class TestVlmScoreConcurrency:
                         },
                     ],
                 }
-                monkeypatch.setattr(mod, "wait_model", lambda *a, **k: True)
+                monkeypatch.setattr(vlm_stage, "wait_model", lambda *a, **k: True)
                 out = mod._stage_vlm(
                     str(frames_dir), str(work_dir), cfg, inputs, config_data,
                 )

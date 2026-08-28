@@ -474,3 +474,53 @@ def test_inactive_reasons_populated_for_missing_components(reranker_db):
     assert len(score["inactive_reasons"]) > 0
     # final_score should still equal base_rag because no profile is published
     assert score["final_score"] == 0.70
+
+
+def test_reranker_normalizes_unnormalized_candidate_vector(published_profile):
+    from app.services.reranker import PreferenceReranker
+
+    conn = published_profile["conn"]
+    pv = published_profile["profile_version"]
+    reranker = PreferenceReranker(conn)
+    row = conn.execute(
+        """SELECT liked_centroid_blob FROM preference_profiles
+           WHERE profile_version=? AND scope='global'""",
+        (pv,),
+    ).fetchone()
+    liked = np.frombuffer(row["liked_centroid_blob"], dtype=np.float32)
+    liked = liked / np.linalg.norm(liked)
+    mixed = liked + 0.35 * np.random.default_rng(7).normal(0, 1, 768).astype(
+        np.float32
+    )
+    mixed = mixed / np.linalg.norm(mixed)
+
+    unit = reranker.score(
+        candidate_vector=mixed,
+        base_rag_similarity=0.50,
+        scenario_keys=["emotion:joy", "tag:0"],
+        profile_version=pv,
+        enabled=True,
+    )
+    scaled = reranker.score(
+        candidate_vector=mixed * 20.0,
+        base_rag_similarity=0.50,
+        scenario_keys=["emotion:joy", "tag:0"],
+        profile_version=pv,
+        enabled=True,
+    )
+    assert unit["profile_score"] == pytest.approx(scaled["profile_score"], abs=1e-6)
+    assert 0.0 < scaled["profile_score"] < 1.0
+
+
+def test_clip_scenario_keys_include_emotion_and_tags():
+    from app.services.reranker import clip_scenario_keys
+
+    keys = clip_scenario_keys(
+        {
+            "best_frame": {"emotional_core": "joy", "tags": ["smile"]},
+            "tags": ["closeup", "warm"],
+        }
+    )
+    assert keys[0] == "emotion:joy"
+    assert "tag:closeup" in keys
+    assert "tag:warm" in keys

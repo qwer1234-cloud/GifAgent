@@ -15,6 +15,41 @@ from app.services.scenario import json_dumps
 
 
 _VALID_RATINGS = frozenset({"like", "neutral", "dislike", "quality_reject", "skip", "favorite"})
+SCORING_RATINGS = frozenset({"like", "dislike", "favorite"})
+
+_EFFECTIVE_EVENT_SQL = """
+SELECT event_id, target_type, target_id, rating,
+       source_video_sha256, scenario_keys_json, created_at,
+       event_kind, supersedes_event_id
+FROM preference_events e
+WHERE e.undone_at IS NULL
+  AND e.event_id NOT IN (
+      SELECT supersedes_event_id FROM preference_events
+      WHERE supersedes_event_id IS NOT NULL
+  )
+ORDER BY e.created_at ASC, e.event_id ASC
+"""
+
+
+def load_latest_scoring_events(
+    conn: sqlite3.Connection,
+) -> dict[str, dict]:
+    """Latest non-superseded event per target, keeping like/dislike/favorite.
+
+    If the newest effective event is ``neutral`` / ``skip`` / ``quality_reject``,
+    that target is omitted from the result so it no longer contributes to a
+    preference profile.
+    """
+    rows = conn.execute(_EFFECTIVE_EVENT_SQL).fetchall()
+    latest: dict[str, dict] = {}
+    for row in rows:
+        key = f"{row['target_type']}:{row['target_id']}"
+        latest[key] = dict(row)
+    return {
+        key: event
+        for key, event in latest.items()
+        if str(event["rating"]) in SCORING_RATINGS
+    }
 
 
 class PreferenceEventService:

@@ -1,8 +1,8 @@
-from app.ui.candidate_review import is_batch_command_line
+from app.ui.tabs.control import is_batch_command_line
 
 
 def test_format_batch_status_keeps_summary_fields_separate_from_log():
-    from app.ui.candidate_review import format_batch_status
+    from app.ui.legacy_candidate_review import format_batch_status
 
     text = format_batch_status({
         "running": True, "pid": 123, "current_folder": "C:/videos/A",
@@ -41,7 +41,7 @@ def test_batch_command_line_rejects_gui_and_unrelated_processes():
 
 
 def test_format_batch_status_keeps_persisted_queue_error_visible():
-    from app.ui.candidate_review import format_batch_status
+    from app.ui.legacy_candidate_review import format_batch_status
 
     text = format_batch_status({
         "running": False,
@@ -60,7 +60,7 @@ def test_format_batch_status_keeps_persisted_queue_error_visible():
 def test_status_keeps_direct_pid_separate_from_waiting_queue_spawned_pid(
     monkeypatch, tmp_path
 ):
-    from app.ui import candidate_review
+    from app.ui import legacy_candidate_review as candidate_review
 
     pid_file = tmp_path / "batch.pid"
     pid_file.write_text("111", encoding="ascii")

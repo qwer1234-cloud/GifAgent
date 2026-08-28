@@ -185,15 +185,27 @@ def _post_with_retries(
 
 
 def _ollama_embed(text: str, model: Optional[str] = None) -> List[float]:
-    """Call Ollama /api/embeddings. Returns a list of floats."""
+    """Call Ollama /api/embed. Returns a list of floats.
+
+    Uses the same endpoint as :func:`compute_text_embeddings_batch` so single
+    and batch paths cannot silently mix raw vs unit-norm vectors.
+    """
     model = model or EMBED_TEXT_MODEL
     config = ollama_runtime.get_runtime_config()
-    payload = {"model": model, "prompt": text}
+    payload = {"model": model, "input": [text]}
     if config.keep_alive:
         payload["keep_alive"] = config.keep_alive
 
     def validate(data):
-        vector = data.get("embedding")
+        embeddings = data.get("embeddings")
+        if not isinstance(embeddings, list) or len(embeddings) != 1:
+            got = (
+                len(embeddings)
+                if isinstance(embeddings, list)
+                else type(embeddings).__name__
+            )
+            raise ValueError(f"expected 1 embedding, got {got}")
+        vector = embeddings[0]
         if not isinstance(vector, list) or not vector:
             raise ValueError("embedding must be a non-empty list")
         if model == EMBED_TEXT_MODEL and len(vector) != config.embedding_dim:
@@ -204,7 +216,7 @@ def _ollama_embed(text: str, model: Optional[str] = None) -> List[float]:
         return vector
 
     return _post_with_retries(
-        "/api/embeddings", payload, phase="embed", validate=validate
+        "/api/embed", payload, phase="embed", validate=validate
     )
 
 

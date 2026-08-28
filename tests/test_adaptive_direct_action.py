@@ -4,6 +4,7 @@ import pytest
 
 from app.services.action_pipeline import ActionMaterialization
 from scripts import test_video_adaptive
+from app.pipeline.stages import rank_dedup as rank_dedup_stage
 from tests.test_adaptive_direct_transition import _run_direct_pipeline_fixture
 
 
@@ -107,7 +108,7 @@ def test_direct_action_split_happens_before_dedup(tmp_path, monkeypatch):
         split=1,
     )
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         lambda **_kwargs: materialized,
         raising=False,
@@ -152,7 +153,7 @@ def test_direct_sequence_verification_uses_frozen_vlm_runtime_once_per_candidate
         )
 
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         fake_materialize,
         raising=False,
@@ -200,7 +201,7 @@ def test_direct_fallback_window_stays_inside_transition_segment(
         fallback_reason="low_cv_confidence",
     )
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         lambda **_kwargs: _materialization(
             (fallback,),
@@ -234,7 +235,7 @@ def test_direct_action_metrics_are_finite_and_include_frozen_hash(
         return _materialization((_action_clip(2.0, 7.0),))
 
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "materialize_action_candidates",
         fake_materialize,
         raising=False,

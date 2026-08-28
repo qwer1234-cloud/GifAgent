@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
+from app.services.preference_events import load_latest_scoring_events
 from app.services.preference_types import VectorExclusion
 
 
@@ -19,6 +20,7 @@ class VectorHealth:
     available: int
     missing: tuple[str, ...]
     excluded: tuple[VectorExclusion, ...]
+    missing_feedback: tuple[str, ...] = ()
 
 
 def inspect_vector_health(
@@ -29,7 +31,7 @@ def inspect_vector_health(
 
     Returns a ``VectorHealth`` with total/available counts, missing
     candidate IDs, and any explicit exclusions recorded in the
-    ``candidate_vector_exclusions`` table.
+    ``candidate_vector_exclusions`` table for *model*.
     """
     from app.services.preference_memory import REQUIRED_EMBEDDING_DIM
 
@@ -60,22 +62,36 @@ def inspect_vector_health(
     missing = tuple(row["candidate_id"] for row in missing_rows)
 
     exclusion_rows = conn.execute(
-        """SELECT candidate_id, reason, created_at
+        """SELECT candidate_id, reason, created_at, embedding_model,
+                  attempts, error_class
            FROM candidate_vector_exclusions
-           ORDER BY candidate_id"""
+           WHERE embedding_model=?
+           ORDER BY candidate_id""",
+        (model,),
     ).fetchall()
     excluded = tuple(
         VectorExclusion(
             candidate_id=row["candidate_id"],
             reason=row["reason"],
             created_at=row["created_at"],
+            embedding_model=row["embedding_model"] or model,
+            attempts=int(row["attempts"] or 1),
+            error_class=row["error_class"] or "",
         )
         for row in exclusion_rows
     )
+
+    scoring_ids = {
+        str(event["target_id"])
+        for event in load_latest_scoring_events(conn).values()
+        if event.get("target_type") == "candidate_gif"
+    }
+    missing_feedback = tuple(cid for cid in missing if cid in scoring_ids)
 
     return VectorHealth(
         total_candidates=total,
         available=available,
         missing=missing,
         excluded=excluded,
+        missing_feedback=missing_feedback,
     )

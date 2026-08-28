@@ -472,7 +472,7 @@ def test_fingerprint_error_logs_failed_terminal_and_continues_next_video(
 
 
 def test_post_success_fingerprint_error_is_failed_only(monkeypatch, tmp_path, capsys):
-    from app.ui.candidate_review import summarize_checkpoint_status
+    from app.ui.tabs.control import summarize_checkpoint_status
     from scripts import test_video_batch
 
     video_dir = tmp_path / "videos"
@@ -581,7 +581,7 @@ def test_reusable_dedup_and_timeout_videos_have_full_terminal_logs(
     run_status = test_video_batch.load_checkpoint()["last_run"]
     assert run_status["planned"] == 3
     assert run_status["processed"] == 3
-    from app.ui.candidate_review import summarize_checkpoint_status
+    from app.ui.tabs.control import summarize_checkpoint_status
 
     status = summarize_checkpoint_status({"last_run": run_status})
     assert status["completed"] == 2

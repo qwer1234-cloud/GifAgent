@@ -18,7 +18,7 @@ def test_preference_memory_status_reports_safe_defaults(tmp_path):
         library_db_path=db_path, faiss_manifest_path=index_manifest
     )
 
-    assert status["preference_memory_enabled"] is False
+    assert status["preference_memory_enabled"] is True
     assert status["embedding_model"] == "nomic-embed-text:latest"
     assert status["embedding_dim"] == 768
     assert status["wal_file_exists"] is False
@@ -39,7 +39,7 @@ def test_status_handles_missing_manifest(tmp_path):
 
     assert status["library_db_exists"] is False
     assert status["wal_file_exists"] is False
-    assert status["preference_memory_enabled"] is False
+    assert status["preference_memory_enabled"] is True
     assert status["production_write_allowed"] is True   # not wal_file_exists = True
     assert status["embedding_model"] is None
     assert status["embedding_dim"] is None
@@ -59,7 +59,7 @@ def test_status_handles_malformed_manifest(tmp_path):
         library_db_path=db_path, faiss_manifest_path=bad_manifest
     )
 
-    assert status["preference_memory_enabled"] is False
+    assert status["preference_memory_enabled"] is True
     assert status["wal_file_exists"] is False
     assert status["production_write_allowed"] is True   # not wal_file_exists = True
     assert status["embedding_model"] is None

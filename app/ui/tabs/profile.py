@@ -70,12 +70,27 @@ def get_profile_status():
             data = resp.json()
             current = data.get("current")
             builds = data.get("profiles", [])
+            extra = ""
+            if current and current.get("new_feedback_count"):
+                extra = f" | +{current['new_feedback_count']} new feedback since publish"
+            health_extra = ""
+            try:
+                health_resp = httpx.get(
+                    f"{API_BASE}/api/preference/vector-health", timeout=10
+                )
+                if health_resp.status_code == 200:
+                    health = health_resp.json()
+                    missing_fb = health.get("missing_feedback_count") or 0
+                    if missing_fb:
+                        health_extra = f" | {missing_fb} feedback vectors missing"
+            except Exception:
+                pass
             if current:
                 return (
-                    f"Current: {current['profile_version'][:20]}... | "
-                    f"Builds: {len(builds)}"
+                    f"Current: {current['profile_version'][:20]}...{extra}"
+                    f"{health_extra} | Builds: {len(builds)}"
                 )
-            return f"No published profile | Builds: {len(builds)}"
+            return f"No published profile{health_extra} | Builds: {len(builds)}"
     except Exception:
         pass
     return "API unavailable"
@@ -145,6 +160,25 @@ def publish_profile_and_refresh(profile_version: str | None):
     return result, dropdown, status
 
 
+def get_vector_health_status() -> str:
+    """Return vector-health JSON for the Profile panel."""
+    try:
+        resp = httpx.get(f"{API_BASE}/api/preference/vector-health", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            summary = {
+                "total_candidates": data.get("total_candidates"),
+                "available": data.get("available"),
+                "missing_feedback_count": data.get("missing_feedback_count"),
+                "missing_count": len(data.get("missing") or []),
+                "excluded_count": len(data.get("excluded") or []),
+            }
+            return json.dumps(summary, ensure_ascii=False, indent=2)
+        return f"Error: {resp.status_code} - {_format_api_error(resp)}"
+    except Exception as exc:
+        return f"API unavailable: {exc}"
+
+
 def _run_backfill_sync(progress_fn=None) -> dict[str, Any]:
     """Run one resumable backfill pass after a cheap service preflight."""
     # Do this before opening SQLite so an unavailable Ollama endpoint cannot
@@ -165,6 +199,7 @@ def _run_backfill_sync(progress_fn=None) -> dict[str, Any]:
             embed_fn=compute_text_embedding,
             batch_embed_fn=compute_text_embeddings_batch,
             only_feedback=True,
+            missing_only=True,
             progress_fn=progress_fn,
         )
     finally:
@@ -275,9 +310,14 @@ def build_profile_tab() -> dict:
     """
     gr.Markdown("## Preference Profile")
     profile_status = gr.Textbox(label="Status", value="Loading...", interactive=False)
+    vector_health_output = gr.Textbox(
+        label="Vector Health",
+        value="Loading...",
+        interactive=False,
+    )
     with gr.Row():
         build_btn = gr.Button("Build Profile", variant="primary")
-        backfill_vectors_btn = gr.Button("Backfill Missing Vectors")
+        backfill_vectors_btn = gr.Button("Backfill Missing Feedback Vectors")
         refresh_profiles_btn = gr.Button("Refresh Profiles")
     publish_profile_dropdown = gr.Dropdown(
         choices=[],
@@ -293,6 +333,9 @@ def build_profile_tab() -> dict:
     build_btn.click(
         fn=build_profile_and_refresh,
         outputs=[build_output, publish_profile_dropdown, profile_status],
+    ).then(
+        fn=get_vector_health_status,
+        outputs=[vector_health_output],
     )
     backfill_vectors_btn.click(
         fn=start_backfill_vectors,
@@ -300,10 +343,16 @@ def build_profile_tab() -> dict:
     ).then(
         fn=load_profile_publish_choices,
         outputs=[publish_profile_dropdown, profile_status],
+    ).then(
+        fn=get_vector_health_status,
+        outputs=[vector_health_output],
     )
     refresh_profiles_btn.click(
         fn=load_profile_publish_choices,
         outputs=[publish_profile_dropdown, profile_status],
+    ).then(
+        fn=get_vector_health_status,
+        outputs=[vector_health_output],
     )
     publish_btn.click(
         fn=publish_profile_and_refresh,
@@ -318,9 +367,15 @@ def build_profile_tab() -> dict:
         fn=get_backfill_status,
         outputs=[backfill_vectors_output],
     )
+    vector_health_timer = gr.Timer(15)
+    vector_health_timer.tick(
+        fn=get_vector_health_status,
+        outputs=[vector_health_output],
+    )
 
     return {
         "profile_status": profile_status,
+        "vector_health_output": vector_health_output,
         "build_btn": build_btn,
         "backfill_vectors_btn": backfill_vectors_btn,
         "refresh_profiles_btn": refresh_profiles_btn,
@@ -331,4 +386,5 @@ def build_profile_tab() -> dict:
         "publish_output": publish_output,
         "profile_status_timer": profile_status_timer,
         "backfill_status_timer": backfill_status_timer,
+        "vector_health_timer": vector_health_timer,
     }

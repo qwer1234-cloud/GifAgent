@@ -38,50 +38,16 @@ def list_profiles():
     conn = get_connection()
     try:
         apply_preference_schema(conn)
-
-        rows = conn.execute(
-            """SELECT profile_version, event_watermark, embedding_model, embedding_dim,
-                      effective_feedback_count, source_video_count, status, gate_reasons_json,
-                      created_at, completed_at
-               FROM preference_profile_builds
-               ORDER BY created_at DESC"""
-        ).fetchall()
-
-        results = []
-        for row in rows:
-            import json
-
-            results.append(
-                {
-                    "profile_version": row["profile_version"],
-                    "event_watermark": row["event_watermark"],
-                    "embedding_model": row["embedding_model"],
-                    "embedding_dim": row["embedding_dim"],
-                    "effective_feedback_count": row["effective_feedback_count"],
-                    "source_video_count": row["source_video_count"],
-                    "status": row["status"],
-                    "gate_reasons": json.loads(row["gate_reasons_json"]),
-                    "created_at": row["created_at"],
-                    "completed_at": row["completed_at"],
-                }
+        service = PreferenceMemoryService(conn)
+        return service.list_builds()
+    except sqlite3.OperationalError as exc:
+        conn.rollback()
+        if "locked" in str(exc).lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Database is busy. Please retry.",
             )
-
-        # Also include current published version
-        current = conn.execute(
-            "SELECT profile_version, published_at FROM preference_profile_current WHERE slot='current'"
-        ).fetchone()
-
-        return {
-            "profiles": results,
-            "current": (
-                {
-                    "profile_version": current["profile_version"],
-                    "published_at": current["published_at"],
-                }
-                if current
-                else None
-            ),
-        }
+        raise
     finally:
         conn.close()
 
@@ -229,11 +195,16 @@ def get_vector_health():
             "total_candidates": health.total_candidates,
             "available": health.available,
             "missing": list(health.missing),
+            "missing_feedback": list(health.missing_feedback),
+            "missing_feedback_count": len(health.missing_feedback),
             "excluded": [
                 {
                     "candidate_id": exc.candidate_id,
                     "reason": exc.reason,
                     "created_at": exc.created_at,
+                    "embedding_model": exc.embedding_model,
+                    "attempts": exc.attempts,
+                    "error_class": exc.error_class,
                 }
                 for exc in health.excluded
             ],

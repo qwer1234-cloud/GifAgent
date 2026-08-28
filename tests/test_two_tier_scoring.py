@@ -262,8 +262,10 @@ def test_refine_provisional_best_frames_match_synthesize(tmp_path, monkeypatch):
             "gif_worthiness": kwargs.get("timestamp", 0) and 0.9,
         }, None
 
-    monkeypatch.setattr(mod, "_score_vlm_frame", lambda **kw: fake_score(**kw))
-    monkeypatch.setattr(mod, "wait_model", lambda *a, **k: True)
+    from app.pipeline.stages import refine as refine_stage
+
+    monkeypatch.setattr(refine_stage, "_score_vlm_frame", lambda **kw: fake_score(**kw))
+    monkeypatch.setattr(refine_stage, "wait_model", lambda *a, **k: True)
 
     config_data = {
         "vlm": {

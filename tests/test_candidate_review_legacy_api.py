@@ -1,6 +1,6 @@
 """Contract tests for the historical candidate_review module API."""
 
-from app.ui import candidate_review
+from app.ui import legacy_candidate_review as candidate_review
 
 
 LEGACY_PUBLIC_API = {

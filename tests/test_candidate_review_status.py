@@ -1,4 +1,4 @@
-from app.ui.candidate_review import summarize_checkpoint_status
+from app.ui.tabs.control import summarize_checkpoint_status
 
 
 def test_status_prefers_last_run_over_historical_retryable_backlog():

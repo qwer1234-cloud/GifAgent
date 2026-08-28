@@ -252,17 +252,36 @@ class TestBackfillMissingVectors:
         assert row_count == 2
 
     def test_skips_existing_vectors(self):
-        from app.services.candidate_vectors import backfill_missing_vectors
+        from app.services.candidate_vectors import (
+            EMBEDDING_TEXT_SCHEMA_VERSION,
+            backfill_missing_vectors,
+            build_candidate_embedding_text,
+            embedding_text_hash,
+        )
 
         conn = _conn()
         _insert_candidate(conn, "cand-a")
-        # Pre-insert vector for cand-a.
+        row = conn.execute(
+            """SELECT candidate_id, source_video_path, start_sec, end_sec,
+                      artifact_path, preview_path, vlm_summary_json,
+                      tags_json, scenario_keys_json
+               FROM candidate_gifs WHERE candidate_id='cand-a'"""
+        ).fetchone()
+        text = build_candidate_embedding_text(row)
         conn.execute(
             """INSERT INTO candidate_vectors
-               (candidate_id, vector_type, embedding_model, embedding_dim, vector_blob)
-               VALUES (?,?,?,?,?)""",
-            ("cand-a", "clip", "nomic-embed-text:latest", 768,
-             np.zeros(768, dtype=np.float32).tobytes()),
+               (candidate_id, vector_type, embedding_model, embedding_dim,
+                vector_blob, text_schema_version, source_text_hash)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                "cand-a",
+                "clip",
+                "nomic-embed-text:latest",
+                768,
+                np.zeros(768, dtype=np.float32).tobytes(),
+                EMBEDDING_TEXT_SCHEMA_VERSION,
+                embedding_text_hash(text),
+            ),
         )
         conn.commit()
 
@@ -299,7 +318,9 @@ class TestBackfillMissingVectors:
 
         assert report["inserted"] == 1
         assert report["failed"] == 1
-        assert len(report["exclusions"]) == 2  # 1 inserted + 1 excluded
+        assert report["inserted_ids"] == ["cand-a"]
+        assert len(report["excluded"]) == 1
+        assert report["excluded"][0]["candidate_id"] == "cand-b"
 
         exclusion_row = conn.execute(
             "SELECT reason FROM candidate_vector_exclusions WHERE candidate_id=?",

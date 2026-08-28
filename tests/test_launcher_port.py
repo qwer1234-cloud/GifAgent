@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 
 from app.ui import launcher
-from app.ui.local_port import reclaim_owned_listen_port, _port_from_local_address
+from app.ui.local_port import (
+    choose_local_port,
+    reclaim_owned_listen_port,
+    _port_from_local_address,
+)
 
 
 def test_port_from_local_address_parses_ipv4_and_ipv6():
@@ -38,7 +42,57 @@ def test_reclaim_kills_leftover_exe_but_not_foreign_process():
     assert any("PID 222" in line for line in logs)
 
 
-def test_reclaim_is_noop_when_not_frozen():
+def test_choose_local_port_skips_busy_preferred():
+    busy = {7861}
+
+    def available(host, port):
+        assert host == "127.0.0.1"
+        return port not in busy
+
+    assert choose_local_port("127.0.0.1", 7861, span=3, available=available) == 7862
+
+
+def test_choose_local_port_raises_when_range_exhausted():
+    try:
+        choose_local_port(
+            "127.0.0.1",
+            7861,
+            span=2,
+            available=lambda host, port: False,
+        )
+    except RuntimeError as exc:
+        assert "7861-7862" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError")
+
+
+def test_resolve_gradio_port_falls_back_and_warns():
+    logs = []
+    reclaimed = []
+
+    port = launcher.resolve_gradio_port(
+        preferred=7861,
+        reclaim=lambda p: reclaimed.append(p),
+        choose=lambda host, preferred: 7862,
+        log=logs.append,
+    )
+
+    assert port == 7862
+    assert reclaimed == [7861]
+    assert any("7862" in line for line in logs)
+    assert any("Afterlow" in line for line in logs)
+
+
+def test_resolve_gradio_port_keeps_preferred_without_warning():
+    logs = []
+    port = launcher.resolve_gradio_port(
+        preferred=7861,
+        reclaim=lambda p: None,
+        choose=lambda host, preferred: preferred,
+        log=logs.append,
+    )
+    assert port == 7861
+    assert logs == []
     killed = []
     reclaimed = reclaim_owned_listen_port(
         8000,

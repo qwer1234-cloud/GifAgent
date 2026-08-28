@@ -28,6 +28,18 @@ def set_config_override(config: dict) -> None:
     mod._config = config
 
 
+def swap_config_override(config: dict) -> dict:
+    """Replace the global config dict and return the previous one.
+
+    Stage mode uses this so an in-process stage run can restore the
+    previous config afterwards instead of leaking the job snapshot into
+    the rest of the process.
+    """
+    previous = _config
+    set_config_override(config)
+    return previous
+
+
 _config_path = os.environ.get("GIFAGENT_CONFIG", "configs/models.yaml")
 if Path(_config_path).exists():
     load_config(_config_path)

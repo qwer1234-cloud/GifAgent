@@ -3,7 +3,7 @@ import json
 
 
 def test_profile_publish_choices_prefers_latest_completed_profile():
-    from app.ui.candidate_review import profile_publish_choices
+    from app.ui.tabs.profile import profile_publish_choices
 
     payload = {
         "profiles": [
@@ -21,7 +21,7 @@ def test_profile_publish_choices_prefers_latest_completed_profile():
 
 
 def test_publish_profile_version_posts_selected_profile(monkeypatch):
-    from app.ui import candidate_review
+    from app.ui.tabs import profile as candidate_review
 
     calls = []
 
@@ -47,7 +47,7 @@ def test_publish_profile_version_posts_selected_profile(monkeypatch):
 
 
 def test_publish_profile_version_requires_selection():
-    from app.ui.candidate_review import publish_profile_version
+    from app.ui.tabs.profile import publish_profile_version
 
     assert publish_profile_version("") == "Select a completed profile_version first."
 
@@ -64,8 +64,8 @@ def test_backfill_profile_vectors_only_embeds_feedback_targets(monkeypatch):
     conn = FakeConnection()
     calls = []
 
-    def fake_backfill(connection, *, embed_fn, batch_embed_fn, only_feedback):
-        calls.append((connection, embed_fn, batch_embed_fn, only_feedback))
+    def fake_backfill(connection, *, embed_fn, batch_embed_fn, only_feedback, missing_only=False):
+        calls.append((connection, embed_fn, batch_embed_fn, only_feedback, missing_only))
         return {
             "scanned": 12,
             "missing": 5,
@@ -92,6 +92,7 @@ def test_backfill_profile_vectors_only_embeds_feedback_targets(monkeypatch):
             conn,
             candidate_review.compute_text_embedding,
             candidate_review.compute_text_embeddings_batch,
+            True,
             True,
         )
     ]

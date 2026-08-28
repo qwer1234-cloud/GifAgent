@@ -58,6 +58,23 @@ E:\data\originals\（8000+ GIF）
 
 每个新键在 `extract_config()` 里的默认值都复现改之前的行为。Retry **不会**改写已冻结的 `config_json`，因此历史任务继续按当时的快照跑。`vlm_score_workers` 和 `cpu_stage_workers` 依赖显存与磁盘，必须在本机量过再改，不要直接抄 16GB 机器上的数字。`clear_output_dir: true` 时基准测试要用拷贝或新目录，不要原地覆盖历史导出。
 
+### 自适应流水线代码布局（2026-08-28）
+
+实现位于 `app/pipeline/`。`scripts/test_video_adaptive.py` 只剩约 180 行 **facade**（再导出历史符号），打包 EXE 仍通过 `GifAgentUI.exe --run-script` 调用该脚本。测试必须 monkeypatch **实现模块**（`app.pipeline.direct`、`app.pipeline.stages.*`）；改 facade 上的名字不会生效。
+
+八个 stage 与任务引擎一致：`discover → sample → vlm → refine → synthesize → rank_dedup → gif_clip → materialize`。
+
+| 模式 | 行为 |
+|------|------|
+| Direct `run_pipeline` | 进程内按序调用同一套 `_stage_*`，manifest 写到 `{frames_dir}_stage_work` |
+| Staged `run_stage_mode` | 子进程跑单 stage。`app.config.swap_config_override()` 包住 `init_db` / `extract_config` / 打开 `stage.log`；**任何失败**都会还原进程全局 `_config`，避免 job snapshot 泄漏 |
+| synthesize | Staged 默认逐 clip 调 LLM 打 `summary`/`tags`；Direct 传 `clip_llm=False` **只 merge**，随后再做一次视频级 LLM（输入为 rank 截断后最多 20 条 clip） |
+| Direct 卸 VLM | 仅当 `vlm_runtime` 存在、`manage_lifecycle` 为真、且 `launch_mode != "none"` 时停 **runtime.model**。不再无条件 `stop_model("llava")`，也不再额外 `sleep(10)`。`wait_for_llm` 只调用一次，失败则跳过视频级综合 |
+
+制品身份 / 校验 / 解析在包 `app/task_engine/artifacts/`（`from app.task_engine.artifacts import X` 不变）。打包 `build_exe.spec` 显式列出全部 `app.pipeline.*` hiddenimports（含 `app.services.vector_math`）。
+
+Direct 与 Staged 共用 stage 实现后，guard 窗口走 staged 的 action 归一化（例如 Direct fixture 断言 `(0.0, 15.9375, 10.0)`）。VLM scoring 遵守冻结快照里的 `manage_lifecycle`。
+
 `configs/models.adult_candidate.yaml` 是独立 **preset**，不是 `models.yaml` 的镜像。当前主要分歧：`worthiness_threshold` 0.42 / 0.55，`sex_act_threshold` 缺省 0 / 0.40，`refine_threshold` 0.55 / 0.58，`merge_peak_threshold` 0.55 / 0.58，`max_merge_span_s` 24 / 18，`output_ratio` 0.45 / 1.0，`max_output` 35 / 100；adult preset 没有 `max_refine_frames`。不要用 35B IQ2_M / Q2_K_P 或 `llava:13b` 做成人打分与 Quality 裁判。
 
 Ollama 侧与 `vlm_score_workers` 对齐：在 WSL 里设置 `OLLAMA_NUM_PARALLEL`（当前 YAML 为 2）。若单帧 p50 变长，把两者都降回 1。
@@ -200,7 +217,7 @@ uv run python scripts/inherit_and_index.py
 ### 第三步：自适应 GIF 提取
 
 ```bash
-# 单视频处理：7s 粗采样 → VLM 评分 → 细采样 → 区域 merge → 去重导出
+# 单视频处理（CLI facade → app/pipeline）：7s 粗采样 → VLM 评分 → 细采样 → 区域 merge → 去重导出
 uv run python scripts/test_video_adaptive.py --video <path/to/video.mp4>
 
 # 批量处理（带 checkpoint 断点续跑）
@@ -429,7 +446,7 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 
 ### RAG 两阶段流水线
 
-自适应提取（`test_video_adaptive.py`，direct 与 staged 行为一致）：
+自适应提取（`scripts/test_video_adaptive.py` facade，`app/pipeline/` 实现；Direct 与 Staged 共用 `_stage_*`）：
 - 7s 间隔粗采样全片 → per-frame VLM 严格评分（可配置 `min_brightness` 暗场预过滤）
 - 高分区域（≥ `refine_threshold`）±`refine_radius` 内按 `refine_interval` 细采样
 - 区域 merge：双端门槛 + `max_merge_span_s` 硬封顶 + 弱峰值降级为单帧
@@ -466,7 +483,7 @@ uv run pytest -q tests/test_config_help_annotations.py tests/test_adaptive_confi
 GifAgent/
 ├── app/
 │   ├── main.py                       # FastAPI 应用（35+ 个端点）
-│   ├── config.py                     # YAML 配置加载
+│   ├── config.py                     # YAML 配置加载；`swap_config_override()` 供 in-process stage 还原
 │   ├── db.py                         # SQLite 连接 + 迁移 + Checkpoint
 │   ├── routers/
 │   │   ├── candidates.py             # 候选 GIF API（list + feedback）
@@ -497,11 +514,25 @@ GifAgent/
 │   │   ├── candidates.py             # 候选 GIF 物化服务
 │   │   ├── preference_schema.py      # Preference Memory 数据库 DDL
 │   │   ├── preference_events.py      # 反馈事件记录服务
-│   │   ├── preference_memory.py      # 偏好画像构建 + 发布服务
+│   │   ├── preference_memory.py      # 偏好画像构建 + 发布；`list_builds()` 承接 GET /profiles SQL
 │   │   ├── preference_types.py       # 偏好系统类型定义
 │   │   ├── preference_evaluation.py  # Holdout 评估服务
 │   │   ├── provenance.py             # Provenance 数据类
-│   │   └── reranker.py               # 偏好加权重排序器
+│   │   ├── reranker.py               # 偏好加权重排序器
+│   │   └── vector_math.py            # L2 / blob 编解码；读路径用 `blob_to_vector`（k=1 质心仍存原始加权平均字节）
+│   ├── pipeline/                     # 自适应 GIF 流水线（Direct 与 Staged 共用 stage 函数）
+│   │   ├── config.py                 # extract_config() — 冻结缺省不可改语义
+│   │   ├── prompts.py                # SCORE_PROMPT* + scoring VLM options
+│   │   ├── vlm_runtime.py            # VlmRuntimeConfig、Ollama stop/wait
+│   │   ├── scoring.py                # _score_vlm_frame、keep gate、checkpoint
+│   │   ├── ranking.py                # preference blend / adult MoE 导出排序
+│   │   ├── export_gif.py             # 导出窗口、palette、fps 警告
+│   │   ├── quality_bridge.py         # Quality MoE 胶水
+│   │   ├── timing.py                 # stage timing collector
+│   │   ├── stage_io.py               # run_stage_mode、manifest I/O、dispatch
+│   │   ├── stages/                   # discover/sample/vlm/refine/synthesize/rank_dedup/gif_clip/materialize
+│   │   ├── direct.py                 # run_pipeline / run_direct_mode
+│   │   └── cli.py                    # parse_cli_args / main
 │   ├── quality_lab/                  # Phase 2: 质量实验室（benchmark 评估系统）
 │   │   ├── __init__.py               # 公共导出
 │   │   ├── models.py                 # 数据类（ExperimentConfig, ABSession 等）
@@ -518,7 +549,7 @@ GifAgent/
 │   │   ├── schema.py                 # DDL + 迁移
 │   │   ├── repository.py             # TaskRepository CRUD
 │   │   ├── fingerprints.py           # SHA-256 / 哈希工具
-│   │   ├── artifacts.py              # 制品提交与校验
+│   │   ├── artifacts/                # 制品包：identity / store / kinds / resolve / manifests / quality_schema
 │   │   ├── legacy_import.py          # 旧版状态导入
 │   │   ├── stages.py                 # 阶段适配器协议
 │   │   ├── adaptive_adapter.py       # 自适应适配器
@@ -527,7 +558,8 @@ GifAgent/
 │       ├── launcher.py               # 打包入口：FastAPI 8000 + Gradio 7861 + 任务 worker
 │       ├── local_port.py             # 仅回收本进程名占用的 8000（不杀 Afterlow 等）
 │       ├── review.py                 # Gradio 原始 GIF 审核界面（port 7860）
-│       ├── candidate_review.py       # 候选 GIF 评分 + 批量控制面板（port 7861）
+│       ├── candidate_review.py       # 候选审核入口（显式再导出；无 __getattr__ 魔术）
+│       ├── legacy_candidate_review.py# 旧批量队列 UI（测试锁 legacy 分支）
 │       └── quality_lab_tab.py        # 质量实验室标签页（盲测 A/B、晋级、回滚）
 ├── configs/
 │   └── models.yaml                   # 主配置：模型、路径、阈值、偏好开关、任务引擎
@@ -545,7 +577,7 @@ GifAgent/
 │   ├── inherit_and_index.py          # 簇内标签继承 + FAISS 索引
 │   ├── test_video_rag.py             # RAG v1 测试
 │   ├── test_video_rag_v2.py          # RAG v2 测试（两阶段流水线）
-│   ├── test_video_adaptive.py        # 自适应 GIF 提取
+│   ├── test_video_adaptive.py        # 自适应 GIF 提取 CLI facade（实现在 app/pipeline/）
 │   ├── test_video_batch.py           # 批量视频处理（checkpoint 断点续跑）
 │   ├── import_adaptive_candidates.py # 候选 GIF 导入 preference memory
 │   ├── reset_derived_quality_data.py # 质量数据重置（--dry-run / --apply）
@@ -553,6 +585,8 @@ GifAgent/
 │   ├── rag_100_batch.py              # RAG 批量处理（100 帧）
 │   ├── test_jur639.py                # JUR-639 专用测试
 │   ├── preference_memory.py          # 偏好记忆 CLI（status/build/publish）
+│   ├── backfill_candidate_vectors.py # 候选向量补齐
+│   ├── normalize_candidate_vectors.py# 候选向量归一化工具
 │   ├── evaluate_preference.py        # 偏好画像发布门禁评估
 │   ├── export_gifs.py               # GIF 批量导出
 │   ├── task_worker.py                # 单写入者任务引擎工作进程
@@ -575,6 +609,10 @@ GifAgent/
 │   ├── test_preference_reranker.py    # 重排序器测试
 │   ├── test_version_manifest.py       # 版本清单和冒烟测试
 │   ├── test_quality_lab_api.py        # 质量实验室 API 测试
+│   ├── test_pipeline_facade.py        # facade 符号锁 + artifacts 公开名
+│   ├── test_direct_staged_parity.py   # Direct vs Staged 决策锁
+│   ├── test_stage_io.py               # run_stage_mode 配置还原
+│   ├── test_direct_synthesis.py       # Direct clip_llm=False + VLM 卸载
 │   └── task_engine/                   # 任务引擎测试套件
 │       ├── test_repository.py
 │       ├── test_artifacts.py
@@ -645,7 +683,7 @@ uv run python scripts/preference_memory.py status --json
 
 ```bash
 uv run pytest tests/ -v
-# Current suite: 1551 collected tests (2026-08).
+# Current suite: 1733 collected tests (2026-08-28).
 # Covers: JSON 解析、placeholder 检测、emotional_core 归一化、
 # FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序、
 # 质量实验室 API、盲测 A/B、晋级/回滚
@@ -847,7 +885,7 @@ Phase 1 adds a production-grade task processing engine for adaptive GIF extracti
 | Schema | `app/task_engine/schema.py` | 7 tables (task_jobs, task_videos, task_stages, task_artifacts, task_events, task_commands, task_migrations) |
 | Repository | `app/task_engine/repository.py` | `TaskRepository` — transactional CRUD, stage leasing (90s lease with heartbeat), cancellation |
 | Fingerprints | `app/task_engine/fingerprints.py` | `sha256_file()`, `canonical_hash()`, `canonical_json()` |
-| Artifacts | `app/task_engine/artifacts.py` | `commit_artifact()` with path-existence + SHA-256 validation |
+| Artifacts | `app/task_engine/artifacts/` | Package: identity, store, kinds, resolve, manifests, quality_schema. `from app.task_engine.artifacts import X` unchanged |
 | Stages | `app/task_engine/stages.py` | `StageAdapter` protocol, `StageContext`, `StageResult` |
 | Adapter | `app/task_engine/adaptive_adapter.py` | Wraps existing adaptive pipeline as a stage adapter |
 | Worker | `app/task_engine/worker.py` | `TaskWorker` — single-writer lease loop with heartbeat, retry, cancellation |
@@ -871,7 +909,7 @@ materialize so packaged publishes are not rejected solely for skipped hashing.
 
 The full production-path release gate covers success, VLM outage, invalid VLM
 payload, valid zero-clip execution, and the persistent serial folder queue. The
-2026-08 working tree collects **1551** tests (`uv run pytest --collect-only -q`).
+2026-08-28 working tree collects **1733** tests (`uv run pytest --collect-only -q`).
 Re-run `uv run pytest -q` before a release.
 
 ### Packaged Startup Fix (2026-07-23)

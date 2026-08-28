@@ -1,4 +1,5 @@
-from app.ui.candidate_review import CONFIG_TOOLTIP_CSS, CONFIG_TOOLTIP_JS, REVIEW_LAYOUT_CSS, REVIEW_SHORTCUTS_JS
+from app.ui.tabs.review import REVIEW_LAYOUT_CSS, REVIEW_SHORTCUTS_JS
+from app.ui.tabs.settings import CONFIG_TOOLTIP_CSS, CONFIG_TOOLTIP_JS
 from app.ui.launcher import launch_gradio_app
 from app.ui.workbench import load_layout_css
 
@@ -23,3 +24,13 @@ def test_launcher_passes_tooltip_css_to_gradio():
     assert app.kwargs["js"].lstrip().startswith("(() => {")
     assert ".ga-review-layout" in app.kwargs["css"]
     assert ".config-tooltip-icon" in app.kwargs["css"]
+    assert app.kwargs["server_port"] == 7861
+
+
+def test_launcher_can_override_gradio_port():
+    app = FakeGradioApp()
+
+    launch_gradio_app(app, server_port=7862)
+
+    assert app.kwargs["server_port"] == 7862
+    assert app.kwargs["prevent_thread_lock"] is True

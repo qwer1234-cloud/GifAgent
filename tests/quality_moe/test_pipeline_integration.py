@@ -18,6 +18,11 @@ from app.quality_moe.models import (
     RepairRecipe,
     RepairValidation,
 )
+from app.pipeline import quality_bridge as quality_bridge_mod
+from app.pipeline import vlm_runtime as vlm_runtime_mod
+from app.pipeline import stage_io as stage_io_mod
+from app.pipeline.stages import gif_clip as gif_clip_stage
+from app.pipeline.stages import rank_dedup as rank_dedup_stage
 from scripts import test_video_adaptive as adaptive
 
 
@@ -122,7 +127,7 @@ def _synthesize_lineage_ref() -> dict:
 
 def test_zero_clip_staged_rank_manifest_records_quality_summary(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        adaptive,
+        rank_dedup_stage,
         "_read_upstream_manifest",
         lambda *_args, **_kwargs: {"clips": [], "scored_frames": []},
     )
@@ -205,7 +210,7 @@ def test_direct_quality_summary_keeps_independent_assessed_candidate_ledger(
         "clip-1", cfg["quality_moe_config_hash"], QualityDecision.KEEP_AS_IS
     )
     monkeypatch.setattr(
-        adaptive,
+        quality_bridge_mod,
         "evaluate_candidates",
         lambda *_a, **_k: QualityBatchResult(
             (assessment,), ({**candidate},), (),
@@ -242,7 +247,7 @@ def test_shared_quality_boundary_rejects_missing_or_duplicate_candidate_ids(
 ):
     cfg = adaptive.extract_config({"quality_moe": {"report_only": False}})
     monkeypatch.setattr(
-        adaptive,
+        quality_bridge_mod,
         "evaluate_candidates",
         lambda *_a, **_k: pytest.fail("invalid IDs reached the evaluator"),
     )
@@ -283,7 +288,7 @@ def test_shared_quality_boundary_requires_assessments_one_to_one_in_input_order(
         )
         return batch_factory(keep, review, values)
 
-    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    monkeypatch.setattr(quality_bridge_mod, "evaluate_candidates", fake_evaluate)
 
     with pytest.raises(ValueError, match="assessments"):
         adaptive._evaluate_quality_pipeline_candidates(
@@ -334,7 +339,7 @@ def test_shared_quality_boundary_rejects_invalid_batch_routing(
             tuple(by_id[item_id] for item_id in human_ids),
         )
 
-    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    monkeypatch.setattr(quality_bridge_mod, "evaluate_candidates", fake_evaluate)
 
     with pytest.raises(ValueError, match="routing"):
         adaptive._evaluate_quality_pipeline_candidates(
@@ -362,7 +367,7 @@ def test_shared_quality_boundary_rebuilds_routed_payload_from_original_input(
         "nested": {"source": "batch-replacement"},
     }
     monkeypatch.setattr(
-        adaptive,
+        quality_bridge_mod,
         "evaluate_candidates",
         lambda *_a, **_k: QualityBatchResult(
             (assessment,), (replacement,), (),
@@ -397,7 +402,7 @@ def test_report_only_quality_evaluation_preserves_candidate_order(tmp_path, monk
         )
         return QualityBatchResult(assessments, effective, effective)
 
-    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    monkeypatch.setattr(quality_bridge_mod, "evaluate_candidates", fake_evaluate)
 
     routed, summary = adaptive._evaluate_quality_pipeline_candidates(
         candidates,
@@ -431,7 +436,7 @@ def test_active_quality_evaluation_exports_only_keep_but_persists_review(tmp_pat
             ({**values[1], "quality_assessment": review.to_dict()},),
         )
 
-    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    monkeypatch.setattr(quality_bridge_mod, "evaluate_candidates", fake_evaluate)
 
     routed, summary = adaptive._evaluate_quality_pipeline_candidates(
         candidates,
@@ -464,7 +469,7 @@ def test_report_only_preserves_hard_rejected_candidate_for_existing_export(
         hard_reasons=("transition_drop",),
     )
     monkeypatch.setattr(
-        adaptive,
+        quality_bridge_mod,
         "evaluate_candidates",
         lambda values, **_kwargs: QualityBatchResult((rejected,), (), ()),
     )
@@ -511,14 +516,14 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
             "quality_assessment": assessment,
         }],
     }
-    monkeypatch.setattr(adaptive, "_read_upstream_manifest", lambda *_a, **_k: rank_manifest)
+    monkeypatch.setattr(gif_clip_stage, "_read_upstream_manifest", lambda *_a, **_k: rank_manifest)
     monkeypatch.setattr(
         adaptive.subprocess,
         "run",
         lambda *_a, **_k: SimpleNamespace(stdout="20.0", returncode=0),
     )
     monkeypatch.setattr(
-        adaptive,
+        quality_bridge_mod,
         "_validated_repair_recipe",
         lambda *_a, **_k: object(),
     )
@@ -529,7 +534,7 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
         repair = ",eq=brightness=0.1" if recipe is not None else ""
         return f"fps=12{repair},scale=320:-1:flags=lanczos"
 
-    monkeypatch.setattr(adaptive, "build_ffmpeg_filter", fake_filter)
+    monkeypatch.setattr(gif_clip_stage, "build_ffmpeg_filter", fake_filter)
     commands = {}
 
     def fake_export(*, palette_command, gif_command, palette_path, output_path):
@@ -538,7 +543,7 @@ def test_stage_gif_report_only_never_applies_recommended_repair_to_pixels(
         open(output_path, "wb").write(b"gif-bytes")
         return SimpleNamespace(success=True, size_bytes=9, error=None)
 
-    monkeypatch.setattr(adaptive, "run_gif_export_attempt", fake_export)
+    monkeypatch.setattr(gif_clip_stage, "run_gif_export_attempt", fake_export)
     export_dir = tmp_path / "exports"
     frames_dir = tmp_path / "frames"
     export_dir.mkdir()
@@ -646,7 +651,7 @@ def test_stage_gif_rejects_source_changed_after_quality_rank(
         ],
     }
     monkeypatch.setattr(
-        adaptive, "_read_upstream_manifest", lambda *_args, **_kwargs: rank_manifest
+        gif_clip_stage, "_read_upstream_manifest", lambda *_args, **_kwargs: rank_manifest
     )
     export_called = False
 
@@ -655,7 +660,7 @@ def test_stage_gif_rejects_source_changed_after_quality_rank(
         export_called = True
         raise AssertionError("FFmpeg export must not run for a changed source")
 
-    monkeypatch.setattr(adaptive, "run_gif_export_attempt", forbidden_export)
+    monkeypatch.setattr(gif_clip_stage, "run_gif_export_attempt", forbidden_export)
     source.write_bytes(b"changed-after-rank")
 
     with pytest.raises(ValueError, match="source.*changed"):
@@ -756,7 +761,7 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
         {"start_ts": 8.0, "end_ts": 12.0, "gif_worthiness": 0.9},
     ]
     monkeypatch.setattr(
-        adaptive,
+        rank_dedup_stage,
         "_read_upstream_manifest",
         lambda *_a, **_k: {"clips": clips, "scored_frames": []},
     )
@@ -779,7 +784,7 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
             clips=(clean,), transition_metrics={}, action_metrics={},
         )
 
-    monkeypatch.setattr(adaptive, "materialize_action_candidates", fake_materialize)
+    monkeypatch.setattr(rank_dedup_stage, "materialize_action_candidates", fake_materialize)
     seen = []
 
     def fake_evaluate(values, **kwargs):
@@ -807,7 +812,7 @@ def test_staged_rank_rebuilds_valid_active_assessments_after_dedup(
         )
         return QualityBatchResult(assessments, effective, ())
 
-    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    monkeypatch.setattr(quality_bridge_mod, "evaluate_candidates", fake_evaluate)
     cfg = adaptive.extract_config({
         "adaptive": {
             "embedding_dedup_enabled": False,
@@ -858,7 +863,7 @@ def test_staged_rank_evaluates_quality_before_output_truncation(
         {"start_ts": 14.0, "end_ts": 18.0, "gif_worthiness": 0.8},
     ]
     monkeypatch.setattr(
-        adaptive,
+        rank_dedup_stage,
         "_read_upstream_manifest",
         lambda *_a, **_k: {"clips": clips, "scored_frames": []},
     )
@@ -881,7 +886,7 @@ def test_staged_rank_evaluates_quality_before_output_truncation(
             clips=(clean,), transition_metrics={}, action_metrics={},
         )
 
-    monkeypatch.setattr(adaptive, "materialize_action_candidates", fake_materialize)
+    monkeypatch.setattr(rank_dedup_stage, "materialize_action_candidates", fake_materialize)
     seen = []
 
     def fake_evaluate(values, **kwargs):
@@ -905,7 +910,7 @@ def test_staged_rank_evaluates_quality_before_output_truncation(
         )
         return QualityBatchResult(assessments, effective, ())
 
-    monkeypatch.setattr(adaptive, "evaluate_candidates", fake_evaluate)
+    monkeypatch.setattr(quality_bridge_mod, "evaluate_candidates", fake_evaluate)
     cfg = adaptive.extract_config({
         "adaptive": {
             "embedding_dedup_enabled": False,
@@ -990,14 +995,14 @@ def test_stage_mode_only_reads_job_frozen_quality_endpoint(tmp_path, monkeypatch
             AssertionError("stage must not resolve an already frozen endpoint")
         ),
     )
-    monkeypatch.setattr(adaptive, "init_db", lambda: None)
+    monkeypatch.setattr(stage_io_mod, "init_db", lambda: None)
     seen = []
 
     def fake_stage(stage, **kwargs):
         seen.append(kwargs["config_data"]["quality_moe"]["judge"]["base_url"])
         return {"output_key": stage, "_artifacts": []}
 
-    monkeypatch.setattr(adaptive, "_run_stage", fake_stage)
+    monkeypatch.setattr(stage_io_mod, "_run_stage", fake_stage)
 
     adaptive.run_stage_mode(
         stage="discover",
@@ -1081,11 +1086,11 @@ def test_stage_mode_attaches_live_url_for_inherit_vlm(tmp_path, monkeypatch):
         },
     }), encoding="utf-8")
     monkeypatch.setattr(
-        adaptive,
+        vlm_runtime_mod,
         "_materialize_vlm_runtime",
         lambda runtime, _snapshot=None: replace(runtime, base_url="http://live-ollama.example:11434"),
     )
-    monkeypatch.setattr(adaptive, "init_db", lambda: None)
+    monkeypatch.setattr(stage_io_mod, "init_db", lambda: None)
     seen = []
 
     def fake_stage(stage, **kwargs):
@@ -1097,7 +1102,7 @@ def test_stage_mode_attaches_live_url_for_inherit_vlm(tmp_path, monkeypatch):
         })
         return {"output_key": stage, "_artifacts": []}
 
-    monkeypatch.setattr(adaptive, "_run_stage", fake_stage)
+    monkeypatch.setattr(stage_io_mod, "_run_stage", fake_stage)
 
     adaptive.run_stage_mode(
         stage="rank_dedup",

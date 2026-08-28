@@ -8,6 +8,13 @@ import pytest
 from app.services import action_pipeline, frame_extract
 from app.services.transition_guard import GuardSegment, TransitionGuardResult
 from scripts import test_video_adaptive
+from app.pipeline import direct as pipeline_direct
+from app.pipeline import ranking as pipeline_ranking
+from app.pipeline import quality_bridge as quality_bridge_mod
+from app.pipeline.stages import gif_clip as gif_clip_stage
+from app.pipeline.stages import rank_dedup as rank_dedup_stage
+from app.pipeline.stages import refine as refine_stage
+from app.pipeline.stages import vlm as vlm_stage
 
 
 def _cfg() -> dict:
@@ -76,9 +83,24 @@ def _run_direct_pipeline_fixture(
 
     monkeypatch.setattr(test_video_adaptive.subprocess, "run", fake_run)
     monkeypatch.setattr(frame_extract.subprocess, "run", fake_run)
-    monkeypatch.setattr(test_video_adaptive, "stop_model", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(test_video_adaptive, "wait_model", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(test_video_adaptive, "wait_for_llm", lambda **_kwargs: False)
+    stop_calls = []
+    monkeypatch.setattr(
+        pipeline_direct,
+        "stop_model",
+        lambda *args, **kwargs: stop_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(pipeline_direct, "wait_for_llm", lambda **_kwargs: False)
+    import app.services.llm_client as llm_client
+
+    def forbidden_llm(*_args, **_kwargs):
+        raise RuntimeError("no LLM in direct fixture")
+
+    monkeypatch.setattr(llm_client, "generate_llm_text", forbidden_llm)
+    # Stage-mode VLM lifecycle must never touch a real Ollama/WSL endpoint.
+    monkeypatch.setattr(vlm_stage, "stop_model", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(vlm_stage, "wait_model", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(refine_stage, "wait_model", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(vlm_stage.time, "sleep", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(test_video_adaptive.time, "sleep", lambda *_args: None)
 
     class FakeResponse:
@@ -122,7 +144,7 @@ def _run_direct_pipeline_fixture(
             return object()
 
     monkeypatch.setattr(
-        test_video_adaptive,
+        rank_dedup_stage,
         "TemporalEvidenceCache",
         FakeEvidenceCache,
         raising=False,
@@ -149,7 +171,7 @@ def _run_direct_pipeline_fixture(
             "gif_worthiness": 0.8, "aesthetic_notes": [], "reason": "clean",
         }, None)
 
-    monkeypatch.setattr(test_video_adaptive, "_score_vlm_frame", fake_rescore)
+    monkeypatch.setattr(rank_dedup_stage, "_score_vlm_frame", fake_rescore)
 
     export_attempts = []
 
@@ -158,9 +180,9 @@ def _run_direct_pipeline_fixture(
         Path(kwargs["output_path"]).write_bytes(b"GIF89a")
         return SimpleNamespace(success=True, size_bytes=6, error=None)
 
-    monkeypatch.setattr(test_video_adaptive, "run_gif_export_attempt", fake_export_attempt)
+    monkeypatch.setattr(gif_clip_stage, "run_gif_export_attempt", fake_export_attempt)
     monkeypatch.setattr(
-        test_video_adaptive,
+        pipeline_ranking,
         "compute_text_embedding",
         lambda text: (
             [1.0, 0.0]
@@ -174,7 +196,7 @@ def _run_direct_pipeline_fixture(
         ranker_inputs.extend(clips)
         return sorted(clips, key=lambda clip: clip["gif_worthiness"], reverse=True)
 
-    monkeypatch.setattr(test_video_adaptive, "rank_clips_for_export", fake_ranker)
+    monkeypatch.setattr(pipeline_ranking, "rank_clips_for_export", fake_ranker)
 
     cfg = _cfg()
     cfg["max_output"] = max_output
@@ -192,6 +214,7 @@ def _run_direct_pipeline_fixture(
     result["_fixture_ranker_inputs"] = ranker_inputs
     result["_fixture_http_calls"] = http_calls
     result["_fixture_export_attempts"] = export_attempts
+    result["_fixture_stop_calls"] = stop_calls
     return result
 
 
@@ -208,7 +231,7 @@ def test_direct_pipeline_fans_guarded_segments_out_before_dedup(tmp_path, monkey
     rescore_calls = result["_fixture_rescore_calls"]
     ranker_inputs = result["_fixture_ranker_inputs"]
     assert len(guard_calls) == 1
-    assert guard_calls[0][1:4] == pytest.approx((8.12, 12.82, 10.0))
+    assert guard_calls[0][1:4] == pytest.approx((0.0, 15.9375, 10.0))
     assert len(rescore_calls) == 1
     assert rescore_calls[0]["timestamp"] == 12.0
     assert result["dedup_input_clips"] == 2
@@ -254,13 +277,36 @@ def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
                     },
                 },
             })
-        return routed, {"assessments": []}
+        # The staged rank stage writes this summary into a manifest that
+        # gif_clip re-validates, so it must carry the full summary shape.
+        return routed, {
+            "enabled": False,
+            "report_only": True,
+            "evaluation_version": "quality-moe-eval-v2",
+            "config_hash": quality_cfg["quality_moe_config_hash"],
+            "policy_snapshot": {
+                "report_only": True,
+                "min_judge_confidence": 0.8,
+                "min_independent_negative_families": 2,
+                "policy_version": "quality-moe-policy-v1",
+            },
+            "input_count": len(candidates),
+            "assessed_count": 0,
+            "effective_count": len(routed),
+            "human_review_count": 0,
+            "decision_counts": {},
+            "top_assessments": [],
+            "assessments": [],
+            "assessed_candidates": [],
+            "assessed_candidates_digest": hashlib.sha256(b"[]").hexdigest(),
+            "candidate_ledger": {"mode": "embedded"},
+        }
 
     monkeypatch.setattr(
-        test_video_adaptive, "_evaluate_quality_pipeline_candidates", fake_quality
+        rank_dedup_stage, "_evaluate_quality_pipeline_candidates", fake_quality
     )
     monkeypatch.setattr(
-        test_video_adaptive, "_validated_repair_recipe", lambda *_a, **_k: object()
+        quality_bridge_mod, "_validated_repair_recipe", lambda *_a, **_k: object()
     )
 
     result = _run_direct_pipeline_fixture(
@@ -278,7 +324,7 @@ def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
         command["palette_command"].index("-vf") + 1
     ]
     gif_filter = command["gif_command"][
-        command["gif_command"].index("-filter_complex") + 1
+        command["gif_command"].index("-lavfi") + 1
     ]
     assert "eq=" not in palette_filter
     assert "eq=" not in gif_filter

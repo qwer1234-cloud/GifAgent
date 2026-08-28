@@ -21,10 +21,12 @@ from app.services.desktop_export_sync import (
     stop_background_sync,
 )
 from app.services import ollama_runtime
-from app.ui.local_port import reclaim_owned_listen_port
+from app.ui.local_port import choose_local_port, reclaim_owned_listen_port
 
 API_HOST = "127.0.0.1"
 API_PORT = 8000
+GRADIO_HOST = "127.0.0.1"
+GRADIO_PORT = 7861
 _api_server: Optional[uvicorn.Server] = None
 _api_thread: Optional[threading.Thread] = None
 
@@ -171,11 +173,34 @@ def _wait_for_url(url, label, timeout=30, thread=None):
     return False
 
 
-def launch_gradio_app(gradio_app):
+def launch_gradio_app(gradio_app, *, server_port: int | None = None):
     """Launch Gradio with the UI module's complete visual configuration."""
     from app.ui.candidate_review import launch_kwargs
 
-    gradio_app.launch(prevent_thread_lock=True, **launch_kwargs())
+    kwargs = launch_kwargs()
+    if server_port is not None:
+        kwargs["server_port"] = server_port
+    gradio_app.launch(prevent_thread_lock=True, **kwargs)
+
+
+def resolve_gradio_port(
+    *,
+    host: str = GRADIO_HOST,
+    preferred: int = GRADIO_PORT,
+    reclaim=reclaim_owned_listen_port,
+    choose=choose_local_port,
+    log=print,
+) -> int:
+    """Reclaim leftover GifAgent listeners, then pick a bindable Gradio port."""
+    reclaim(preferred)
+    port = choose(host, preferred)
+    if port != preferred:
+        log(
+            f"WARNING: port {preferred} is busy; using {port} for Gradio. "
+            "A foreign app (often Afterlow) may be using the preferred port "
+            "as an outbound connection; GifAgent will not kill it."
+        )
+    return port
 
 
 def _stage_worker_counts() -> tuple[int, int]:
@@ -429,18 +454,19 @@ def main():
     # launch() return immediately; the server runs in Gradio's internal thread).
     from app.ui.candidate_review import app as gradio_app
     try:
-        launch_gradio_app(gradio_app)
+        gradio_port = resolve_gradio_port()
+        launch_gradio_app(gradio_app, server_port=gradio_port)
     except Exception as e:
         print(f"ERROR: Gradio failed to launch: {e}", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
         stop_background_sync(sync_stop_event)
         stop_api_server()
         os._exit(1)
-    print("Starting Gradio on http://127.0.0.1:7861 ...")
+    print(f"Starting Gradio on http://{GRADIO_HOST}:{gradio_port} ...")
 
     # Wait for Gradio to be ready before opening the window. If it doesn't come
     # up in 30s, exit instead of opening a window to a dead URL.
-    if not _wait_for_url("http://127.0.0.1:7861", "Gradio", timeout=30):
+    if not _wait_for_url(f"http://{GRADIO_HOST}:{gradio_port}", "Gradio", timeout=30):
         print("ERROR: Gradio did not become ready, exiting.", flush=True)
         _stop_worker(worker_stop_event, worker_thread)
         stop_background_sync(sync_stop_event)
@@ -457,7 +483,7 @@ def main():
     import webview
     window = webview.create_window(
         "GifAgent",
-        "http://127.0.0.1:7861",
+        f"http://{GRADIO_HOST}:{gradio_port}",
         width=1400,
         height=900,
         min_size=(1024, 680),

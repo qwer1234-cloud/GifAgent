@@ -363,14 +363,15 @@ def test_single_embedding_routes_through_runtime(monkeypatch):
     def fake_post(url, *, json=None, timeout=None):
         captured["url"] = url
         captured["json"] = json
-        return _fake_response({"embedding": [0.0] * 768})
+        return _fake_response({"embeddings": [[0.0] * 768]})
 
     monkeypatch.setattr(embedding.httpx, "post", fake_post)
     _patch_runtime(monkeypatch, _runtime_config(keep_alive="30m"))
 
     result = embedding.compute_text_embedding("hello")
 
-    assert captured["url"] == "http://stub:11434/api/embeddings"
+    assert captured["url"] == "http://stub:11434/api/embed"
     assert captured["json"]["model"] == embedding.EMBED_TEXT_MODEL
+    assert captured["json"]["input"] == ["hello"]
     assert captured["json"]["keep_alive"] == "30m"
     assert result == [0.0] * 768

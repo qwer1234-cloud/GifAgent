@@ -6,12 +6,14 @@ candidate scores by measuring cosine similarity to liked/disliked centroids.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
 import numpy as np
 
 from app.services.preference_types import RerankerScoreBreakdown
+from app.services.vector_math import l2_normalize, max_cosine
 
 # ---------------------------------------------------------------------------
 # Nominal weight configuration (before renormalization)
@@ -26,6 +28,8 @@ _NOMINAL_POSITIVE_WEIGHTS: dict[str, float] = {
 _NOMINAL_NEGATIVE_WEIGHTS: dict[str, float] = {
     "global_dislike": 0.20,
 }
+
+TAG_PRIOR_WEIGHT = 0.05
 
 
 def blend_export_scores(
@@ -46,12 +50,53 @@ def blend_export_scores(
     )
 
 
-def _normalize(vec: np.ndarray) -> np.ndarray:
-    """L2-normalize a vector in place (or return a zero vector unchanged)."""
-    norm = np.linalg.norm(vec)
-    if norm > 0:
-        vec = vec / norm
-    return vec
+def clip_scenario_keys(clip: dict[str, Any], *, max_tags: int = 5) -> list[str]:
+    """Map a clip's emotion and tags into reranker scenario keys."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    frame = clip.get("best_frame") if isinstance(clip.get("best_frame"), dict) else {}
+    emotion = str(frame.get("emotional_core") or clip.get("emotional_core") or "").strip()
+    if emotion and emotion != "?":
+        key = f"emotion:{emotion}"
+        keys.append(key)
+        seen.add(key)
+    tags = clip.get("tags") or frame.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    if not isinstance(tags, list):
+        tags = []
+    for tag in tags[:max_tags]:
+        name = str(tag).strip()
+        if not name:
+            continue
+        key = name if name.startswith("tag:") else f"tag:{name}"
+        if key not in seen:
+            keys.append(key)
+            seen.add(key)
+    return keys
+
+
+def _tag_prior_score(
+    scenario_keys: list[str], tag_weights: dict[str, Any]
+) -> float | None:
+    """Mean signed tag weight for keys that appear in the published profile."""
+    if not scenario_keys or not tag_weights:
+        return None
+    matched: list[float] = []
+    for key in scenario_keys:
+        value = tag_weights.get(key)
+        if value is None:
+            bare = key[4:] if key.startswith("tag:") else key
+            value = tag_weights.get(bare)
+        if value is None:
+            continue
+        try:
+            matched.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    if not matched:
+        return None
+    return float(sum(matched) / len(matched))
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +160,8 @@ class PreferenceReranker:
         if not enabled:
             return self._baseline(base_rag_similarity)
 
+        candidate_vector = l2_normalize(candidate_vector)
+
         # ---- Resolve profile version ---------------------------------------
         if profile_version is None:
             row = self.conn.execute(
@@ -129,7 +176,8 @@ class PreferenceReranker:
 
         # ---- Load global profile -------------------------------------------
         global_row = self.conn.execute(
-            """SELECT liked_centroid_blob, disliked_centroid_blob
+            """SELECT liked_centroid_blob, disliked_centroid_blob,
+                      confidence, tag_weights_json
                FROM preference_profiles
                WHERE profile_version = ? AND scope = 'global'""",
             (profile_version,),
@@ -143,6 +191,13 @@ class PreferenceReranker:
 
         active_weights: dict[str, float] = {}
         inactive_reasons: dict[str, str] = {}
+        global_confidence = float(global_row["confidence"] or 0.0)
+        try:
+            tag_weights = json.loads(global_row["tag_weights_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            tag_weights = {}
+        if not isinstance(tag_weights, dict):
+            tag_weights = {}
 
         # ---- Base RAG similarity (always available) ------------------------
         active_weights["base_rag"] = _NOMINAL_POSITIVE_WEIGHTS["base_rag"]
@@ -150,33 +205,34 @@ class PreferenceReranker:
         # ---- Global like similarity ----------------------------------------
         global_like_sim: float = 0.0
         if global_row["liked_centroid_blob"] is not None:
-            liked_centroid = _normalize(
-                np.frombuffer(global_row["liked_centroid_blob"], dtype=np.float32)
+            global_like_sim = max_cosine(
+                candidate_vector, global_row["liked_centroid_blob"]
             )
-            global_like_sim = float(np.dot(candidate_vector, liked_centroid))
-            active_weights["global_like"] = _NOMINAL_POSITIVE_WEIGHTS["global_like"]
+            active_weights["global_like"] = (
+                _NOMINAL_POSITIVE_WEIGHTS["global_like"] * global_confidence
+            )
         else:
             inactive_reasons["global_like"] = "no liked centroid available"
 
         # ---- Global dislike similarity -------------------------------------
         global_dislike_sim: float = 0.0
         if global_row["disliked_centroid_blob"] is not None:
-            disliked_centroid = _normalize(
-                np.frombuffer(global_row["disliked_centroid_blob"], dtype=np.float32)
+            global_dislike_sim = max_cosine(
+                candidate_vector, global_row["disliked_centroid_blob"]
             )
-            global_dislike_sim = float(np.dot(candidate_vector, disliked_centroid))
-            active_weights["global_dislike"] = _NOMINAL_NEGATIVE_WEIGHTS[
-                "global_dislike"
-            ]
+            active_weights["global_dislike"] = (
+                _NOMINAL_NEGATIVE_WEIGHTS["global_dislike"] * global_confidence
+            )
         else:
             inactive_reasons["global_dislike"] = "no disliked centroid available"
 
         # ---- Scenario like similarity --------------------------------------
         scenario_like_sim: float = 0.0
+        scenario_confidence_mean = 0.0
         if scenario_keys:
             placeholders = ",".join(["?"] * len(scenario_keys))
             scenario_rows = self.conn.execute(
-                f"""SELECT scenario_key, liked_centroid_blob
+                f"""SELECT scenario_key, liked_centroid_blob, confidence
                      FROM preference_profiles
                      WHERE profile_version = ? AND scope = 'scenario'
                        AND scenario_key IN ({placeholders})""",
@@ -184,17 +240,28 @@ class PreferenceReranker:
             ).fetchall()
 
             if scenario_rows:
-                sims: list[float] = []
+                weighted_sims: list[tuple[float, float]] = []
                 for srow in scenario_rows:
                     if srow["liked_centroid_blob"] is not None:
-                        centroid = _normalize(
-                            np.frombuffer(
-                                srow["liked_centroid_blob"], dtype=np.float32
-                            )
+                        sim = max_cosine(
+                            candidate_vector, srow["liked_centroid_blob"]
                         )
-                        sims.append(float(np.dot(candidate_vector, centroid)))
-                if sims:
-                    scenario_like_sim = sum(sims) / len(sims)
+                        conf = float(srow["confidence"] or 0.0)
+                        weighted_sims.append((sim, conf))
+                conf_sum = sum(conf for _sim, conf in weighted_sims)
+                if weighted_sims and conf_sum > 0:
+                    scenario_like_sim = (
+                        sum(sim * conf for sim, conf in weighted_sims) / conf_sum
+                    )
+                    scenario_confidence_mean = conf_sum / len(weighted_sims)
+                    active_weights["scenario_like"] = (
+                        _NOMINAL_POSITIVE_WEIGHTS["scenario_like"]
+                        * scenario_confidence_mean
+                    )
+                elif weighted_sims:
+                    scenario_like_sim = sum(sim for sim, _c in weighted_sims) / len(
+                        weighted_sims
+                    )
                     active_weights["scenario_like"] = _NOMINAL_POSITIVE_WEIGHTS[
                         "scenario_like"
                     ]
@@ -228,6 +295,10 @@ class PreferenceReranker:
             raw_score += active_weights["scenario_like"] * scenario_like_sim
         if "global_dislike" in active_weights:
             raw_score -= active_weights["global_dislike"] * global_dislike_sim
+
+        tag_prior = _tag_prior_score(scenario_keys, tag_weights)
+        if tag_prior is not None:
+            raw_score += TAG_PRIOR_WEIGHT * tag_prior
 
         final_score = float(max(0.0, min(1.0, raw_score)))
 
