@@ -577,3 +577,120 @@ def test_report_render_written(tmp_path):
     assert "# W3 历史数据体检报告" in text
     assert "absent 项 fallback 说明" in text
     assert "`missing_field`" in text
+
+
+# ---------------------------------------------------------------------------
+# Task 2: dry-run repair suggestions (print only, zero mutation)
+# ---------------------------------------------------------------------------
+
+
+from scripts.token_sprint.repair_data_dry_run import (  # noqa: E402
+    parse_record_ref,
+    suggest_patch,
+)
+
+
+def _findings_fixture() -> dict:
+    return {
+        "findings": [
+            {
+                "rule": "missing_field", "source": "adaptive_test_result",
+                "record_type": "top_clips", "record_ref": "top_clips[0]",
+                "candidate_id": None, "field": "candidate_id",
+                "detail": "agreed key 'candidate_id' is missing or null",
+                "confidence": "high", "hard_case": False, "excerpt": None,
+            },
+            {
+                "rule": "score_oob", "source": "library_snapshot",
+                "record_type": "candidate_gifs", "record_ref": "candidate_gifs#17 (cand_x)",
+                "candidate_id": "cand_x", "field": "final_score",
+                "detail": "value 1.5 outside [0,1]", "confidence": "high",
+                "hard_case": False, "excerpt": None,
+            },
+            {
+                "rule": "broken_artifact", "source": "library_snapshot",
+                "record_type": "candidate_gifs", "record_ref": "candidate_gifs#21 (cand_y)",
+                "candidate_id": "cand_y", "field": "artifact_path",
+                "detail": "path does not exist (stat only, relative_to_data_root): "
+                          "data\\exports\\ghost.gif",
+                "confidence": "high", "hard_case": False, "excerpt": None,
+            },
+            {
+                "rule": "mojibake", "source": "library_snapshot",
+                "record_type": "annotations", "record_ref": "annotations#5 (ann_1)",
+                "candidate_id": None, "field": "summary",
+                "detail": "mojibake signature (low confidence), 2 suspicious chars",
+                "confidence": "low", "hard_case": True,
+                "excerpt": "cafÃ© texture summary",
+            },
+            {
+                "rule": "ts_contradiction", "source": "batch_checkpoint",
+                "record_type": "checkpoint", "record_ref": "$",
+                "candidate_id": None, "field": "updated_at<started_at",
+                "detail": "updated_at before started_at", "confidence": "high",
+                "hard_case": False, "excerpt": None,
+            },
+        ]
+    }
+
+
+def test_repair_dry_run_prints_without_mutating_inputs(tmp_path):
+    sprint_root = tmp_path / "sprint"
+    (sprint_root / "w3").mkdir(parents=True)
+    findings_path = sprint_root / "w3" / "w3-audit-findings.json"
+    findings_path.write_text(json.dumps(_findings_fixture(), ensure_ascii=False),
+                             encoding="utf-8")
+    input_copy = sprint_root / "inputs" / "adaptive_test_result.json"
+    input_copy.parent.mkdir(parents=True)
+    input_copy.write_text("{}", encoding="utf-8")
+
+    def fingerprint(path: Path):
+        stat = path.stat()
+        return (path.name, stat.st_size, stat.st_mtime_ns)
+
+    before = [fingerprint(findings_path), fingerprint(input_copy)]
+    from scripts.token_sprint.repair_data_dry_run import main as repair_main
+    import io
+    import contextlib
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        rc = repair_main([
+            "--sprint-root", str(sprint_root),
+        ])
+    output = buffer.getvalue()
+    after = [fingerprint(findings_path), fingerprint(input_copy)]
+    assert rc == 0
+    assert before == after, "dry run must not touch any input file"
+    assert "DRY RUN ONLY" in output
+    assert "UPDATE candidate_gifs SET final_score" in output
+    assert "rowid = 21" in output
+    assert '"path": "/top_clips/0/candidate_id"' in output
+    assert "No file, database, or manifest was modified (dry run)." in output
+
+
+def test_repair_suggests_mojibake_round_trip_and_refuses_apply(tmp_path):
+    finding = next(f for f in _findings_fixture()["findings"]
+                   if f["rule"] == "mojibake")
+    suggestion = suggest_patch(finding)
+    assert "café" in suggestion  # round-trip preview shows the repaired text
+    finding_bad = dict(finding, excerpt="ÃÂ½ unrepairable \x9d")
+    assert "Manual review" in suggest_patch(finding_bad)
+
+    sprint_root = tmp_path / "sprint"
+    (sprint_root / "w3").mkdir(parents=True)
+    (sprint_root / "w3" / "w3-audit-findings.json").write_text(
+        json.dumps(_findings_fixture(), ensure_ascii=False), encoding="utf-8")
+    from scripts.token_sprint.repair_data_dry_run import main as repair_main
+    import contextlib
+    import io
+    buffer, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(err):
+        rc = repair_main(["--sprint-root", str(sprint_root), "--apply"])
+    assert rc == 2
+    assert "--apply" in err.getvalue()
+
+
+def test_parse_record_ref():
+    assert parse_record_ref("candidate_gifs#21 (cand_y)") == ("candidate_gifs", 21)
+    assert parse_record_ref("top_clips[3]") == (None, None)
+    assert parse_record_ref("") == (None, None)
