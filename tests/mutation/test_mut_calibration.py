@@ -93,3 +93,15 @@ def test_pav_sorted_single_class_input():
     calibrator = fit_monotonic_calibrator([0.2, 0.1], [1, 1])
     assert calibrator.thresholds == pytest.approx((0.1, 0.2))
     assert calibrator.values == pytest.approx((1.0, 1.0))
+
+
+def test_calibration_curve_empty_bins_keep_independent_upper_edges():
+    # The empty-bin branch builds its own CalibrationBin; its upper edge must
+    # still be bin_edges[i + 1] (mutating only the empty branch is observable
+    # through any sparse input).
+    result = calibration_curve([0.95], [1], bins=4)
+    assert result[0].count == 0
+    assert result[0].lower == pytest.approx(0.0)
+    assert result[0].upper == pytest.approx(0.25)
+    assert result[3].upper == pytest.approx(1.0)
+    assert result[3].count == 1
