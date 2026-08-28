@@ -29,3 +29,6 @@ build/
 /-I
 /nomic-embed-text
 /nomic-embed-text/
+
+# Token sprint shared root (coordinator control plane + artifacts)
+data/token_sprint/

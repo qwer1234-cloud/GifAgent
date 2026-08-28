@@ -22,6 +22,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "cosmic-ray>=8.7.0",
+    "hypothesis>=6.165.10",
+    "mypy>=2.3.1",
     "pytest>=8.0",
     "respx>=0.21",
 ]
