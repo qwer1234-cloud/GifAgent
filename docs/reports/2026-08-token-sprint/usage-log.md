@@ -9,3 +9,5 @@
 | 2026-08-28T19:10Z | w5-executor | session tokens 6,428,421 (86 tool calls, 33min) | W5 complete: 9 tasks, 42 property tests green in 3.56s (<60s gate), 8 commits, vector_math conditional props included per manifest, .ready published for pytest log artifact. Reviewer dispatched. |
 | 2026-08-28T19:45Z | w5-reviewer | session tokens 444,510 (26 tool calls, 6min) | W5 review PASS, receipt reconciled, manifest rev3 (7 artifacts). |
 | 2026-08-28T19:50Z | w1-executor | session tokens 7,055,475 (86 tool calls, 35min) | W1 tools complete: 114 token_sprint tests passed; real snapshot produced sha256=5af6c815..., three counts 12833/12833/12833, errors=0. Reviewer dispatched. Console remaining still pending user reading. |
+| 2026-08-28T20:00Z | w1-reviewer | session tokens 811,947 (33 tool calls, 7.5min) | W1 snapshot review PASS, receipt reconciled, manifest rev4 (library_snapshot.db in canonical). |
+| 2026-08-28T20:05Z | w3-executor | session tokens 4,911,712 (87 tool calls, 37min) | W3 rule scan complete: 71 tests passed; 29,874 broken_artifact / 251 missing_field / 162 mojibake / 6 score_oob / 0 ts_contradiction; 2 hard-case shards published. Reviewer dispatched. |
