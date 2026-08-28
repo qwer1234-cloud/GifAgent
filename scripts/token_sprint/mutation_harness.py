@@ -237,13 +237,29 @@ def _ignore_tests_tree(directory: str, names: list[str]) -> set[str]:
 
 
 def create_sandbox(repo_root: Path, dest: Path) -> Path:
-    """Copy app/ (py only) and tests/ (non-media) into dest; add boot plugin."""
+    """Copy app/ (py only), scripts/ (py only) and tests/ (non-media) into
+    dest; add boot plugin. scripts/ is needed because some existing tests
+    import the sanctioned facade ``scripts.test_video_adaptive``."""
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
     shutil.copytree(
         repo_root / "app", dest / "app", ignore=_ignore_app_tree, dirs_exist_ok=True
     )
+    if (repo_root / "scripts").is_dir():
+        shutil.copytree(
+            repo_root / "scripts",
+            dest / "scripts",
+            ignore=_ignore_app_tree,
+            dirs_exist_ok=True,
+        )
+    if (repo_root / "configs").is_dir():
+        shutil.copytree(
+            repo_root / "configs",
+            dest / "configs",
+            ignore=_ignore_tests_tree,
+            dirs_exist_ok=True,
+        )
     if (repo_root / "tests").is_dir():
         shutil.copytree(
             repo_root / "tests", dest / "tests", ignore=_ignore_tests_tree, dirs_exist_ok=True
@@ -731,10 +747,17 @@ def cosmic_ray_command() -> list[str]:
     ]
 
 
-def _run_cosmic_ray(args: list[str], cwd: Path, timeout: int | None = None) -> subprocess.CompletedProcess:
+def _run_cosmic_ray(
+    args: list[str], cwd: Path, sandbox: Path | None = None, timeout: int | None = None
+) -> subprocess.CompletedProcess:
     cmd = cosmic_ray_command() + args
-    env = os.environ.copy()
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if sandbox is not None:
+        # Inherit the sandbox proof env (PYTHONPATH, W4_MUTATION_BOOT_RECORD)
+        # so every pytest subprocess spawned by cosmic-ray is gated as well.
+        env = pytest_env(sandbox)
+    else:
+        env = os.environ.copy()
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         return subprocess.run(
             cmd, cwd=cwd.as_posix(), env=env, capture_output=True,
@@ -777,14 +800,18 @@ def run_cosmic_ray_engine(
     session = sandbox / "session.sqlite"
     baseline_session = sandbox / "baseline.sqlite"
 
-    init = _run_cosmic_ray(["init", config_path.name, session.name, "--force"], cwd=sandbox)
+    init = _run_cosmic_ray(
+        ["init", config_path.name, session.name, "--force"], cwd=sandbox
+    )
     if init.returncode != 0:
         raise HarnessFailure(
             f"[{module}] cosmic-ray init failed\n{init.stdout[-2000:]}{init.stderr[-2000:]}"
         )
 
     baseline = _run_cosmic_ray(
-        ["baseline", config_path.name, "--session-file", baseline_session.name], cwd=sandbox
+        ["baseline", config_path.name, "--session-file", baseline_session.name],
+        cwd=sandbox,
+        sandbox=sandbox,
     )
     if baseline.returncode != 0:
         raise HarnessFailure(
@@ -793,7 +820,9 @@ def run_cosmic_ray_engine(
         )
     boot_recorded = assert_boot_record_under_sandbox(sandbox)
 
-    exec_result = _run_cosmic_ray(["exec", config_path.name, session.name], cwd=sandbox)
+    exec_result = _run_cosmic_ray(
+        ["exec", config_path.name, session.name], cwd=sandbox, sandbox=sandbox
+    )
     if exec_result.returncode != 0:
         raise HarnessFailure(
             f"[{module}] cosmic-ray exec failed\n"
