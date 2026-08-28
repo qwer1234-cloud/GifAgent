@@ -227,6 +227,18 @@ def _load_vocab(sprint_root: Path) -> tuple[set[str] | None, str | None]:
         for key in ("tags", "words", "vocab"):
             if isinstance(data.get(key), list):
                 return {str(t) for t in data[key]}, None
+        # Frozen W1 vocabulary format: {"entries": [{"term": "...", ...}, ...]}.
+        # Fail closed: when entries exist but no term strings can be read, the
+        # fallback below (top-level keys) rejects every real tag.
+        entries = data.get("entries")
+        if isinstance(entries, list):
+            terms = {
+                str(entry["term"])
+                for entry in entries
+                if isinstance(entry, dict) and isinstance(entry.get("term"), str)
+            }
+            if terms:
+                return terms, None
         return set(data.keys()), None
     if isinstance(data, list):
         return {str(t) for t in data}, None
