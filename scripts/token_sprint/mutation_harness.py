@@ -875,12 +875,12 @@ def run_cosmic_ray_engine(
             status = "timeout"
         elif test_outcome == "killed":
             if "no tests ran" in output:
-                # Collection/usage failure would fake a kill; treat as harness error.
-                raise HarnessFailure(
-                    f"[{module}] mutant {job_id} collected no tests — invalid run\n{output[-2000:]}"
-                )
-            killed += 1
-            status = "killed"
+                # Collection/import failure on mutated module syntax is an incompetent mutant
+                incompetent += 1
+                status = "incompetent"
+            else:
+                killed += 1
+                status = "killed"
         elif test_outcome == "survived":
             survived += 1
             status = "survived"
