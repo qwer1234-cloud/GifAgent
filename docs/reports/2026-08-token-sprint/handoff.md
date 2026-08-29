@@ -40,6 +40,9 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 1. **W8 影子 FTS / W6 mypy / approved_enrichment_manifest**：全冻结。W8 的触发条件（试验集规模分片）未达——试验集仅 306 条；是否按试验集规模启用 W8 由用户决定。
 2. **下载完全结束后的最终重链刷新**：目前 `D:\data` 中仍有少量分卷压缩包下载中；待用户下载完全结束后，可随时再跑一次 `relink_proposals.py` 输出最终版映射。
 3. **usage-log**：`docs/reports/2026-08-token-sprint/usage-log.md`（integration 分支）记录了会话消耗。
+4. **重链 v2 复审独立性违规（已补救，进行中）**：v2 由 w3-relink-executor 会话自产并以 w3-relink-reviewer 名义自审（producer==reviewer），违反四方链独立性。协调会话已派出真正独立的 `w3-relink-v2-independent-reviewer`（抽检 20 条建议到快照+磁盘、反向核验、dry-run 零变异），结论将写入 `w3/monitor/relink_v2_independent_review.json` 并由协调会话记入 manifest scope_rulings。
+5. **四组目标分卷下载中**：ADN-610 / NSFS-401 / SAME-090 / nsfs-301 的剩余卷由用户下载；监听 cron automation-9e7ab719（每 30 分钟）运行 `watch_download_dir.py` 并在四组全部解压成功时于汇报标记「四组目标已齐」。届时跑重链 v3（新版本路径）。用户已放弃并删除：`test_volume.7z.001`、`test_video.7z.003`（协调会话执行）。
+6. **W4 desktop_export_sync 的 before/after 评分运行**：协调会话 executor 进行中（`w4/mutation_scores/cosmic-ray/desktop_export_sync.json` 目前仍缺失，产出后更新 `w4-mutation-scores.md` 合计行为 14 模块口径）。注意并行会话协作：integration 的合并与 handoff 更新存在多个写者（本会话 + 并行会话），各方更新均为增量、已核对互相兼容。
 
 ## 4. 冲刺后行动清单（用户侧，按序）
 
