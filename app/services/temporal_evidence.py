@@ -96,7 +96,9 @@ def _pair(previous: TemporalFrame, current: TemporalFrame, motion_compensation: 
     if motion_compensation:
         points = cv2.goodFeaturesToTrack(previous.gray, maxCorners=160, qualityLevel=0.01, minDistance=5, blockSize=5)
         if points is not None and len(points) >= 8:
-            next_points, status, _ = cv2.calcOpticalFlowPyrLK(previous.gray, current.gray, points, None)
+            # OpenCV accepts prevPts=None (initialises tracking from scratch);
+            # the bundled stubs do not model the optional parameter.
+            next_points, status, _ = cv2.calcOpticalFlowPyrLK(previous.gray, current.gray, points, None)  # type: ignore[call-overload]
             if next_points is not None and status is not None:
                 good = status.ravel().astype(bool)
                 if int(good.sum()) >= 6:
@@ -104,7 +106,7 @@ def _pair(previous: TemporalFrame, current: TemporalFrame, motion_compensation: 
                     if transform is not None and inliers is not None:
                         inlier_ratio = float(np.mean(inliers.ravel().astype(bool)))
     if transform is None:
-        transform = np.float32([[1, 0, 0], [0, 1, 0]])
+        transform = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)
     warped = cv2.warpAffine(previous.gray, transform, (current.gray.shape[1], current.gray.shape[0]), borderMode=cv2.BORDER_REFLECT)
     residual_map = cv2.absdiff(warped, current.gray)
     return TemporalPairEvidence(
@@ -257,8 +259,8 @@ class TemporalEvidenceCache:
             raise TemporalMediaError("OpenCV could not decode requested source video samples")
         pairs: list[TemporalPairEvidence] = []
         for previous, current in zip(frames, frames[1:]):
-            key = (identity, config.fps, config.width, config.motion_compensation, current.sample_index)
-            if key not in self._pairs:
-                self._pairs[key] = _pair(previous, current, config.motion_compensation)
-            pairs.append(self._pairs[key])
+            pair_key = (identity, config.fps, config.width, config.motion_compensation, current.sample_index)
+            if pair_key not in self._pairs:
+                self._pairs[pair_key] = _pair(previous, current, config.motion_compensation)
+            pairs.append(self._pairs[pair_key])
         return TemporalEvidence(start_s, end_s, config.fps, config.width, frames, tuple(pairs))

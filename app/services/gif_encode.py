@@ -11,6 +11,8 @@ config value would let a snapshot inject arbitrary filters.
 
 from __future__ import annotations
 
+from typing import Any
+
 # FFmpeg's own defaults.  When a fragment matches them entirely we emit the
 # bare filter name so default configs keep producing the exact command
 # arrays this pipeline has always produced.  These are the single source of
@@ -78,16 +80,16 @@ def is_divisible_gif_fps(fps: object) -> bool:
     return _GIF_DELAY_BASE % fps == 0
 
 
-def nearest_divisible_gif_fps(fps: object) -> list[int]:
+def nearest_divisible_gif_fps(fps: Any) -> list[int]:
     """Return the divisible frame rates bracketing *fps*.
 
     An already-divisible rate returns just itself, so callers can compare
     the result against ``[fps]`` to decide whether to warn.
     """
     if is_divisible_gif_fps(fps):
-        return [int(fps)]  # type: ignore[arg-type]
+        return [int(fps)]
     try:
-        target = float(fps)  # type: ignore[arg-type]
+        target = float(fps)
     except (TypeError, ValueError):
         return list(_DIVISIBLE_FPS)
     lower = [c for c in _DIVISIBLE_FPS if c < target]

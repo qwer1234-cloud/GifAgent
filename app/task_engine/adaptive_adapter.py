@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any, Callable
 
 from app.task_engine.artifacts import make_artifact_id, STAGE_ARTIFACT_KINDS
 from app.task_engine.fingerprints import sha256_file
@@ -55,7 +56,7 @@ def run_adaptive_stage(
     video_id: str = "",
     stage_id: str = "",
     clip_id: str | None = None,
-    _runner=None,
+    _runner: Callable[..., Any] | None = None,
 ) -> StageResult:
     """Invoke test_video_adaptive.py in stage mode and return a StageResult.
 
@@ -128,7 +129,7 @@ def run_adaptive_stage(
     # task_engine.__init__ -> adaptive_adapter -> ... -> provenance).
     from app.services.provenance import current_provenance, provenance_to_json
 
-    config: dict = {}
+    config: dict[str, Any] = {}
     if config_snapshot.exists():
         with open(config_snapshot, "r", encoding="utf-8") as f:
             config = json.load(f)
@@ -253,7 +254,7 @@ class AdaptivePipelineAdapter:
                 envelope = context.config.get("_materialize_envelope") or {}
                 if not envelope:
                     # Fallback: build a minimal envelope from inputs.
-                    input_data: dict[str, list[dict]] = {}
+                    input_data: dict[str, list[dict[str, Any]]] = {}
                     for input_kind, refs in context.inputs.items():
                         input_data[input_kind] = [
                             {
@@ -276,7 +277,7 @@ class AdaptivePipelineAdapter:
                 with open(input_manifest_path, "w", encoding="utf-8") as f:
                     json.dump(envelope, f, ensure_ascii=False, indent=2)
             else:
-                input_data: dict[str, list[dict]] = {}
+                input_data = {}
                 for input_kind, refs in context.inputs.items():
                     input_data[input_kind] = [
                         {

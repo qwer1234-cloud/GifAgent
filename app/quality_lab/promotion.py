@@ -50,18 +50,19 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _get_current_config_data() -> dict | None:
+def _get_current_config_data() -> dict[str, Any] | None:
     """Read and return ``current_config.json`` data, or ``None``."""
     if not os.path.exists(CURRENT_CONFIG_PATH):
         return None
     try:
         with open(CURRENT_CONFIG_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            data: dict[str, Any] = json.load(f)
+            return data
     except (json.JSONDecodeError, OSError):
         return None
 
 
-def _atomic_write(path: str, data: dict) -> None:
+def _atomic_write(path: str, data: dict[str, Any]) -> None:
     """Write *data* as JSON to *path* via a temp file + atomic replace."""
     tmp_path = path + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:

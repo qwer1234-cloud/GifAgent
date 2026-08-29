@@ -11,12 +11,17 @@ The router catches connection errors per-source so that a single locked
 database never causes the entire inbox to fail.
 """
 
+from __future__ import annotations
+
 import hashlib
 import json as _json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Literal
+from typing import TYPE_CHECKING, Any, List, Literal
+
+if TYPE_CHECKING:
+    from app.task_engine.repository import TaskRepository
 
 AttentionKind = Literal[
     "task_failure",
@@ -62,7 +67,7 @@ def _stable_id(kind: AttentionKind, key: str) -> str:
     )
 
 
-def _sort_key(item: AttentionItem):
+def _sort_key(item: AttentionItem) -> tuple[int, float]:
     """Sort key: severity ascending (error first), then created_at descending."""
     sev = _SEVERITY_ORDER.get(item.severity, 99)
     try:
@@ -75,15 +80,16 @@ def _sort_key(item: AttentionItem):
     return (sev, -ts)
 
 
-def _readable_error(raw):
+def _readable_error(raw: str | None) -> str:
     """Return a human-readable error snippet from a JSON error blob."""
     if not raw:
         return "No error details recorded."
     raw = raw.strip()
     if raw.startswith("{"):
         try:
-            parsed = _json.loads(raw)
-            return parsed.get("message", parsed.get("error", raw[:200]))
+            parsed: dict[str, Any] = _json.loads(raw)
+            message: str = parsed.get("message", parsed.get("error", raw[:200]))
+            return message
         except _json.JSONDecodeError:
             pass
     return raw[:200]
@@ -94,7 +100,7 @@ def _readable_error(raw):
 # --------------------------------------------------------------------------
 
 
-def _task_failures(task_repo, limit: int) -> List[AttentionItem]:
+def _task_failures(task_repo: TaskRepository, limit: int) -> List[AttentionItem]:
     """Collect job-level and stage-level task failures."""
     items: List[AttentionItem] = []
     conn = task_repo.conn
@@ -307,9 +313,9 @@ def _champion_promotions(quality_conn: sqlite3.Connection, limit: int) -> List[A
 
 def list_attention_items(
     *,
-    task_repo=None,
-    library_conn=None,
-    quality_conn=None,
+    task_repo: TaskRepository | None = None,
+    library_conn: sqlite3.Connection | None = None,
+    quality_conn: sqlite3.Connection | None = None,
     limit: int = 100,
 ) -> List[AttentionItem]:
     """Collect attention items from all available data sources.

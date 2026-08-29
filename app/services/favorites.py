@@ -19,7 +19,7 @@ class FavoriteService:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
 
-    def favorite(self, candidate_id: str, full_path: str) -> dict[str, str]:
+    def favorite(self, candidate_id: str, full_path: str) -> dict[str, str | bool]:
         now = datetime.now(timezone.utc).isoformat()
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO favorite_gifs

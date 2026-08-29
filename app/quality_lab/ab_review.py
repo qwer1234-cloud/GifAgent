@@ -13,6 +13,7 @@ import secrets
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from app.quality_lab.models import ABResult, ABSession, BlindPair, Choice
 
@@ -47,7 +48,7 @@ class BlindReviewService:
             missing = [r for r in (run_a, run_b) if r not in found]
             raise ValueError(f"Run(s) not found: {missing}")
 
-        run_map: dict[str, dict] = {r["run_id"]: dict(r) for r in rows}
+        run_map: dict[str, dict[str, Any]] = {r["run_id"]: dict(r) for r in rows}
 
         if run_map[run_a]["manifest_id"] != run_map[run_b]["manifest_id"]:
             raise ValueError("Runs must belong to the same manifest")

@@ -1,6 +1,6 @@
 """Pydantic models for validated VLM/LLM structured outputs."""
 from pydantic import BaseModel, Field
-from typing import Literal, Optional
+from typing import Literal, Optional, get_args
 
 EMOTIONS = Literal[
     "tension", "melancholy", "awe", "joy", "sadness", "catharsis",
@@ -8,7 +8,7 @@ EMOTIONS = Literal[
     "intimacy", "vulnerability", "longing", "desire", "other",
 ]
 
-VALID_EMOTIONS: set[str] = set(EMOTIONS.__args__)
+VALID_EMOTIONS: set[str] = set(get_args(EMOTIONS))
 
 
 class FrameAnalysis(BaseModel):

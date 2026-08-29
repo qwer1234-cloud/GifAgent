@@ -8,7 +8,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from PIL import Image
 import imagehash
@@ -44,7 +44,7 @@ def extract_keyframes(video_path: str, duration: float, out_dir: str) -> list[st
     return paths
 
 
-def compute_fingerprint(video_path: str) -> Optional[dict]:
+def compute_fingerprint(video_path: str) -> Optional[dict[str, Any]]:
     """Compute video fingerprint: {duration, phashes: [hex strings]}.
 
     Returns None if ffprobe/ffmpeg fails (e.g., corrupt video).
@@ -81,7 +81,7 @@ def hamming_distance(a: str, b: str) -> int:
         return 64
 
 
-def is_duplicate(fp_a: dict, fp_b: dict, duration_tolerance: float = 2.0) -> bool:
+def is_duplicate(fp_a: dict[str, Any], fp_b: dict[str, Any], duration_tolerance: float = 2.0) -> bool:
     """Check if two fingerprints are near-duplicates.
 
     Matches if durations are within tolerance AND all keyframe pHashes
@@ -101,13 +101,14 @@ def is_duplicate(fp_a: dict, fp_b: dict, duration_tolerance: float = 2.0) -> boo
     return max_dist <= DEDUP_HAMMING_THRESHOLD
 
 
-def find_duplicate_in_checkpoint(fingerprint: dict, checkpoint: dict) -> Optional[str]:
+def find_duplicate_in_checkpoint(fingerprint: dict[str, Any], checkpoint: dict[str, Any]) -> Optional[str]:
     """Check if fingerprint matches any already-processed video in checkpoint.
 
     Returns the matching video name, or None if no duplicate found.
     """
-    for video_name, info in checkpoint.get("completed", {}).items():
-        existing_fp = info.get("fingerprint")
+    completed: dict[str, Any] = checkpoint.get("completed", {})
+    for video_name, info in completed.items():
+        existing_fp: dict[str, Any] | None = info.get("fingerprint")
         if existing_fp and is_duplicate(fingerprint, existing_fp):
             return video_name
     return None

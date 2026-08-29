@@ -4,7 +4,7 @@ import hashlib
 import json
 import random
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from app.quality_lab.models import BenchmarkItem, BenchmarkManifest, Split
 from app.task_engine.fingerprints import canonical_json
@@ -165,7 +165,7 @@ def _manifest_dict(
     *,
     version: int,
     manifest_id: str,
-) -> dict:
+) -> dict[str, Any]:
     return {
         "manifest_id": manifest_id,
         "version": version,
@@ -173,7 +173,7 @@ def _manifest_dict(
     }
 
 
-def _compute_content_id(version: int, items: list[dict]) -> str:
+def _compute_content_id(version: int, items: list[dict[str, Any]]) -> str:
     """SHA-256 of the manifest content *without* the manifest_id field."""
     payload = {"version": version, "items": items}
     return hashlib.sha256(
@@ -181,7 +181,7 @@ def _compute_content_id(version: int, items: list[dict]) -> str:
     ).hexdigest()
 
 
-def _items_to_dicts(items: tuple[BenchmarkItem, ...]) -> list[dict]:
+def _items_to_dicts(items: tuple[BenchmarkItem, ...]) -> list[dict[str, Any]]:
     """Serialise items to the dict form used in the manifest JSON."""
     return [
         {

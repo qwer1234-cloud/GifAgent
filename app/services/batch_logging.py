@@ -3,7 +3,7 @@
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 
 def format_gif_export_line(
@@ -68,7 +68,7 @@ def run_gif_export_attempt(
     gif_command: Sequence[str],
     palette_path: str | Path,
     output_path: str | Path,
-    runner: Callable = subprocess.run,
+    runner: Callable[..., Any] = subprocess.run,
     timeout: float = 60,
 ) -> GifExportAttemptResult:
     """Run one GIF attempt and accept only a newly-created nonempty target."""

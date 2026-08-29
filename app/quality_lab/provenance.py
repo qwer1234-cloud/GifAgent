@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Any
 
 from app.quality_lab.models import ExperimentConfig
 from app.services.provenance import Provenance, provenance_to_json
@@ -9,7 +10,7 @@ from app.task_engine.fingerprints import canonical_hash, canonical_json
 
 
 def snapshot_experiment_config(
-    config: dict,
+    config: dict[str, Any],
     provenance: Provenance,
 ) -> ExperimentConfig:
     """Create an immutable snapshot of an experiment configuration.
@@ -33,7 +34,7 @@ def snapshot_experiment_config(
 def provenance_for_candidate(
     conn: sqlite3.Connection,
     candidate_id: str,
-) -> dict:
+) -> dict[str, Any]:
     """Resolve the full provenance trail for a materialised candidate GIF.
 
     The function traces from ``candidate_gifs`` through the task-engine
@@ -76,7 +77,7 @@ def provenance_for_candidate(
     source_run_id = candidate["source_run_id"]
 
     # 1. Parse stored provenance (present for post-migration candidates).
-    stored: dict | None = None
+    stored: dict[str, Any] | None = None
     pj = candidate.get("provenance_json")
     if pj:
         try:
@@ -101,8 +102,8 @@ def provenance_for_candidate(
     task_video = dict(video) if video else None
 
     # 4. Resolve stages and artifacts for that video.
-    task_stages: list[dict] = []
-    task_artifacts: list[dict] = []
+    task_stages: list[dict[str, Any]] = []
+    task_artifacts: list[dict[str, Any]] = []
     if video:
         vid = video["video_id"]
         for s in conn.execute(

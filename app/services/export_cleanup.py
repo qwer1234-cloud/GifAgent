@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import TracebackType
 
 
 def _process_is_alive(pid: int) -> bool:
@@ -99,7 +100,12 @@ class ExportDirectoryLock:
     def __enter__(self) -> "ExportDirectoryLock":
         return self.acquire()
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.release()
 
 

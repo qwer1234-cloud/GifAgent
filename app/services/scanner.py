@@ -2,9 +2,10 @@ import hashlib
 import os
 import re
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Optional, List
 
 from PIL import Image
 import imagehash
@@ -72,7 +73,7 @@ def is_phash_duplicate(phash: str) -> bool:
     return False
 
 
-def scan_directory(root_dir: str) -> List[dict]:
+def scan_directory(root_dir: str) -> List[dict[str, Any]]:
     results = []
     for dirpath, _, filenames in os.walk(root_dir):
         for fname in filenames:
@@ -140,11 +141,14 @@ def register_media(file_path: str) -> Optional[str]:
     return media_id
 
 
-def scan_and_register(root_dir: str, progress_callback=None) -> dict:
+def scan_and_register(
+    root_dir: str,
+    progress_callback: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
     files = scan_directory(root_dir)
     stats = {"scanned": len(files), "registered": 0, "skipped_sha256": 0, "skipped_phash": 0, "skipped_ext": 0}
 
-    sha256_seen: set = set()
+    sha256_seen: set[str] = set()
     for i, f in enumerate(files):
         file_path = f["file_path"]
         sha256 = compute_sha256(file_path)

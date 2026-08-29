@@ -98,7 +98,8 @@ def apply_calibrated_worthiness(
     if calibrator is None or not isinstance(payload, dict):
         return payload
     try:
-        raw = float(payload.get("gif_worthiness"))
+        raw_score: Any = payload.get("gif_worthiness")
+        raw = float(raw_score)
     except (TypeError, ValueError):
         return payload
     if not math.isfinite(raw):

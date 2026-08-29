@@ -13,7 +13,7 @@ balancing three strategies:
 from __future__ import annotations
 
 import random
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -175,7 +175,7 @@ def _take_until(
     n: int,
     selected_ids: set[str],
     reason: ReviewReason,
-    score_fn,
+    score_fn: Callable[[ReviewCandidate], float],
     already_have: int = 0,
 ) -> list[ReviewQueueItem]:
     """Take the first *n* (minus *already_have*) candidates not yet selected.

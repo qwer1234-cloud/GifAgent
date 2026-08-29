@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 JobStatus = Literal[
     "pending", "leased", "running", "succeeded",
@@ -81,5 +81,5 @@ class StageError:
 class TaskEvent:
     event_id: int
     kind: str
-    payload: dict
+    payload: dict[str, Any]
     created_at: str = ""

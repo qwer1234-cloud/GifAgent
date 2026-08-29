@@ -16,6 +16,8 @@ import math
 import statistics
 import threading
 import time
+from types import TracebackType
+from typing import Any
 
 
 class _Span:
@@ -36,7 +38,12 @@ class _Span:
         self._started = time.perf_counter()
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> bool:
+    def __exit__(  # type: ignore[exit-return]
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
         elapsed_ms = (time.perf_counter() - self._started) * 1000.0
         self._timings.record(self._name, elapsed_ms)
         # Never swallow the body's exception; a failed ffmpeg call still
@@ -68,7 +75,7 @@ class StageTimings:
         with self._lock:
             self._samples[name].append(value)
 
-    def observe_vlm(self, eval_count: object, total_ms: float) -> None:
+    def observe_vlm(self, eval_count: Any, total_ms: float) -> None:
         """Record one VLM call's latency and its generated token count.
 
         ``eval_count`` comes straight from the Ollama response body and is
@@ -78,7 +85,7 @@ class StageTimings:
         self.record("vlm", total_ms)
         tokens = 0
         try:
-            tokens = int(eval_count)  # type: ignore[arg-type]
+            tokens = int(eval_count)
         except (TypeError, ValueError):
             tokens = 0
         if tokens < 0:
@@ -87,7 +94,7 @@ class StageTimings:
             self._vlm_output_tokens += tokens
             self._vlm_observations += 1
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable, key-ordered summary.
 
         Metrics without samples are omitted entirely so manifests never
@@ -109,7 +116,7 @@ class StageTimings:
             p50[name] = round(statistics.median(values), 3)
             counts[name] = len(values)
 
-        payload: dict = {}
+        payload: dict[str, Any] = {}
         if counts:
             payload["counts"] = counts
             payload["p50_ms"] = p50

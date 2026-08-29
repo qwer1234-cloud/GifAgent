@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -140,7 +140,7 @@ class SyncEntry:
     reason: str = ""
     conflicted: bool = False
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "source": self.source,
             "destination": self.destination,
@@ -165,7 +165,7 @@ class DesktopSyncReport:
             section.setdefault("conflicts", [])
             section.setdefault("errors", [])
 
-    def add(self, section: dict, kind: str, entry: SyncEntry) -> None:
+    def add(self, section: dict[str, list[SyncEntry]], kind: str, entry: SyncEntry) -> None:
         section.setdefault(kind, []).append(entry)
 
     @property
@@ -176,7 +176,7 @@ class DesktopSyncReport:
     def pbf_summary(self) -> dict[str, int]:
         return {kind: len(items) for kind, items in self.pbfs.items()}
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -252,7 +252,7 @@ def _needs_copy(source: str | Path, destination: str | Path) -> bool:
 
 def _copy_single_file(
     report: DesktopSyncReport,
-    section: dict,
+    section: dict[str, list[SyncEntry]],
     src: Path,
     dest_dir: Path,
 ) -> None:
@@ -294,7 +294,7 @@ def _copy_single_file(
 
 def _sync_files_preflight(
     report: DesktopSyncReport,
-    section: dict,
+    section: dict[str, list[SyncEntry]],
     sources: list[Path],
     dest_dir: Path,
 ) -> None:

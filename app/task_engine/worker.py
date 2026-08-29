@@ -6,7 +6,10 @@ import sqlite3
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Any, Sequence
+
+if TYPE_CHECKING:
+    import threading
 
 from app.task_engine.fingerprints import sha256_file
 from app.task_engine.models import (
@@ -14,6 +17,7 @@ from app.task_engine.models import (
     RetryPolicy,
     StageError,
     StageName,
+    StageRecord,
 )
 from app.task_engine.repository import TaskRepository
 from app.task_engine.stages import StageAdapter, StageContext, StageResult
@@ -264,7 +268,11 @@ class TaskWorker:
                 break
         return count
 
-    def run_forever(self, poll_seconds: float = 1.0, stop_event=None) -> int:
+    def run_forever(
+        self,
+        poll_seconds: float = 1.0,
+        stop_event: threading.Event | None = None,
+    ) -> int:
         """Run ``run_once`` in a loop, sleeping when idle.
 
         When *stop_event* (a ``threading.Event``) is set the method
@@ -312,7 +320,7 @@ class TaskWorker:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _check_cancelled(self, stage, now: datetime) -> bool:
+    def _check_cancelled(self, stage: StageRecord, now: datetime) -> bool:
         """Return ``True`` if the job has a pending cancellation command."""
         video_row = self._repo.conn.execute(
             "SELECT job_id FROM task_videos WHERE video_id=?",
@@ -341,7 +349,7 @@ class TaskWorker:
             return True
         return False
 
-    def _build_context(self, stage) -> StageContext:
+    def _build_context(self, stage: StageRecord) -> StageContext:
         """Resolve a ``StageContext`` from the stage record and job config.
 
         Uses the Artifact resolver to look up the stage's exact inputs
@@ -434,7 +442,7 @@ class TaskWorker:
             inputs=inputs,
         )
 
-    def _try_recover(self, stage, context) -> bool:
+    def _try_recover(self, stage: StageRecord, context: StageContext) -> bool:
         """Try to recover artifacts left by a crashed previous run.
 
         Returns ``True`` if valid artifacts were found and the stage was
@@ -529,7 +537,9 @@ class TaskWorker:
             return False
         return True
 
-    def _save_result(self, work_dir: Path, result: StageResult, stage) -> None:
+    def _save_result(
+        self, work_dir: Path, result: StageResult, stage: StageRecord
+    ) -> None:
         """Persist a ``StageResult`` to the work directory for crash recovery.
 
         P0-1 (fifth-review §3): the outcome (and the derived attention
@@ -575,16 +585,16 @@ class TaskWorker:
         with open(result_file, "w") as f:
             json.dump(data, f)
 
-    def _attention_message(self, stage, result: StageResult) -> str:
+    def _attention_message(self, stage: StageRecord, result: StageResult) -> str:
         """Derive a human-readable attention message from the stage result."""
-        fc = 0
+        fc: Any = 0
         if result.metrics:
             fc = result.metrics.get("failed_count", 0)
         return f"{stage.stage_name} completed with {fc} publish failure(s)"
 
     def _commit_stage_result(
         self,
-        stage,
+        stage: StageRecord,
         output_key: str,
         artifacts: tuple[ArtifactRef, ...],
         outcome: str,
@@ -709,7 +719,7 @@ class TaskWorker:
             handled += 1
         return handled
 
-    def _run_stage(self, stage, now: datetime) -> bool:
+    def _run_stage(self, stage: StageRecord, now: datetime) -> bool:
         """Execute one stage: cancel check → adapter lookup → run → persist."""
         # 2. Check for a pending cancellation command for this job.
         if self._check_cancelled(stage, now):
@@ -761,7 +771,7 @@ class TaskWorker:
                 lease_sec = self._lease_seconds
                 heartbeat_sec = self._heartbeat_seconds
 
-                def _heartbeat_loop():
+                def _heartbeat_loop() -> None:
                     import time
                     own_conn = sqlite3.connect(db_path, timeout=30)
                     own_conn.execute("PRAGMA busy_timeout=30000")
@@ -856,7 +866,7 @@ class TaskWorker:
 
         return True
 
-    def _after_stage(self, stage, result) -> None:
+    def _after_stage(self, stage: StageRecord, result: StageResult | None) -> None:
         """Post-stage actions after a stage completes.
 
         Currently a no-op: fan-out from rank_dedup to gif_clip stages is
@@ -865,7 +875,7 @@ class TaskWorker:
         """
         pass
 
-    def _try_advance_job(self, stage) -> None:
+    def _try_advance_job(self, stage: StageRecord) -> None:
         """After a stage completes, advance its job (create next stages)."""
         from app.task_engine.orchestrator import advance_job
 

@@ -43,7 +43,7 @@ SequenceGenerator = Callable[[bytes, str], str]
 class ActionMaterialization:
     clips: tuple[dict[str, Any], ...]
     transition_metrics: dict[str, int]
-    action_metrics: dict[str, int | float | dict[str, int]]
+    action_metrics: dict[str, Any]
 
 
 _TRANSITION_KEYS = (
@@ -120,8 +120,8 @@ def _transition_metrics(result: TransitionGuardResult) -> dict[str, int]:
     return metrics
 
 
-def _empty_action_metrics() -> dict[str, int | float | dict[str, int]]:
-    metrics: dict[str, int | float | dict[str, int]] = {
+def _empty_action_metrics() -> dict[str, Any]:
+    metrics: dict[str, Any] = {
         key: 0 for key in _ACTION_COUNTER_KEYS
     }
     metrics.update(
@@ -340,7 +340,7 @@ def _resolve_vlm_selection(
 
 
 def _update_shape_metrics(
-    metrics: dict[str, int | float | dict[str, int]],
+    metrics: dict[str, Any],
     result: ActionBoundaryResult,
     original_start_s: float,
     original_end_s: float,
@@ -601,8 +601,8 @@ def materialize_action_candidates(
             tuple(candidates), transition_metrics, action_metrics
         )
 
-    candidates: list[dict[str, Any]] = []
-    fallback_reasons: Counter[str] = Counter()
+    candidates = []
+    fallback_reasons = Counter()
     vlm_attempted_globally = False
     worthiness = _finite(clip.get("gif_worthiness"), 0.0)
     safe_segments = _safe_segments(guard_result, scan_start_s, scan_end_s)

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from typing import Any
 
 from app.task_engine.fingerprints import canonical_hash
 
 
-def deep_merge(base: dict, override: dict) -> dict:
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge *override* into *base*.
 
     - Nested dicts are merged recursively.
@@ -34,7 +35,7 @@ def deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def compute_business_config_hash(config: dict) -> str:
+def compute_business_config_hash(config: dict[str, Any]) -> str:
     """Canonical ``config_hash`` over the business config.
 
     Excludes runtime metadata: keys starting with ``_`` (e.g.
@@ -53,11 +54,11 @@ def compute_business_config_hash(config: dict) -> str:
 
 def build_task_config(
     *,
-    base_config: dict,
-    experiment_overrides: dict,
+    base_config: dict[str, Any],
+    experiment_overrides: dict[str, Any],
     video_paths: list[str],
-    experiment_metadata: dict,
-) -> dict:
+    experiment_metadata: dict[str, Any],
+) -> dict[str, Any]:
     """Build the final frozen task config for a Quality Lab experiment item.
 
     1. Deep-merge experiment overrides into the base config.
@@ -87,7 +88,7 @@ def build_task_config(
 # ---------------------------------------------------------------------------
 
 
-def normalize_task_config(raw_config: dict) -> dict:
+def normalize_task_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     """Normalize a task config to the unified top-level business format.
 
     Handles both new-format (top-level business config) and historical

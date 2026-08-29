@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
 import cv2
 import numpy as np
@@ -40,7 +40,7 @@ class TransitionGuardConfig:
     def from_mapping(cls, values: Mapping[str, object] | None) -> "TransitionGuardConfig":
         values = values or {}
 
-        def value(name: str, default: object) -> object:
+        def value(name: str, default: object) -> Any:
             return values.get(f"transition_{name}", values.get(name, default))
 
         def boolean(name: str, default: bool) -> bool:
@@ -142,7 +142,7 @@ class TransitionGuardResult:
         }
 
 
-def _finite_or_none(value: object) -> float | None:
+def _finite_or_none(value: Any) -> float | None:
     """Prevent malformed caller timestamps from leaking NaN/Infinity to JSON."""
     try:
         parsed = float(value)

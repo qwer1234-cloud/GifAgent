@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 
 def canonical_json(obj: object) -> str:
@@ -29,7 +30,7 @@ def fingerprint_video(path: str | Path, block_bytes: int = 1_048_576) -> str:
 def build_stage_input_key(
     *,
     video_fingerprint: str,
-    config: dict,
+    config: dict[str, Any],
     models: dict[str, str],
     stage_name: str,
     stage_version: str,

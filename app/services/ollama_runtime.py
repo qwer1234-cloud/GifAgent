@@ -82,7 +82,7 @@ class EmbeddingRuntimeConfig:
 @dataclass
 class RuntimeState:
     base_url: str
-    keeper: Optional[subprocess.Popen] = None
+    keeper: Optional[subprocess.Popen[bytes]] = None
     source: str = "auto"
 
 
@@ -175,7 +175,7 @@ class OllamaRuntimeManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._state: Optional[RuntimeState] = None
-        self._keeper: Optional[subprocess.Popen] = None
+        self._keeper: Optional[subprocess.Popen[bytes]] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -340,7 +340,7 @@ class OllamaRuntimeManager:
 
     def _start_keeper_if_needed(
         self, config: EmbeddingRuntimeConfig
-    ) -> subprocess.Popen:
+    ) -> subprocess.Popen[bytes]:
         keeper = self._keeper
         if keeper is not None and keeper.poll() is None:
             return keeper
@@ -395,7 +395,7 @@ class OllamaRuntimeManager:
         config: EmbeddingRuntimeConfig,
         base_url: str,
         *,
-        keeper: Optional[subprocess.Popen],
+        keeper: Optional[subprocess.Popen[bytes]],
         source: str = "auto",
     ) -> RuntimeState:
         state = self._cached(base_url=base_url, source=source)

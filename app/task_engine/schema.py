@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import datetime, timezone
+from typing import Any
 from pathlib import Path
 
 DEFAULT_DB_PATH = "data/task_state.db"
@@ -107,7 +108,7 @@ def apply_task_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _detect_schema_state(conn: sqlite3.Connection) -> dict:
+def _detect_schema_state(conn: sqlite3.Connection) -> dict[str, Any]:
     """Detect actual schema state from PRAGMA info.
 
     Returns a dict describing which columns, indexes, and constraints

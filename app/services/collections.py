@@ -53,7 +53,7 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _query_to_dict(query: SearchQuery) -> dict:
+def _query_to_dict(query: SearchQuery) -> dict[str, Any]:
     """Convert a SearchQuery to a plain dict for JSON serialization."""
     return {
         "text": query.text,
@@ -67,7 +67,7 @@ def _query_to_dict(query: SearchQuery) -> dict:
     }
 
 
-def _dict_to_query(data: dict) -> SearchQuery:
+def _dict_to_query(data: dict[str, Any]) -> SearchQuery:
     """Reconstruct a SearchQuery from a plain dict."""
     return SearchQuery(
         text=data.get("text", ""),
@@ -105,7 +105,7 @@ def _compute_manifest_hash(candidate_ids: Tuple[str, ...]) -> str:
     return hashlib.sha256(json.dumps(sorted_ids).encode()).hexdigest()
 
 
-def _write_pbf(path: Path, candidates: List[dict]) -> None:
+def _write_pbf(path: Path, candidates: List[dict[str, Any]]) -> None:
     """Write a PBF binary file with candidate data and source timestamps.
 
     Format (little-endian)::
@@ -328,13 +328,13 @@ class CollectionService:
         candidate_ids: Tuple[str, ...] = tuple(
             json.loads(row["candidate_ids_json"])
         )
-        scores: dict = json.loads(row["scores_json"])
+        scores: dict[str, Any] = json.loads(row["scores_json"])
         name = row["name"]
         version = row["version"]
 
         # Check which candidates still exist
         missing: List[str] = []
-        existing: List[dict] = []
+        existing: List[dict[str, Any]] = []
 
         for cid in candidate_ids:
             c_row = self.conn.execute(
@@ -360,7 +360,7 @@ class CollectionService:
                 )
 
         # Build manifest
-        manifest: dict = {
+        manifest: dict[str, Any] = {
             "collection_id": collection_id,
             "name": name,
             "version": version,

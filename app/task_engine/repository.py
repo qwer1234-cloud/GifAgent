@@ -5,7 +5,7 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Sequence
+from typing import Any, Sequence, cast
 
 from app.task_engine.models import (
     ArtifactRef,
@@ -170,7 +170,7 @@ class TaskRepository:
             raise
         return JobRecord(job_id=job_id, directory=command.directory, status="pending")
 
-    def append_command(self, job_id: str, kind: str, payload: dict) -> str:
+    def append_command(self, job_id: str, kind: str, payload: dict[str, Any]) -> str:
         command_id = uuid.uuid4().hex
         try:
             self._conn.execute(
@@ -620,7 +620,7 @@ class TaskRepository:
         return _stage_record(row) if row is not None else None
 
     def _lease_check(self, stage_id: str, worker_id: str) -> sqlite3.Row:
-        row = self._conn.execute(
+        row: sqlite3.Row | None = self._conn.execute(
             "SELECT * FROM task_stages WHERE stage_id=?", (stage_id,)
         ).fetchone()
         if row is None:
@@ -631,9 +631,10 @@ class TaskRepository:
             )
         return row
 
-    def _append_event(self, kind: str, payload: dict) -> int:
+    def _append_event(self, kind: str, payload: dict[str, Any]) -> int:
         cursor = self._conn.execute(
             "INSERT INTO task_events (kind, payload_json, created_at) VALUES (?,?,?)",
             (kind, json.dumps(payload), _iso(_utcnow())),
         )
-        return cursor.lastrowid
+        # An INSERT always produces a rowid; typeshed types it as int | None.
+        return cast(int, cursor.lastrowid)

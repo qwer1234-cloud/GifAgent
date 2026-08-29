@@ -82,7 +82,7 @@ def snap_window(
 
 
 def guard_result_from_cut_times(
-    timestamps: Iterable[object] | None,
+    timestamps: Iterable[Any] | None,
 ) -> TransitionGuardResult | None:
     """Rebuild a cut-only guard result from timestamps stored on a clip."""
     if not timestamps:

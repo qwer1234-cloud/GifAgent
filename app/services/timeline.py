@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -83,12 +83,13 @@ class TimelineWindow:
 # ---------------------------------------------------------------------------
 
 
-def _parse_score_json(score_json: str | None) -> dict:
+def _parse_score_json(score_json: str | None) -> dict[str, Any]:
     """Safely parse the ``score_json`` column from ``video_clips``."""
     if not score_json:
         return {}
     try:
-        return json.loads(score_json)
+        parsed: dict[str, Any] = json.loads(score_json)
+        return parsed
     except (json.JSONDecodeError, TypeError):
         return {}
 
@@ -292,7 +293,7 @@ def potplayer_target(video_path: str, start_sec: float) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _scene_label(row: sqlite3.Row, score: dict) -> str:
+def _scene_label(row: sqlite3.Row, score: dict[str, Any]) -> str:
     """Build a label for a scene span."""
     status = row["status"] or "candidate"
     label = f"Scene {status}"

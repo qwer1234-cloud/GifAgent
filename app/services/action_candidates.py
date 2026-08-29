@@ -24,7 +24,8 @@ def _frames_in_segment(
 
 def _finite_worthiness(frame: dict[str, Any]) -> float | None:
     try:
-        score = float(frame.get("gif_worthiness"))
+        worthiness_value: Any = frame.get("gif_worthiness")
+        score = float(worthiness_value)
     except (TypeError, ValueError):
         return None
     return score if math.isfinite(score) else None
