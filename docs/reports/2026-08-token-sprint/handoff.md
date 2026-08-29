@@ -37,8 +37,8 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 
 ## 3. 明确的未完成项与状态（2026-08-29 终局更新）
 
-1. **重链 v3（最终版）已产出，独立复审中**：用户裁定下载视为完成、剩余缺卷放弃。v3 = `w3/relink_source_inventory_v3.json`（D:\data 21,787 文件 / 18,298 gif）+ `w3/w3-relink-proposals.v3.jsonl`（**25,109 条 dry-run 建议**：candidate 16,434 / favorites 1,350 / media_e_volume 7,325；ambiguous 2,099 未自动选定；matched_exists=0）。.ready 已发布（producer=coordinator-relink-v3），独立复审 reviewer 进行中，通过后收账入 manifest。
-2. **重链 v2 复审独立性违规**：v2 由 w3-relink-executor 自产自审（producer==reviewer）。补救性独立复审与 v3 复审并行进行中；两份 `relink_v*_independent_review.json` 将一并记入 manifest。
+1. **重链 v3（最终版）已产出，独立复审中**：用户裁定下载视为完成、剩余缺卷放弃。v3 = `w3/relink_source_inventory_v3.json`（D:\data 21,787 文件 / 18,298 gif）+ `w3/w3-relink-proposals.v3.jsonl`（**25,109 条 dry-run 建议**：candidate 16,434 / favorites 1,350 / media_e_volume 7,325；ambiguous 2,099 未自动选定；matched_exists=0）。.ready 已发布（producer=coordinator-relink-v3），独立复审 reviewer 进行中（seed=20260829 抽 20 条 + 全 25,109 行穷举核验协议，同 v2 复审），通过后收账入 manifest。
+2. **重链 v2 复审独立性违规——已补救**：v2 由 w3-relink-executor 自产自审（producer==reviewer）。补救性独立复审已完成，**verdict=pass**（SHA 复核 ×2、78 tests、seed=20260829 抽 20 条 20/20 PASS、全 16,722 行穷举五项全 0、反向抽核与全局交集 0、dry-run 零变异、v1/v2 格式一致）。记录：`w3/monitor/relink_v2_independent_review.json`（sha256 `ad771f1b…`），已记入 manifest **rev18** scope_ruling `w3_relink_v2_independent_review`。
 3. **W4 desktop_export_sync 评分**：两次委派均因「Model request failed」中断后已第三次重派，运行中；杀伤测试（`9df660da`）与 harness 补丁（`dee14b7d`）已合入，只差评分产出 → `w4/mutation_scores/cosmic-ray/desktop_export_sync.json` → 报告合计行（14 模块）。
 4. **W8 / W6 / approved_enrichment_manifest / 合回 master**：冻结，均需用户决策。
 5. **监听自动化已删除**（等卷已无意义）。手动终态：media 21,185+，断链 basename 匹配 27,208/29,875（91.1%）；`deletion_plan.json` 留档（92.03 GB 已清理）。
@@ -46,7 +46,7 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 
 ## 4. 冲刺后行动清单（用户侧，按序）
 
-1. **执行重链**（写生产库——冲刺窗口已过才可做）：用 `w3/w3-relink-proposals.v2.jsonl`（包含 16,722 条建议）或下载完全结束后的刷新版本，先备份 `dist/GifAgentUI/data/library.db`，按 row_ref 逐条 UPDATE artifact_path/preview_path/full_path。
+1. **执行重链**（写生产库——冲刺窗口已过才可做）：用 **`w3/w3-relink-proposals.v3.jsonl`（最终版，25,109 条建议）**（v2 16,722 条为其子集，已被 v3 覆盖），先备份 `dist/GifAgentUI/data/library.db`，按 row_ref 逐条 UPDATE artifact_path/preview_path/full_path；ambiguous 2,099 条不自动应用，需人工裁定。
 2. **跑生产 VLM 富化管线**填充 12,833 行空文本（`candidate_gifs.vlm_summary_json/tags_json/scenario_keys_json/final_score` 全空是 T0 失败根因；filesystem-folder-import 只登记路径不跑 VLM）。
 3. **重新快照 + 重跑 T0**（`snapshot_library.py --sprint-root …`，三门不放宽），全库数据轨即可复活；Stage C 爬坡需 `p2/v2`（可选 facet 收紧为源文逐字映射，见 manifest rev15 scope_rulings）。
 4. **合并决策**：`sprint/integration`（302 tests 绿，app/ 零改动）合回 master 需用户确认后由协调会话执行；`-mimosa` 门禁的历史遗留 findings（46 高，多为误报：硬编码表名 f-string、内部 work_dir 写入、测试夹具）建议单独排期处理，勿混入冲刺提交。
@@ -63,7 +63,7 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 
 | 要做什么 | 看什么 |
 |---|---|
-| 了解全貌 | 本文档 + design v4.1 + manifest rev16 |
+| 了解全貌 | 本文档 + design v4.1 + manifest rev18 |
 | 查任何产物真伪 | `sprint_manifest.json` artifacts[k].artifact_sha256 → `sha256_file` 比对 → `receipts/processed/` 找 receipt |
 | 重跑监听 | `watch_download_dir.py --sprint-root … --watch-root D:/data --max-extract 10`（幂等：已解压自动跳过） |
 | 跑重链清点 | `relink_proposals.py`（无 --apply；新输出文件名 + 新 UUID） |
