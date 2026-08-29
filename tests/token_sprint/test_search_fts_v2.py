@@ -602,3 +602,107 @@ class TestMergeRules:
         conn.close()
         assert tags == "second"
 
+
+# ── env-gated v2 reader ──────────────────────────────────────────────────────
+
+
+def _seed_split_indexes(conn: sqlite3.Connection) -> None:
+    """v1 index knows 'sunset beach', v2 index knows 'kitchen morning'."""
+    _insert_candidate(conn, "v1-cand", summary="sunset beach walk")
+    _insert_candidate(
+        conn,
+        "v2-cand",
+        summary="kitchen morning",
+        fts_table="candidate_search_fts_v2",
+    )
+
+
+class TestEnvGate:
+    def test_env_on_reads_v2_index(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(ENV_FLAG, "1")
+        from app.services.library_search import LibrarySearchService
+        from app.services.workbench_schema import SearchQuery
+
+        conn = _conn()
+        _seed_split_indexes(conn)
+        service = LibrarySearchService(conn)
+
+        page = service.search(SearchQuery(text="kitchen"))
+        assert page.total == 1
+        assert [item.candidate_id for item in page.items] == ["v2-cand"]
+
+        # v1-only content is invisible through the v2 reader.
+        page_v1 = service.search(SearchQuery(text="sunset"))
+        assert page_v1.total == 0
+        assert page_v1.items == []
+
+    def test_env_off_reads_v1_index_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(ENV_FLAG, raising=False)
+        from app.services.library_search import LibrarySearchService
+        from app.services.workbench_schema import SearchQuery
+
+        conn = _conn()
+        _seed_split_indexes(conn)
+        service = LibrarySearchService(conn)
+
+        page = service.search(SearchQuery(text="sunset"))
+        assert page.total == 1
+        assert [item.candidate_id for item in page.items] == ["v1-cand"]
+
+        page_v2 = service.search(SearchQuery(text="kitchen"))
+        assert page_v2.total == 0
+        assert page_v2.items == []
+
+    @pytest.mark.parametrize("value", ["0", "true", "yes", ""])
+    def test_any_value_other_than_1_stays_v1(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        monkeypatch.setenv(ENV_FLAG, value)
+        from app.services.library_search import LibrarySearchService
+        from app.services.workbench_schema import SearchQuery
+
+        conn = _conn()
+        _seed_split_indexes(conn)
+        service = LibrarySearchService(conn)
+        page = service.search(SearchQuery(text="sunset"))
+        assert [item.candidate_id for item in page.items] == ["v1-cand"]
+
+    def test_env_on_with_missing_v2_table_reports_diagnosis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(ENV_FLAG, "1")
+        from app.services.library_search import LibrarySearchService
+        from app.services.workbench_schema import SearchQuery
+
+        conn = _conn()
+        _insert_candidate(conn, "v1-cand", summary="sunset beach walk")
+        service = LibrarySearchService(conn)
+        conn.execute("DROP TABLE candidate_search_fts_v2")
+        conn.commit()
+
+        page = service.search(SearchQuery(text="sunset"))
+        assert page.total == 0
+        assert page.degraded is True
+        assert page.diagnosis is not None
+        assert "FTS v2 missing" in page.diagnosis
+
+    def test_env_off_with_missing_v2_table_behaves_as_before(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(ENV_FLAG, raising=False)
+        from app.services.library_search import LibrarySearchService
+        from app.services.workbench_schema import SearchQuery
+
+        conn = _conn()
+        _insert_candidate(conn, "v1-cand", summary="sunset beach walk")
+        service = LibrarySearchService(conn)
+        conn.execute("DROP TABLE candidate_search_fts_v2")
+        conn.commit()
+
+        page = service.search(SearchQuery(text="sunset"))
+        assert page.total == 1
+        assert [item.candidate_id for item in page.items] == ["v1-cand"]
+        assert "FTS v2 missing" not in (page.diagnosis or "")
+
