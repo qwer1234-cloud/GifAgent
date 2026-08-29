@@ -37,7 +37,7 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 
 ## 3. 明确的未完成项与状态（2026-08-29 终局更新）
 
-1. **重链 v3（最终版）已产出，独立复审中**：用户裁定下载视为完成、剩余缺卷放弃。v3 = `w3/relink_source_inventory_v3.json`（D:\data 21,787 文件 / 18,298 gif）+ `w3/w3-relink-proposals.v3.jsonl`（**25,109 条 dry-run 建议**：candidate 16,434 / favorites 1,350 / media_e_volume 7,325；ambiguous 2,099 未自动选定；matched_exists=0）。.ready 已发布（producer=coordinator-relink-v3），独立复审 reviewer 进行中（seed=20260829 抽 20 条 + 全 25,109 行穷举核验协议，同 v2 复审），通过后收账入 manifest。
+1. **重链 v3（最终版）已产出并验收完毕**：用户裁定下载视为完成、剩余缺卷放弃。v3 = `w3/relink_source_inventory_v3.json`（D:\data 21,787 文件 / 18,298 gif）+ `w3/w3-relink-proposals.v3.jsonl`（**25,109 条 dry-run 建议**：candidate 16,434 / favorites 1,350 / media_e_volume 7,325；ambiguous 2,099 未自动选定；matched_exists=0）。.ready 已发布（producer=coordinator-relink-v3）；独立复审 **PASS（8/8）**：SHA ×2、214 tests、seed=20260829 抽 20 条 20/20、全 25,109 行穷举五项全 0、好路径全局交集 0、dry-run 零变异 + 临时副本重跑逐字段 0 差异、v1/v2/v3 格式一致。记录 `w3/monitor/relink_v3_independent_review.json`（sha256 `c5f98ecf…`）；两个 v3 产物已入 manifest **rev19**（29 artifacts，acceptance=independent_review）。**v3 为最终执行清单，v1/v2 作废。**
 2. **重链 v2 复审独立性违规——已补救**：v2 由 w3-relink-executor 自产自审（producer==reviewer）。补救性独立复审已完成，**verdict=pass**（SHA 复核 ×2、78 tests、seed=20260829 抽 20 条 20/20 PASS、全 16,722 行穷举五项全 0、反向抽核与全局交集 0、dry-run 零变异、v1/v2 格式一致）。记录：`w3/monitor/relink_v2_independent_review.json`（sha256 `ad771f1b…`），已记入 manifest **rev18** scope_ruling `w3_relink_v2_independent_review`。
 3. **W4 desktop_export_sync 评分**：两次委派均因「Model request failed」中断后已第三次重派，运行中；杀伤测试（`9df660da`）与 harness 补丁（`dee14b7d`）已合入，只差评分产出 → `w4/mutation_scores/cosmic-ray/desktop_export_sync.json` → 报告合计行（14 模块）。
 4. **W8 / W6 / approved_enrichment_manifest / 合回 master**：冻结，均需用户决策。
@@ -63,7 +63,7 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 
 | 要做什么 | 看什么 |
 |---|---|
-| 了解全貌 | 本文档 + design v4.1 + manifest rev18 |
+| 了解全貌 | 本文档 + design v4.1 + manifest rev19 |
 | 查任何产物真伪 | `sprint_manifest.json` artifacts[k].artifact_sha256 → `sha256_file` 比对 → `receipts/processed/` 找 receipt |
 | 重跑监听 | `watch_download_dir.py --sprint-root … --watch-root D:/data --max-extract 10`（幂等：已解压自动跳过） |
 | 跑重链清点 | `relink_proposals.py`（无 --apply；新输出文件名 + 新 UUID） |
