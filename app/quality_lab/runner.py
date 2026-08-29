@@ -11,7 +11,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 
@@ -45,7 +45,7 @@ class TaskClient(Protocol):
         """
         ...
 
-    def get_job(self, job_id: str) -> dict:
+    def get_job(self, job_id: str) -> dict[str, Any]:
         """Return the job description dict.
 
         Expected keys: ``status``, ``directory``, ``config_json``, and
@@ -91,7 +91,7 @@ class HttpTaskClient:
         Handles 409 (active job conflict) by returning the existing job ID
         from the error response so the caller can reuse it.
         """
-        payload: dict = {
+        payload: dict[str, Any] = {
             "directory": directory,
             "limit": limit,
             "extensions": extensions,
@@ -114,12 +114,13 @@ class HttpTaskClient:
 
         if resp.status_code == 201:
             data = resp.json()
-            return data["job_id"]
+            job_id: str = data["job_id"]
+            return job_id
 
         if resp.status_code == 409:
             detail = resp.json().get("detail", {})
             if isinstance(detail, dict):
-                existing_id = detail.get("existing_job_id")
+                existing_id: str | None = detail.get("existing_job_id")
                 if existing_id:
                     return existing_id
 
@@ -130,7 +131,7 @@ class HttpTaskClient:
 
     # -- get_job -----------------------------------------------------------
 
-    def get_job(self, job_id: str) -> dict:
+    def get_job(self, job_id: str) -> dict[str, Any]:
         """GET /api/tasks/jobs/{job_id} and return the job dict."""
         try:
             resp = self._http.get(
