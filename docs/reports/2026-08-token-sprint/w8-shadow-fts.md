@@ -89,9 +89,28 @@ uv run python scripts/token_sprint/build_fts_v2.py \
 
 ## 5. 产物
 
-- 阴影索引库：`data/token_sprint/w8/fts_v2_work/library.shadow.db`（`.ready` 由 `protocol.write_ready` 发布，producer=`w8-executor`）
+- 阴影索引库：`data/token_sprint/w8/fts_v2_work/library.shadow.db`
+  - artifact SHA-256：`5e574416f7d8661d06f9a6428b845f3674f3f7e43651795a63362e6910d458ab`
+  - `.ready`：`data/token_sprint/w8/fts_v2_work/library.shadow.db.ready`
+    （`protocol.write_ready` 发布，producer=`w8-executor`，SHA-256 `5022d377de7f36a1f49430e70a9f4f92d500a8eb5a11f4b2ff6d87cc9ff7585b`）
 - 报告：`docs/reports/2026-08-token-sprint/w8-shadow-fts.md`
 
 ## 6. 全量 pytest 门（合入 integration 前）
 
-（Task 5 执行后回填）
+命令：`cd .worktrees/sprint-w8-shadow-fts && uv run pytest -q tests/ --no-header`
+
+- 结果原文：**3 failed, 1808 passed, 2 skipped, 23 warnings in 222.08s (0:03:42)**
+- 3 个失败全部位于 `tests/test_preference_preflight.py`（`scripts/preference_memory.collect_status`），与 FTS/搜索无关；**在未改动的 sprint_base（a6c9fb0a）干净 worktree 上复跑同样 3 failed, 1 passed**，确认为预存的环境依赖失败（生产库正被富化进程写入的共享环境影响），非本 W 引入。
+- 本 W 新增 `tests/token_sprint/test_search_fts_v2.py`：31 passed；`tests/test_library_search.py` / `tests/test_library_search_api.py` 缺省关全绿。
+
+## 7. 分支与提交
+
+`sprint/w8-shadow-fts`（自 `sprint_base` a6c9fb0a）：
+
+1. `2993ab16` feat: additive FTS v2 content table and virtual index schema
+2. `3c2b1edb` feat: build FTS v2 from approved immutable JSONL shards only
+3. `677e7a07` feat: opt-in GIFAGENT_SEARCH_FTS_V2 reader for shadow index
+4. `2040b13f` docs: W8 shadow FTS snapshot drill evidence
+5. （本条）docs: W8 full pytest gate numbers and artifact hashes
+
+红线遵守：未打开任何 GIF/JPG/视频字节；未写生产库与快照原件；未改 `pyproject.toml`/`uv.lock`；全部 `git add` 显式路径；无新增 GLM/智谱端点代码。
