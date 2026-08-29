@@ -35,3 +35,21 @@ norecursedirs = ["scripts", "dist", ".venv", "data"]
 markers = [
     "slow: mark test as slow (production E2E, ffmpeg/subprocess). Use -m slow to include; production gate must run --no-header.",
 ]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = [
+  "app/quality_lab",
+  "app/task_engine",
+  "app/services",
+]
+exclude = [
+  '^app/services/preference_',
+  '^app/services/candidate_vectors[.]py$',
+  '^app/services/reranker[.]py$',
+  '^app/services/embedding[.]py$',
+  '^app/services/library_search[.]py$',
+  '^app/services/workbench_schema[.]py$',
+  '^app/task_engine/artifacts',
+]
