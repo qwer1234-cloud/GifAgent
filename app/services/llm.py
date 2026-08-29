@@ -3,7 +3,7 @@ import json
 import uuid
 import time
 from datetime import datetime, timezone
-from typing import List
+from typing import Any, List
 
 from app.db import get_connection
 from app.services.json_guard import parse_json_response
@@ -13,7 +13,7 @@ from app.services.quality import validate_media_annotation
 LLM_MODEL = llm_model_name()
 
 
-def _parse_response(text: str) -> dict:
+def _parse_response(text: str) -> dict[str, Any]:
     """Thin wrapper around json_guard for backward compat."""
     result = parse_json_response(text)
     if result.ok and result.data:
@@ -21,7 +21,7 @@ def _parse_response(text: str) -> dict:
     return {"_parse_error": True, "_raw": text[:500]}
 
 
-def build_synthesis_prompt(film_name: str, frame_analyses: List[dict]) -> str:
+def build_synthesis_prompt(film_name: str, frame_analyses: List[dict[str, Any]]) -> str:
     analyses_text = "\n\n".join(
         f"Frame {i+1}:\n"
         f"Caption: {fa.get('caption', '')}\n"
@@ -47,7 +47,7 @@ def build_synthesis_prompt(film_name: str, frame_analyses: List[dict]) -> str:
     )
 
 
-def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
+def synthesize_media_annotation(media_id: str, vlm_results: List[dict[str, Any]]) -> dict[str, Any]:
     """Take VLM frame analyses and synthesize a cohesive media-level annotation using the LLM model."""
     conn = get_connection()
     media = conn.execute("SELECT film FROM media WHERE media_id=?", (media_id,)).fetchone()
@@ -57,7 +57,7 @@ def synthesize_media_annotation(media_id: str, vlm_results: List[dict]) -> dict:
     film_name = media["film"] or "Unknown"
 
     # Extract frame annotations from vlm_results
-    frame_analyses: List[dict] = []
+    frame_analyses: List[dict[str, Any]] = []
     for r in vlm_results:
         ann = r.get("annotation", {})
         frame_analyses.append(ann)

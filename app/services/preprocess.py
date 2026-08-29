@@ -1,8 +1,9 @@
 import os
 import subprocess
 import uuid
+from collections.abc import Callable
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PIL import Image
 
@@ -10,7 +11,7 @@ from app.db import get_connection
 from app.config import get
 
 
-def extract_gif_frames(media_id: str) -> list[dict]:
+def extract_gif_frames(media_id: str) -> list[dict[str, Any]]:
     """Extract keyframes from a GIF and save to data/frames/. Returns list of frame info dicts."""
     conn = get_connection()
     row = conn.execute("SELECT file_path, duration, frame_count FROM media WHERE media_id=?", (media_id,)).fetchone()
@@ -84,7 +85,7 @@ def generate_thumbnail(media_id: str) -> Optional[str]:
     return None
 
 
-def preprocess_all(progress_callback=None) -> dict:
+def preprocess_all(progress_callback: Callable[..., Any] | None = None) -> dict[str, Any]:
     """Extract frames for all unprocessed GIFs. Returns stats."""
     conn = get_connection()
     rows = conn.execute(
@@ -111,4 +112,5 @@ def preprocess_all(progress_callback=None) -> dict:
 def get_pending_frame_count() -> int:
     conn = get_connection()
     cur = conn.execute("SELECT COUNT(*) as cnt FROM frames WHERE vlm_status='pending'")
-    return cur.fetchone()["cnt"]
+    count: int = cur.fetchone()["cnt"]
+    return count

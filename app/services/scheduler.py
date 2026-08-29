@@ -12,14 +12,14 @@ from app.services.llm_client import is_local_llm, wait_for_llm
 class ModelScheduler:
     """Manages ollama model lifecycle for VLM <-> text model swaps."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.vlm_model = get("vlm.model", "llava:13b")
         self.llm_model = get("llm.model")
         self.base_url = get("vlm.base_url", "http://127.0.0.1:11434")
         self.switch_wait = get("scheduler.model_switch_wait", 10)
         self.max_retries = get("scheduler.max_retries", 3)
 
-    def _run_ollama(self, cmd: List[str]) -> (int, str, str):
+    def _run_ollama(self, cmd: List[str]) -> tuple[int, str, str]:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         return result.returncode, result.stdout, result.stderr
 

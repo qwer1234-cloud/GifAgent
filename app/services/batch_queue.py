@@ -7,10 +7,12 @@ import os
 import tempfile
 import time
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from types import TracebackType
+from typing import Any, BinaryIO
 
 
 DEFAULT_QUEUE_FILE = Path("data/batch_queue.json")
@@ -26,7 +28,7 @@ class BatchQueueFormatError(ValueError):
 class DuplicateQueueJobError(ValueError):
     """Raised when an active job already owns the requested directory."""
 
-    def __init__(self, directory: str, existing_job: dict):
+    def __init__(self, directory: str, existing_job: dict[str, Any]):
         self.directory = directory
         self.existing_job = dict(existing_job)
         job_id = self.existing_job.get("job_id", "unknown")
@@ -43,7 +45,7 @@ class InterProcessFileLock:
     def __init__(self, path: str | Path, *, timeout: float = 5.0):
         self.path = Path(path)
         self.timeout = timeout
-        self._stream = None
+        self._stream: BinaryIO | None = None
 
     def _try_lock(self) -> None:
         assert self._stream is not None
@@ -55,7 +57,9 @@ class InterProcessFileLock:
         else:
             import fcntl
 
-            fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # typeshed ships fcntl for POSIX platforms only; this branch is
+            # runtime-guarded by os.name on non-Windows systems.
+            fcntl.flock(self._stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
 
     def acquire(self, *, blocking: bool = True) -> "InterProcessFileLock":
         if self._stream is not None:
@@ -74,12 +78,13 @@ class InterProcessFileLock:
                 return self
             except (BlockingIOError, OSError):
                 if not blocking or time.monotonic() >= deadline:
+                    assert self._stream is not None
                     self._stream.close()
                     self._stream = None
                     raise WorkerLeaseBusyError(f"Lock is already held: {self.path}")
                 time.sleep(0.01)
 
-    def write_metadata(self, payload: dict) -> None:
+    def write_metadata(self, payload: dict[str, Any]) -> None:
         if self._stream is None:
             raise RuntimeError("Cannot write metadata before acquiring the lock")
         encoded = (json.dumps(payload, ensure_ascii=True) + "\n").encode("ascii")
@@ -102,7 +107,9 @@ class InterProcessFileLock:
             else:
                 import fcntl
 
-                fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)
+                # typeshed ships fcntl for POSIX platforms only; this branch
+                # is runtime-guarded by os.name on non-Windows systems.
+                fcntl.flock(self._stream.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
         finally:
             self._stream.close()
             self._stream = None
@@ -110,7 +117,12 @@ class InterProcessFileLock:
     def __enter__(self) -> "InterProcessFileLock":
         return self.acquire()
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.release()
 
 
@@ -140,7 +152,12 @@ class WorkerLease:
     def __enter__(self) -> "WorkerLease":
         return self.acquire()
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         self.release()
 
 
@@ -150,7 +167,7 @@ def _lock_path(path: str | Path, purpose: str) -> Path:
 
 
 @contextmanager
-def queue_state_lock(path: str | Path = DEFAULT_STATE_FILE):
+def queue_state_lock(path: str | Path = DEFAULT_STATE_FILE) -> Iterator[None]:
     """Serialize queue-state read/modify/write transactions across GUI processes."""
     lock = InterProcessFileLock(_lock_path(path, "state"))
     lock.acquire()
@@ -164,7 +181,7 @@ def queue_state_lock(path: str | Path = DEFAULT_STATE_FILE):
 def queue_state_transaction(
     queue_path: str | Path = DEFAULT_QUEUE_FILE,
     state_path: str | Path = DEFAULT_STATE_FILE,
-):
+) -> Iterator[None]:
     """Atomically coordinate queue append and worker state transitions.
 
     Every caller acquires the queue lock before the state lock.  The final
@@ -194,7 +211,7 @@ def _read_json(path: str | Path) -> Any:
         raise BatchQueueFormatError(f"Invalid queue file: {path}") from exc
 
 
-def _atomic_write(payload: dict, path: str | Path) -> None:
+def _atomic_write(payload: dict[str, Any], path: str | Path) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
@@ -222,7 +239,7 @@ def canonical_directory(directory: str | Path) -> str:
     return os.path.normcase(os.path.realpath(os.path.abspath(value)))
 
 
-def queue_job_directory_key(job: dict) -> str:
+def queue_job_directory_key(job: dict[str, Any]) -> str:
     """Read a new or legacy queue job's canonical directory identity."""
     stored_key = job.get("directory_key")
     if stored_key:
@@ -230,16 +247,20 @@ def queue_job_directory_key(job: dict) -> str:
     return canonical_directory(job.get("directory", ""))
 
 
-def _queue_job_status(job: dict, state: dict) -> str:
-    return state.get("jobs", {}).get(job.get("job_id"), {}).get("status", "pending")
+def _queue_job_status(job: dict[str, Any], state: dict[str, Any]) -> str:
+    status: str = state.get("jobs", {}).get(job.get("job_id"), {}).get("status", "pending")
+    return status
 
 
-def deduplicate_queue_jobs(queue: dict, state: dict | None = None) -> tuple[dict, list[dict]]:
+def deduplicate_queue_jobs(
+    queue: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Remove duplicate active jobs while retaining terminal history entries."""
     state = state or {"jobs": {}}
     seen_active: set[str] = set()
-    kept: list[dict] = []
-    removed: list[dict] = []
+    kept: list[dict[str, Any]] = []
+    removed: list[dict[str, Any]] = []
     for job in queue.get("jobs", []):
         key = queue_job_directory_key(job)
         status = _queue_job_status(job, state)
@@ -258,7 +279,7 @@ def deduplicate_queue_file(
     path: str | Path = DEFAULT_QUEUE_FILE,
     *,
     state_path: str | Path | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Persist removal of duplicate active jobs and return removed jobs."""
     queue_path = Path(path)
     transaction_state_path = (
@@ -280,7 +301,7 @@ def deduplicate_queue_file(
     return removed
 
 
-def load_queue(path: str | Path = DEFAULT_QUEUE_FILE) -> dict:
+def load_queue(path: str | Path = DEFAULT_QUEUE_FILE) -> dict[str, Any]:
     payload = _read_json(path)
     if payload is None:
         return {"jobs": [], "updated_at": None}
@@ -289,7 +310,7 @@ def load_queue(path: str | Path = DEFAULT_QUEUE_FILE) -> dict:
     return {"jobs": payload["jobs"], "updated_at": payload.get("updated_at")}
 
 
-def save_queue(queue: dict, path: str | Path = DEFAULT_QUEUE_FILE) -> None:
+def save_queue(queue: dict[str, Any], path: str | Path = DEFAULT_QUEUE_FILE) -> None:
     if not isinstance(queue, dict) or not isinstance(queue.get("jobs"), list):
         raise BatchQueueFormatError("Queue must contain a list of jobs")
     payload = dict(queue)
@@ -304,7 +325,7 @@ def append_queue_job(
     path: str | Path = DEFAULT_QUEUE_FILE,
     *,
     state_path: str | Path | None = None,
-) -> dict:
+) -> dict[str, Any]:
     queue_path = Path(path)
     transaction_state_path = Path(state_path) if state_path is not None else queue_state_path_for_queue(queue_path)
     with queue_state_transaction(queue_path, transaction_state_path):
@@ -338,7 +359,7 @@ def append_queue_job(
     return job
 
 
-def load_queue_state(path: str | Path = DEFAULT_STATE_FILE) -> dict:
+def load_queue_state(path: str | Path = DEFAULT_STATE_FILE) -> dict[str, Any]:
     payload = _read_json(path)
     if payload is None:
         return {"status": "idle", "current_job_id": None, "jobs": {}}
@@ -354,7 +375,7 @@ def load_queue_state(path: str | Path = DEFAULT_STATE_FILE) -> dict:
     return state
 
 
-def save_queue_state(state: dict, path: str | Path = DEFAULT_STATE_FILE) -> None:
+def save_queue_state(state: dict[str, Any], path: str | Path = DEFAULT_STATE_FILE) -> None:
     if not isinstance(state, dict) or not isinstance(state.get("jobs"), dict):
         raise BatchQueueFormatError("Queue state must contain a jobs mapping")
     payload = dict(state)
@@ -364,7 +385,7 @@ def save_queue_state(state: dict, path: str | Path = DEFAULT_STATE_FILE) -> None
     _atomic_write(payload, path)
 
 
-def pending_jobs(queue: dict, state: dict) -> list[dict]:
+def pending_jobs(queue: dict[str, Any], state: dict[str, Any]) -> list[dict[str, Any]]:
     states = state.get("jobs", {})
     return [
         job
@@ -373,7 +394,12 @@ def pending_jobs(queue: dict, state: dict) -> list[dict]:
     ]
 
 
-def update_job_state(state: dict, job_id: str, status: str, **updates) -> dict:
+def update_job_state(
+    state: dict[str, Any],
+    job_id: str,
+    status: str,
+    **updates: Any,
+) -> dict[str, Any]:
     state.setdefault("jobs", {})
     job_state = dict(state["jobs"].get(job_id, {}))
     job_state.update(updates)
@@ -382,7 +408,7 @@ def update_job_state(state: dict, job_id: str, status: str, **updates) -> dict:
     return state
 
 
-def format_queue_status(queue: dict, state: dict) -> str:
+def format_queue_status(queue: dict[str, Any], state: dict[str, Any]) -> str:
     statuses = state.get("jobs", {})
     jobs = queue.get("jobs", [])
     lines = [

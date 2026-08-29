@@ -117,8 +117,10 @@ def _original_window_segment(
     ):
         return GuardSegment(float(start), float(end), "original_window")
     try:
-        clip_start = float(clip.get("start_ts"))
-        clip_end = float(clip.get("end_ts"))
+        start_value: Any = clip.get("start_ts")
+        end_value: Any = clip.get("end_ts")
+        clip_start = float(start_value)
+        clip_end = float(end_value)
     except (TypeError, ValueError):
         return None
     if (

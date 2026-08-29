@@ -5,11 +5,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, fields
 import math
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
 import numpy as np
 
-from app.services.temporal_evidence import TemporalEvidence, TemporalPairEvidence
+from app.services.temporal_evidence import (
+    TemporalEvidence,
+    TemporalFrame,
+    TemporalPairEvidence,
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,10 @@ class ActionMotionAnalysis:
 class _ImmutableDiagnostics(Mapping[str, float | int | str | None]):
     __slots__ = ("_values",)
 
+    # Annotation only: the value lives in __slots__ and is set via
+    # object.__setattr__ in __init__; this declaration adds no attribute.
+    _values: Mapping[str, float | int | str | None]
+
     def __init__(
         self, values: Mapping[str, float | int | str | None] | None = None
     ) -> None:
@@ -119,7 +127,7 @@ class _ImmutableDiagnostics(Mapping[str, float | int | str | None]):
     def __getitem__(self, key: str) -> float | int | str | None:
         return self._values[key]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self._values)
 
     def __len__(self) -> int:
@@ -699,7 +707,7 @@ def _split_at_stable_valleys(
     return split(start_s, end_s)
 
 
-def _frame_at(evidence: TemporalEvidence, timestamp_s: float):
+def _frame_at(evidence: TemporalEvidence, timestamp_s: float) -> TemporalFrame:
     return min(
         evidence.frames,
         key=lambda frame: (abs(frame.timestamp_s - timestamp_s), frame.timestamp_s),

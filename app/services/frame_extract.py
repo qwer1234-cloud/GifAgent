@@ -19,7 +19,7 @@ import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 
 @dataclass(frozen=True)
@@ -91,7 +91,7 @@ def _extract_one(
     width: int,
     jpeg_quality: int,
     timeout_s: float,
-    runner: Callable,
+    runner: Callable[..., Any],
     accurate_seek: bool = False,
 ) -> FrameExtractResult:
     out_path = os.path.abspath(
@@ -143,7 +143,7 @@ def extract_frames(
     jpeg_quality: int = 3,
     workers: int = 1,
     timeout_s: float = 15.0,
-    runner: Callable | None = None,
+    runner: Callable[..., Any] | None = None,
     accurate_seek: bool = False,
 ) -> list[FrameExtractResult]:
     """Extract one frame per timestamp, optionally with bounded concurrency.

@@ -4,6 +4,7 @@ import hashlib
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from app.task_engine.fingerprints import canonical_hash, canonical_json
 
@@ -20,7 +21,7 @@ class Provenance:
 
 
 def current_provenance(
-    config: dict,
+    config: dict[str, Any],
     stage_versions: dict[str, str],
     *,
     prompts: dict[str, str] | None = None,
@@ -56,7 +57,7 @@ def hash_prompt_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _extract_model_versions(config: dict) -> dict[str, str]:
+def _extract_model_versions(config: dict[str, Any]) -> dict[str, str]:
     """Extract model pins; assumes a two-level config (section -> key -> value)."""
     versions: dict[str, str] = {}
     for section, values in config.items():
@@ -69,7 +70,7 @@ def _extract_model_versions(config: dict) -> dict[str, str]:
 
 
 def _extract_prompt_hashes(
-    config: dict, prompts: dict[str, str] | None = None
+    config: dict[str, Any], prompts: dict[str, str] | None = None
 ) -> dict[str, str]:
     if prompts is None:
         prompts = config.get("prompts")

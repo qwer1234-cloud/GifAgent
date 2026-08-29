@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Mapping
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class ExportWindow:
     duration_s: float
 
 
-def _finite_number(value: object, default: float = 0.0) -> float:
+def _finite_number(value: Any, default: float = 0.0) -> float:
     try:
         parsed = float(value)
     except (TypeError, ValueError):

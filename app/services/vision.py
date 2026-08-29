@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 
@@ -33,7 +34,7 @@ IMPORTANT RULES:
 - caption and why_i_like_it MUST contain real descriptions, not the instruction text itself."""
 
 
-def _parse_response(text: str) -> dict:
+def _parse_response(text: str) -> dict[str, Any]:
     """Thin wrapper around json_guard for backward compat."""
     result = parse_json_response(text)
     if result.ok and result.data:
@@ -41,7 +42,7 @@ def _parse_response(text: str) -> dict:
     return {"_parse_error": True, "_raw": text[:500]}
 
 
-def analyze_frame(frame_id: str, image_path: str, media_id: str) -> dict:
+def analyze_frame(frame_id: str, image_path: str, media_id: str) -> dict[str, Any]:
     """Call the VLM model to analyze a single frame. Returns annotation dict."""
     with open(image_path, "rb") as f:
         image_bytes = f.read()

@@ -1,6 +1,8 @@
 """VLM/LLM output quality validation — placeholder detection and field checks."""
 from __future__ import annotations
 
+from typing import Any
+
 from app.services.export_ranking import normalize_vlm_unit_score
 from app.services.schemas import VALID_EMOTIONS, FrameAnalysis, MediaAnnotation
 
@@ -44,7 +46,7 @@ def normalize_emotional_core(raw: str | None) -> str:
     return "other"
 
 
-def validate_frame_analysis(payload: dict) -> tuple[dict | None, list[str]]:
+def validate_frame_analysis(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Validate a VLM frame analysis dict. Returns (cleaned_dict, error_list).
 
     If errors are found, the dict is still returned with corrections applied,
@@ -118,7 +120,7 @@ def validate_frame_analysis(payload: dict) -> tuple[dict | None, list[str]]:
     return cleaned, errors
 
 
-def validate_media_annotation(payload: dict) -> tuple[dict | None, list[str]]:
+def validate_media_annotation(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """Validate a media-level annotation dict."""
     errors: list[str] = []
 

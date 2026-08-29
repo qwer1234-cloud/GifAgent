@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import json, re
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass
 class JsonParseResult:
     ok: bool
-    data: dict | None
+    data: dict[str, Any] | None
     raw: str
     error: str | None
 

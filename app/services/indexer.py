@@ -36,10 +36,10 @@ def _atomic_write(path: str, data: str) -> None:
 class MediaIndex:
     """Cosine-similarity index over media text embeddings."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         os.makedirs(FAISS_DIR, exist_ok=True)
         manifest = self._load_manifest()
-        self._dim = manifest.get("dim", 768)
+        self._dim: int = manifest.get("dim", 768)
 
         if os.path.exists(INDEX_FILE):
             # Auto-upgrade legacy indexes without manifest
@@ -63,10 +63,11 @@ class MediaIndex:
         else:
             self.index = faiss.IndexFlatIP(self._dim)
 
-    def _load_manifest(self) -> dict:
+    def _load_manifest(self) -> dict[str, Any]:
         if os.path.exists(MANIFEST_FILE):
             with open(MANIFEST_FILE, encoding="utf-8") as f:
-                return json.load(f)
+                data: dict[str, Any] = json.load(f)
+                return data
         return {}
 
     def _save_manifest(self) -> None:
