@@ -69,3 +69,10 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 | 重跑监听 | `watch_download_dir.py --sprint-root … --watch-root D:/data --max-extract 10`（幂等：已解压自动跳过） |
 | 跑重链清点 | `relink_proposals.py`（无 --apply；新输出文件名 + 新 UUID） |
 | 跑全量回归 | `uv run pytest -q tests/token_sprint/ tests/property/ tests/mutation/ tests/test_adaptive_config.py tests/test_pipeline_facade.py`（合并后基线：**474 passed**） |
+
+## 7. 冲刺后执行记录（2026-08-29，用户批准"同意执行"后）
+
+1. **合并 master 完成**：`sprint/integration`（97 commits，app/ 零改动）快进合入 master → `1a72c782`。
+2. **生产库重链已执行**：备份 `data/token_sprint/backups/library.pre-relink.20260829T182818.db`（sha256 `ca5e45eb…`，sqlite backup API + integrity ok）→ v3 全部 **25,109 条**按 row_ref + 旧值 WHERE 守卫单事务写回（media 7,325 / artifact 8,217 / preview 8,217 / favorites 1,350），**零漂移零缺行**。断链 **29,875 → 4,760**（全库 38,249 路径单元现存率 87.6%）。歧义 2,099 条从未入清单（在 inventory `ambiguous_unknown_detail` 留档待人工）。manifest **rev21** scope_ruling `post_sprint_relink_execution`。
+3. **生产 VLM 富化进行中**：新工具 `scripts/enrich_library_candidates.py`（WSL Ollama Qwen3-VL 8B Q8，注意 Windows 侧必须用 `localhost:11434`，`127.0.0.1` 不转发）。先导 3/3 成功（10.1s/行），全量 13,458 行 ETA ≈ 38h，断点续跑（checkpoint `data/token_sprint/enrichment_v1/checkpoint.jsonl`）。
+4. **重新快照 + 重跑 T0**：等富化完成后执行（空文本会 100% 触发拒绝门，富化前跑无意义）。
