@@ -20,7 +20,7 @@
 | taste_map | 83 | 63 | 0.759 | 70 | 0.843 | tests/test_creative_curation.py |
 | narrative_curation | 184 | 107 | 0.582 | 174 | 0.946 | tests/test_creative_curation.py |
 | collections | 253 | 141 | 0.557 | 222 | 0.877 | tests/test_collections.py |
-| desktop_export_sync | 703 | — | （首轮进行中） | — | — | tests/test_desktop_export_sync.py |
+| desktop_export_sync | 703 | 248 | 0.353 | 309 | 0.440 | tests/test_desktop_export_sync.py |
 | metrics | 302 | 286 | 0.947 | 295 | 0.977 | tests/quality_lab/test_metrics.py |
 | calibration | 290 | 236 | 0.814 | 274 | 0.945 | tests/quality_lab/test_calibration.py |
 | promotion | 161 | 113 | 0.702 | 129 | 0.801 | tests/quality_lab/test_promotion.py |
@@ -28,8 +28,8 @@
 | fingerprints | 59 | 12 | 0.203 | 34 | 0.576 | tests/test_adaptive_config.py |
 | vector_math | 361 | 215 | 0.596 | 260 | 0.720 | （无既有测试，杀伤测试即基线） |
 
-- 合计（13 个已完成 after 运行的模块，不含 desktop_export_sync）：mutants 2,845，before killed 1,872（0.658），after killed 2,362（0.830）。
-- after 存活突变全部按模块登记于 w4-surviving.md：主要为类型注解 union 突变（`from __future__ import annotations` 下不可执行）、keyword-only 标记、不可达守卫分支、以及「区分性输入必先触发原实现既有缺陷」的实践不可杀项（均已转为 W7 线索）。
+- 合计（14 个全量目标模块全部完成）：mutants 3,548，before killed 2,120（0.598），after killed 2,671（0.753）。总体突变杀伤率由 59.8% 提升至 **75.3%**（净杀死 551 个存活突变体）。
+- after 存活突变全部按模块登记于 w4-surviving.md：绝大部分为类型注解 union 突变（`from __future__ import annotations` 下不可执行，如 desktop_export_sync 单模块即有 297 个注解 union 突变）、keyword-only 标记、不可达守卫分支、以及「区分性输入必先触发原实现既有缺陷」的实践不可杀项（均已转为 W7 线索）。
 
 ## 方法与证据链
 
