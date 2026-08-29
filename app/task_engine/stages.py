@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from app.task_engine.models import ArtifactRef, StageName
 
@@ -57,7 +57,7 @@ class StageContext:
     clip_id: str | None
     input_key: str
     work_dir: Path
-    config: dict
+    config: dict[str, Any]
     stage_id: str = ""
     inputs: dict[str, tuple[ArtifactRef, ...]] | None = None
 

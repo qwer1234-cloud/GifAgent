@@ -42,6 +42,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from app.task_engine.fingerprints import canonical_hash, sha256_file
 from app.task_engine.repository import _ACTIVE_JOB_STATUSES, _directory_key
@@ -92,7 +93,7 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _load_json(path: Path) -> dict:
+def _load_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8-sig") as f:
         data = json.load(f)
     return data if isinstance(data, dict) else {}
@@ -112,7 +113,7 @@ def _first_extension(extensions: str) -> str:
     return DEFAULT_EXTENSION
 
 
-def _checkpoint_videos(checkpoint: dict) -> dict[str, PlannedVideo]:
+def _checkpoint_videos(checkpoint: dict[str, Any]) -> dict[str, PlannedVideo]:
     videos: dict[str, PlannedVideo] = {}
     for section in ("completed", "retryable"):
         entries = checkpoint.get(section) or {}
@@ -257,7 +258,7 @@ def _make_backups(sources: list[Path], backup_dir: Path) -> tuple[str, ...]:
     return tuple(backups)
 
 
-def _find_active_job_id(conn, directory_key: str) -> str | None:
+def _find_active_job_id(conn: sqlite3.Connection, directory_key: str) -> str | None:
     statuses = ",".join(f"'{s}'" for s in _ACTIVE_JOB_STATUSES)
     row = conn.execute(
         f"""SELECT job_id FROM task_jobs
@@ -268,14 +269,14 @@ def _find_active_job_id(conn, directory_key: str) -> str | None:
     return row["job_id"] if row is not None else None
 
 
-def _append_event(conn, kind: str, payload: dict) -> None:
+def _append_event(conn: sqlite3.Connection, kind: str, payload: dict[str, Any]) -> None:
     conn.execute(
         "INSERT INTO task_events (kind, payload_json, created_at) VALUES (?,?,?)",
         (kind, json.dumps(payload), _utcnow_iso()),
     )
 
 
-def _complete_stage(conn, stage_id: str, video_id: str, output_key: str) -> None:
+def _complete_stage(conn: sqlite3.Connection, stage_id: str, video_id: str, output_key: str) -> None:
     conn.execute(
         """UPDATE task_stages
            SET status='succeeded', output_key=?, lease_owner=NULL,
@@ -293,7 +294,7 @@ def _complete_stage(conn, stage_id: str, video_id: str, output_key: str) -> None
     })
 
 
-def _import_job(conn, job: PlannedJob) -> bool:
+def _import_job(conn: sqlite3.Connection, job: PlannedJob) -> bool:
     now = _utcnow_iso()
     job_id = _find_active_job_id(conn, _directory_key(job.directory))
     created = False
@@ -378,7 +379,7 @@ def _stored_report(report_json: str) -> ImportReport:
     )
 
 
-def _select_stored_report(conn, migration_id: str) -> ImportReport | None:
+def _select_stored_report(conn: sqlite3.Connection, migration_id: str) -> ImportReport | None:
     row = conn.execute(
         "SELECT report_json FROM task_migrations WHERE migration_id=?",
         (migration_id,),

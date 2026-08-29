@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from app.task_engine.fingerprints import fingerprint_video
 from app.task_engine.models import StageName
@@ -155,7 +156,7 @@ def advance_job(repo: TaskRepository, job_id: str) -> str:
     if job is None:
         raise ValueError(f"Job not found: {job_id}")
 
-    current_status = job["status"]
+    current_status: str = job["status"]
 
     # Check for cancellation command (always, even for terminal jobs).
     cancel = repo.conn.execute(
@@ -635,7 +636,7 @@ def _set_job_status(repo: TaskRepository, job_id: str, status: str) -> None:
         request_background_sync()
 
 
-def _write_event(repo: TaskRepository, kind: str, payload: dict) -> None:
+def _write_event(repo: TaskRepository, kind: str, payload: dict[str, Any]) -> None:
     _ensure_no_open_txn(repo)
     repo.conn.execute("INSERT INTO task_events (kind, payload_json, created_at) VALUES (?,?,?)", (kind, json.dumps(payload), _now_iso()))
     repo.conn.commit()
