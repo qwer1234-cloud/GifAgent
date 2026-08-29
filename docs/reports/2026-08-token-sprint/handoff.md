@@ -30,7 +30,7 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
    - 14/14 目标模块的杀伤测试全部就绪且全绿（`tests/mutation/` 41/41 passed）；
    - 修复了 `mutation_harness.py` 对模块 import 阶段崩溃突变的 `incompetent` 分类处理；
    - 14/14 模块已全部完成基准与杀伤后评分运行（产物 `data/token_sprint/w4/mutation_scores/cosmic-ray/*.json` 全部齐备）；
-   - 全量突变体 3,548 个，基线杀死 2,120 个（0.598），杀伤后杀死 2,671 个（**0.753**），净杀死 551 个存活突变体；
+   - 全量突变体 3,549 个，基线杀死 2,031 个（0.572），杀伤后杀死 2,572 个（**0.725**），净杀死 541 个存活突变体（合计行由协调会话按 14 份 canonical JSON 实算校正）；
    - 得分报告 `w4-mutation-scores.md` 与存活突变登记 `w4-surviving.md` 已全部更新并合并入 `sprint/integration`。
 6. **W2 评测 harness**：`eval_harness.py`（fully-judged NDCG 契约、disputed 排除、绝不读 base_rag_similarity——SQL spy 测试锁定）+ `synth_preference_stress.py`（7 门）；空 evalsets 优雅报告。
 7. **T0 探针 ×2**：第一轮（空快照）60/60 拒绝 → 正确失败，触发 fallback；第二轮（exports 语料，池 306）**三门全过**（拒绝 0%、schema 100%、高显式保真 100%）。
@@ -40,9 +40,10 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 ## 3. 明确的未完成项与状态（2026-08-29 终局更新）
 
 1. **重链 v3（最终版）已产出并验收完毕**：用户裁定下载视为完成、剩余缺卷放弃。v3 = `w3/relink_source_inventory_v3.json`（D:\data 21,787 文件 / 18,298 gif）+ `w3/w3-relink-proposals.v3.jsonl`（**25,109 条 dry-run 建议**：candidate 16,434 / favorites 1,350 / media_e_volume 7,325；ambiguous 2,099 未自动选定；matched_exists=0）。.ready 已发布（producer=coordinator-relink-v3）；独立复审 **PASS（8/8）**。**v3 为最终执行清单，v1/v2 作废。**
-2. **W4 全量 14 模块突变测试评分已 100% 完成**：全量 3,548 个突变体跑完，得分提升至 **0.753**，报告与测试套件均已合入 `sprint/integration`。
-3. **W8 / W6 / approved_enrichment_manifest / 合回 master**：全冻结，冲刺结束后由用户决定。
-4. **usage-log**：integration 分支；控制台余量始终未取得读数，红线核算未做。
+2. **W4 全量 14 模块突变测试评分已 100% 完成**：全量 3,549 个突变体，杀伤率 0.572 → **0.725**（净杀死 541），desktop_export_sync 亦完成（703 突变体，0.395→0.440，含 70 条负载伪影 timeout 记 survived 并登记 W7）；报告与测试套件均已合入 `sprint/integration`。
+3. **重链 v2 复审独立性违规——已补救**：v2 原为自产自审；补救性独立复审 **pass**（`w3/monitor/relink_v2_independent_review.json`，manifest rev18 scope_ruling）。
+4. **W8 / W6 / approved_enrichment_manifest / 合回 master**：全冻结，冲刺结束后由用户决定。
+5. **usage-log**：integration 分支；控制台余量始终未取得读数，红线核算未做。
 
 ## 4. 冲刺后行动清单（用户侧，按序）
 
