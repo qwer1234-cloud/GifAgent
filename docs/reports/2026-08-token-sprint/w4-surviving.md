@@ -16,11 +16,11 @@
 | taste_map | 83 | 70 | 13 | 0.843 | 等效 13（见下） |
 | narrative_curation | 184 | 174 | 10 | 0.946 | 等效/中性偏移 10 |
 | collections | 253 | 222 | 31 | 0.877 | 排序不变混合变体、best_idx 哨兵死代码、min_dist 缺省 |
-| desktop_export_sync | 703 | （首轮进行中） | — | — | — |
+| desktop_export_sync | 703 | 309 | 384 (10 incompetent) | 0.440 | 注解 union ×297、日志格式变体、守卫等效 |
 | metrics | 302 | 295 | 7 | 0.977 | 等效 7（见下） |
-| calibration | 290 | 复跑中 | — | — | 空桶分支已补杀；等效见下 |
+| calibration | 290 | 274 | 16 | 0.945 | 空桶分支已补杀；等效见下 |
 | promotion | 161 | 129 | 28 (4 incompetent) | 0.801 | 注解 ×22、sqlite TEXT 下 TypeError 网不可达 ×3 |
-| repository | 358 | 复跑中 | — | — | 注解 ×109、守卫变体 |
+| repository | 358 | 178 | 180 | 0.497 | 注解 ×109、守卫变体 |
 | fingerprints | 59 | 34 | 25 | 0.576 | 注解 ×22、chunk 大小无关 ×2、单块边界 `is` 变体 |
 | vector_math | 361 | 260 | 101 | 0.720 | 注解 ×44、kmeans 初始化不变场景、守卫等效 |
 
@@ -111,3 +111,10 @@
 - `ReplaceBreakWithContinue @ L118`：收敛后继续迭代为不动点；`ReplaceContinueWithBreak @ L115`：空簇守卫在测试场景不可达。
 - `ReplaceFalseWithTrue @ L36`（astype copy=True）：tobytes() 内容不变。
 - `USub_Invert/NR reshape(-2)` 族（L14/L22/L59）：负步长 reshape 参数对任意合法输入立即 ValueError——由既有正常路径测试杀死的对称项，仅剩极端输入组合（登记备查）。
+
+## desktop_export_sync（app/services/desktop_export_sync.py）
+- **类型注解 union（297 条）**：`ReplaceBinaryOperator_BitOr_*` 覆盖 27 处 `Path | None`、`dict[str, Any] | None`、`Callable[[], DesktopSyncReport] | None` 等，在 `from __future__ import annotations` 下为惰性字符串，运行时不求值，属经典等效突变。
+- **日志与文案格式变体（24 条）**：`NumberReplacer`/`ReplaceTrueWithFalse` 影响 `report.log_line()` 内字符串拼接与格式化常量，对业务数据无副作用。
+- **守卫与路径边界等效（53 条）**：`_is_inside` 与 `_relocate_favorite_source` 中非临界分支的等价替代。
+- **不适格突变（10 条 incompetent）**：`__name__ == "__main__"` 条件翻转导致模块 import-time 触发 `argparse` 退出，已由 harness 正确归类。
+
