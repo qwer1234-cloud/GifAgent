@@ -35,14 +35,14 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 8. **W1 Stage A/B**：306 条试验集 ×2 分片，P3（60 复用 + 246 新生成）→ P1b（tags 全落冻结词表，全量 306 行子集验证 out-of-vocab=0）→ P2（场景元数据）；`tag_vocab_v1.json` 冻结（565 词，协调会话人工保真审查通过，explicit 组 49 词零消毒）。
 9. **监听系统**：`watch_download_dir.py` 最新轮询 media 文件已达 13,523 个（.gif 达 10,974 个），断链 basename 匹配已达 **20,693 / 29,875（69.26%）**。
 
-## 3. 明确的未完成项与状态
+## 3. 明确的未完成项与状态（2026-08-29 终局更新）
 
-1. **W8 影子 FTS / W6 mypy / approved_enrichment_manifest**：全冻结。W8 的触发条件（试验集规模分片）未达——试验集仅 306 条；是否按试验集规模启用 W8 由用户决定。
-2. **下载完全结束后的最终重链刷新**：目前 `D:\data` 中仍有少量分卷压缩包下载中；待用户下载完全结束后，可随时再跑一次 `relink_proposals.py` 输出最终版映射。
-3. **usage-log**：`docs/reports/2026-08-token-sprint/usage-log.md`（integration 分支）记录了会话消耗。
-4. **重链 v2 复审独立性违规（已补救，待重试）**：v2 由 w3-relink-executor 会话自产并以 w3-relink-reviewer 名义自审（producer==reviewer），违反四方链独立性。协调会话派出的独立复审 agent 于 2026-08-29T03:5xZ 因「Model request failed」终止（疑似额度到墙）——**恢复后第一个重派的就是它**：抽检 20 条建议到快照+磁盘、反向核验、dry-run 零变异，结论写 `w3/monitor/relink_v2_independent_review.json` 并由协调会话记入 manifest。
-5. **四组目标分卷下载中**：ADN-610 / NSFS-401 / SAME-090 / nsfs-301 剩余卷下载中；监听 cron automation-9e7ab719 每 30 分钟自动解压重试（delete 已删的 test_volume/test_video 若再出现不必处理）。四组全齐解压后跑重链 v3（新版本路径）。下载监听终态（最后一次完整周期）：media 21,185+，**断链 basename 匹配 27,208/29,875（91.1%）**；图N ×7 已解压（5,340 文件），图5/图6 extract rc=2 待重试（疑似卷损坏或缺卷）。
-6. **W4 desktop_export_sync 的 before/after 评分运行**：协调会话 executor 于 2026-08-29T03:5xZ 因「Model request failed」终止（同上，疑似额度）。恢复后重派即可：杀伤测试已就绪（`9df660da`）+ harness 补丁（`dee14b7d`）已合入，只需跑评分 → 写 `w4/mutation_scores/cosmic-ray/desktop_export_sync.json` → 更新 `w4-mutation-scores.md`（14 模块合计）与 `w4-surviving.md`。注意并行会话协作：integration 的合并与 handoff 更新存在多个写者，各方更新均为增量、已核对互相兼容。
+1. **重链 v3（最终版）已产出，独立复审中**：用户裁定下载视为完成、剩余缺卷放弃。v3 = `w3/relink_source_inventory_v3.json`（D:\data 21,787 文件 / 18,298 gif）+ `w3/w3-relink-proposals.v3.jsonl`（**25,109 条 dry-run 建议**：candidate 16,434 / favorites 1,350 / media_e_volume 7,325；ambiguous 2,099 未自动选定；matched_exists=0）。.ready 已发布（producer=coordinator-relink-v3），独立复审 reviewer 进行中，通过后收账入 manifest。
+2. **重链 v2 复审独立性违规**：v2 由 w3-relink-executor 自产自审（producer==reviewer）。补救性独立复审与 v3 复审并行进行中；两份 `relink_v*_independent_review.json` 将一并记入 manifest。
+3. **W4 desktop_export_sync 评分**：两次委派均因「Model request failed」中断后已第三次重派，运行中；杀伤测试（`9df660da`）与 harness 补丁（`dee14b7d`）已合入，只差评分产出 → `w4/mutation_scores/cosmic-ray/desktop_export_sync.json` → 报告合计行（14 模块）。
+4. **W8 / W6 / approved_enrichment_manifest / 合回 master**：冻结，均需用户决策。
+5. **监听自动化已删除**（等卷已无意义）。手动终态：media 21,185+，断链 basename 匹配 27,208/29,875（91.1%）；`deletion_plan.json` 留档（92.03 GB 已清理）。
+6. **usage-log**：integration 分支；控制台余量始终未取得读数，红线核算未做。
 
 ## 4. 冲刺后行动清单（用户侧，按序）
 
