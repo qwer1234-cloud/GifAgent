@@ -16,7 +16,7 @@
 | taste_map | 83 | 70 | 13 | 0.843 | 等效 13（见下） |
 | narrative_curation | 184 | 174 | 10 | 0.946 | 等效/中性偏移 10 |
 | collections | 253 | 222 | 31 | 0.877 | 排序不变混合变体、best_idx 哨兵死代码、min_dist 缺省 |
-| desktop_export_sync | 703 | 309 | 384 (10 incompetent) | 0.440 | 注解 union ×297、日志格式变体、守卫等效 |
+| desktop_export_sync | 703 | 309 | 384 (70 timeout) | 0.440 | 注解 union ×297、调度器/等待环 ×24、哈希分块 ×10、mtime 容差 ×9、预检/行扫描 ×9、_relocate ×9、复制/哈希辅助 ×11、连接管理 ×4、CLI 未覆盖 ×8、_is_inside 边界 ×2 |
 | metrics | 302 | 295 | 7 | 0.977 | 等效 7（见下） |
 | calibration | 290 | 274 | 16 | 0.945 | 空桶分支已补杀；等效见下 |
 | promotion | 161 | 129 | 28 (4 incompetent) | 0.801 | 注解 ×22、sqlite TEXT 下 TypeError 网不可达 ×3 |
@@ -113,8 +113,37 @@
 - `USub_Invert/NR reshape(-2)` 族（L14/L22/L59）：负步长 reshape 参数对任意合法输入立即 ValueError——由既有正常路径测试杀死的对称项，仅剩极端输入组合（登记备查）。
 
 ## desktop_export_sync（app/services/desktop_export_sync.py）
-- **类型注解 union（297 条）**：`ReplaceBinaryOperator_BitOr_*` 覆盖 27 处 `Path | None`、`dict[str, Any] | None`、`Callable[[], DesktopSyncReport] | None` 等，在 `from __future__ import annotations` 下为惰性字符串，运行时不求值，属经典等效突变。
-- **日志与文案格式变体（24 条）**：`NumberReplacer`/`ReplaceTrueWithFalse` 影响 `report.log_line()` 内字符串拼接与格式化常量，对业务数据无副作用。
-- **守卫与路径边界等效（53 条）**：`_is_inside` 与 `_relocate_favorite_source` 中非临界分支的等价替代。
-- **不适格突变（10 条 incompetent）**：`__name__ == "__main__"` 条件翻转导致模块 import-time 触发 `argparse` 退出，已由 harness 正确归类。
+
+canonical after 轮 703 突变全部处理：killed 309、survived 384（其中 70 条以 timeout 记录）、incompetent 10。canonical 轮与同模块另两个评分运行并发执行，60s 超时被负载放大（独立复跑同突变集 timeout 仅 8、killed 326；逐突变分类一致率 630/703，全部分歧为 timeout/WorkerDecode 类负载伪影，复跑无杀死丢失）。下列位点按 canonical JSON 登记并标注复跑交叉验证结论。
+
+### 等效突变 — 类型注解 union（297 条，其中 44 条本轮以 timeout 记录，分类不变）
+- 27 处签名 union（`str | Path`、`Path | None`、`str | Path | None`（run_reconciliation 4 参数）、`Callable[[], DesktopSyncReport] | None`、`DesktopSyncReport | None` + `BaseException | None`（_log_result）、`threading.Event | None` 等）× 11 算子：`from __future__ import annotations` 下注解为惰性字符串，运行时不求值。
+
+### timeout→survived（计划规则；W7 线索）
+- 负载伪影（独立复跑同位点被杀死，杀伤测试有效）：`_is_inside` `p == r`→`<=`/`is`（L92，越界路径判定）、`_relocate_favorite_source` `is_file() and _is_inside`→`or`（L111，逃逸 root 的候选）、`_sync_files_preflight` 缺失源 `continue`→`break`（L313）、冲突名单 `!=`→`<`/`<=`/`is not`（L332，报告 reason 改变）、收藏行扫描 `continue`→`break`（L375）、`_atomic_copy2` `exist_ok=True`→False（L216）。
+- 真实挂起/线程缺陷（复跑同样 timeout，W7 真实线索）：`_sha256_file` EOF `break`→`continue` 读死循环（L126）；调度器 `_pending` 消费失败（L545 False→True）与 `_active` 复位失败（L555 False→True）使 `wait_until_idle` 永久挂起；回调异常网 `except Exception`→假类致后台线程死亡（L551）；`_get_default_scheduler` 单例取反（L567）使 request 与 worker 分家；`_run_loop` 等待条件 `not` 删除/取反（L541）变忙旋；`_run_loop` 等待条件进入态取反（L478 `_pending=False`→True，启动即伪触发）。
+- 负载伪影（复跑存活/杀死，位点上变异本身不致死）：`_sha256_file` chunk 常量 NR occ9（L120）、`_needs_copy` 尺寸 `!=`→`is not`（L246）、mtime `Sub→Add/Div`（L248）、`stop` join 3.0→4.0（L509）、`wait_until_idle` `<=`（L522）。
+
+### 等效突变 — 哈希分块（10 条）
+- `NR @ L120`（`1<<20`→`2<<20`/`1<<21`/`1<<19`）与 `LShift→Add/Mod/Mul/Pow/BitXor/BitOr`（1+20/1%20/1*20/1**20/1^20/1|20）：哈希对流式分块大小不敏感（同 fingerprints 先例）。
+
+### 等效突变 — mtime 容差与尺寸守卫（L246/L248，9 条）
+- `Sub→FloorDiv/Mod/Mul`：仅病态 mtime 组合可区分（epoch 商/余/积不落入 0.0001 窗口）。
+- `Lt→Eq/LtE @ L248`：|Δmtime| 恰等于 0.0001 的浮点边界不可构造。
+- `NR @ L248`（0.0001→1.0001/-0.9999）：**W7 线索（真实潜在 bug）**——原实现容差窗口内（|Δmtime|<0.0001）不校验内容，等 mtime 且内容不同的文件被永久跳过；`-0.9999` 变体反而修复该缺陷（区分性输入 = Δmtime∈[0,1s] 且内容不同）。
+- `NotEq→Gt @ L246`：源小于目标且内容相同时原实现 updated、突变 skipped（可由「不同尺寸同内容→updated」断言杀死，现缺）。**W7 线索**：区分性输入即报告语义差异。
+
+### 等效突变 — 调度等待参数（13 条）
+- `join(timeout=3.0)`→2.0/4.0（L509）、`wait(0.25/0.5)`→±1/-0.5（L523/L540；负 wait 立即返回=忙等，行为不变）、`wait_until_idle` 缺省 3600.0→±1（L511/L577）、`monotonic() < deadline`→`!=`/`is not`（恰等不可构造；L522）。`deadline = monotonic()+timeout`→`*timeout`（L520）：仅在单次运行超过 timeout 时可区分——**W7 线索**：原实现到点后中途放弃等待（可能放弃最终同步的收尾），突变体则永不放弃（可能挂住关机），两者皆有缺陷。
+
+### 等效/不可达 — 复制与异常网（L141/L225/L228/L234/L235/L236/L244/L245，11 条中除上外的 8 条）
+- `SyncEntry.conflicted` 缺省 False→True（L141）与冲突项 conflicted=True→False（L336）：报告布尔位未被断言。
+- `AddNot @ L225`（清理分支反相→仅复制失败时遗留 `.tmp`，**W7 线索**）；`ExceptionReplacer @ L228/L235/L236/L244`（OSError 网在测试输入下不可达；L234 `==`→`>=` 哈希字典序数据依赖——换测试数据序即可杀）；`_sync_favorites` `except sqlite3.Error`→假类（L353，查询失败路径不可达）。
+
+### 等效/实践不可杀 — 连接管理与 CLI（12 条）
+- `NR sqlite3.connect timeout=30`→31/29（L453，无锁争用场景）；`AddNot`/`IsNot→Is @ L459`：`conn.close()` 永不执行——**W7 线索（连接泄漏）**。
+- `daemon=True`→False（L496）：stop() 总被调用；launcher 若不 stop 则阻塞进程退出（W7 备查）。
+- CLI main 未被测试覆盖（L639/L645/L647/L651）：`flush` True↔False ×2、`ensure_ascii=False`→True、`indent=2`→1/3、`__name__ == "__main__"`→`<`/`<=`/`is`（本模块导入名字典序恒大于 `'__main__'`；脚本路径 `'__main__'` 对象驻留使 `is` 仍真）。
+- `_relocate_favorite_source` 路径族（L107/L108/L110）：NR `len(parts)-1`→`-2`（尾段候选=source_root 本身恒非文件，等效）；USub stop `-1`→`~1`（多试一次全路径候选）；`!=`→`>`/`<`/`is`（`is` 对已小写字符串因 casefold 返回自身而等效，混合大小写段名可杀）；`index+1`→`|1`/`^1`（root 名仅出现在偶数深度时等效，奇数深度可杀）。
+- incompetent 10 条为 cosmic-ray worker 在非 UTF-8 pytest 输出上的 UnicodeDecodeError 及 worker 异常（harness 归类 incompetent，不计入 killed）。
 
