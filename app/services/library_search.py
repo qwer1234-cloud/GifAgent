@@ -10,6 +10,7 @@ Exposes three public operations:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Callable
@@ -32,6 +33,19 @@ from app.services.workbench_schema import (
 )
 
 EmbeddingFn = Callable[[str], list[float]]
+
+#: W8 shadow FTS v2 is strictly opt-in: when this environment variable is set
+#: to exactly ``1`` text ranking reads ``candidate_search_fts_v2``; any other
+#: value (including unset) keeps the default v1 path unchanged.
+FTS_V2_ENV_FLAG = "GIFAGENT_SEARCH_FTS_V2"
+
+FTS_V2_TABLE = "candidate_search_fts_v2"
+FTS_V1_TABLE = "candidate_search_fts"
+
+
+def _fts_v2_enabled() -> bool:
+    """Return ``True`` only when the shadow FTS v2 flag is set to ``1``."""
+    return os.environ.get(FTS_V2_ENV_FLAG) == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +114,8 @@ class LibrarySearchService:
     ):
         self.conn = conn
         self.embedder = embedder
+        # Diagnostic from the most recent text ranking pass (v2 mode only).
+        self._fts_diagnostic: str | None = None
         apply_search_schema(conn)
 
     # ── public API ──────────────────────────────────────────────────────────
@@ -156,6 +172,15 @@ class LibrarySearchService:
         # Health
         health = self.index_health()
         degraded = not health.complete
+        diagnosis = health.diagnosis if degraded else None
+        if self._fts_diagnostic:
+            # v2 reader problems must be visible, not silently swallowed.
+            degraded = True
+            diagnosis = (
+                f"{diagnosis}; {self._fts_diagnostic}"
+                if diagnosis
+                else self._fts_diagnostic
+            )
 
         return SearchPage(
             items=items,
@@ -163,7 +188,7 @@ class LibrarySearchService:
             limit=limit,
             offset=offset,
             degraded=degraded,
-            diagnosis=health.diagnosis if degraded else None,
+            diagnosis=diagnosis,
         )
 
     def index_health(self) -> IndexHealth:
@@ -417,6 +442,10 @@ class LibrarySearchService:
         """
         fts_query = _fts_escape(text)
 
+        v2 = _fts_v2_enabled()
+        fts_table = FTS_V2_TABLE if v2 else FTS_V1_TABLE
+        self._fts_diagnostic = None
+
         # Get candidate_ids matching filters
         filtered_ids = [
             r["candidate_id"]
@@ -434,9 +463,9 @@ class LibrarySearchService:
         fts_results: dict[str, float] = {}
         try:
             fts_rows = self.conn.execute(
-                """SELECT candidate_id, rank
-                   FROM candidate_search_fts
-                   WHERE candidate_search_fts MATCH ?
+                f"""SELECT candidate_id, rank
+                   FROM {fts_table}
+                   WHERE {fts_table} MATCH ?
                    ORDER BY rank""",
                 (fts_query,),
             ).fetchall()
@@ -447,8 +476,11 @@ class LibrarySearchService:
                     # Convert so higher = better, range approx [0, 1).
                     fts_results[cid] = 1.0 / (1.0 + abs(row["rank"]))
         except sqlite3.OperationalError:
-            # FTS table might be empty or not exist
-            pass
+            if v2:
+                # Opt-in v2 mode must surface the failure, not degrade
+                # silently to an empty result.
+                self._fts_diagnostic = "FTS v2 missing"
+            # v1 (default): FTS table might be empty or not exist.
 
         # Compute vector similarity for filtered candidates
         vec_sims: dict[str, float] = {}

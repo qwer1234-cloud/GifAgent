@@ -36,10 +36,34 @@ CREATE TABLE IF NOT EXISTS search_index_state (
 );
 """
 
+# W8 shadow FTS v2 (token sprint): additive, default-off via
+# GIFAGENT_SEARCH_FTS_V2.  Content is driven by ``fts_v2_content`` (unique by
+# PK); the FTS5 virtual table has no unique constraint on its UNINDEXED
+# ``candidate_id`` column, so writers must full-delete + reinsert instead of
+# upserting into the virtual table (see build_fts_v2.py).
+FTS_V2_DDL = """
+CREATE TABLE IF NOT EXISTS fts_v2_content (
+    candidate_id TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    tags TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    enrichment_manifest_sha TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS candidate_search_fts_v2 USING fts5(
+    candidate_id UNINDEXED,
+    summary,
+    tags,
+    source_path,
+    tokenize='porter unicode61'
+);
+"""
+
 
 def apply_search_schema(conn: sqlite3.Connection) -> None:
     """Create FTS5 virtual table and state-tracking table if missing."""
     conn.executescript(FTS5_DDL)
+    conn.executescript(FTS_V2_DDL)
     # Migrate older state tables that lack the created_at column
     cols = {
         row[1]
