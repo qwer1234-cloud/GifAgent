@@ -7,6 +7,8 @@
 | 2026-08-28T18:35Z | w7-executor | session tokens 4,083,960 (subagent usage; 77 tool calls, 20min) | W7 audit complete: 5 dimensions, 20 findings, max Medium, 6 commits, app/ diff empty. .ready publication in progress. Background subagent concurrency limit = 2 observed. |
 | 2026-08-28T18:40Z | w7-executor | +869,033 tokens | .ready publication for 6 reports, SHA self-check 6/6. |
 | 2026-08-28T18:45Z | w7-reviewer | +1,265,527 tokens (39 tool calls) | 6/6 PASS, 18 findings sampled to file:line; receipts issued; reconcile -> manifest rev2, receipts archived processed/. |
+| 2026-08-28T21:30Z | w3-relink-reviewer | +1,079,628 tokens (41 tool calls, 8.4min) | Relink inventory review PASS (20/20 proposals verified to snapshot+disk, reverse check 3,282 good paths untouched, dry-run zero-mutation). 2 receipts -> manifest rev13 (18 artifacts). |
+| 2026-08-29T03:20Z | coordinator | - | Closing merges into sprint/integration for all accepted workstreams (W7/W5/W2/W3/W1); W4 pending follow-up; monitor continues (media 12,121, broken matched 17,586/29,875 = 58.9%). |
 | 2026-08-28T19:05Z | w7-reviewer | session tokens 1,265,527 (39 tool calls, 9.6min) | W7 review PASS 6/6, receipts reconciled, manifest rev2 with 6 w7 artifacts, receipts archived to processed/. |
 | 2026-08-28T19:10Z | w5-executor | session tokens 6,428,421 (86 tool calls, 33min) | W5 complete: 9 tasks, 42 property tests green in 3.56s (<60s gate), 8 commits, vector_math conditional props included per manifest, .ready published for pytest log artifact. Reviewer dispatched. |
 | 2026-08-28T19:45Z | w5-reviewer | session tokens 444,510 (26 tool calls, 6min) | W5 review PASS, receipt reconciled, manifest rev3 (7 artifacts). |
