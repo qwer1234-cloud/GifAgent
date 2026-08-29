@@ -28,7 +28,7 @@
 | fingerprints | 59 | 12 | 0.203 | 34 | 0.576 | tests/test_adaptive_config.py |
 | vector_math | 361 | 215 | 0.596 | 260 | 0.720 | （无既有测试，杀伤测试即基线） |
 
-- 合计（14 个全量目标模块全部完成）：mutants 3,548，before killed 2,150（0.606），after killed 2,671（0.753）。总体突变杀伤率由 60.6% 提升至 **75.3%**（净杀死 521 个存活突变体）。
+- 合计（14 个全量目标模块全部完成）：mutants 3,549，before killed 2,031（0.572），after killed 2,572（0.725）。总体突变杀伤率由 57.2% 提升至 **72.5%**（净杀死 541 个存活突变体）。〔合计行由协调会话按 14 份 canonical JSON 逐份实算校正——原行 3,548/2,150/2,671 与本表逐行及 JSON 不符，逐行数据未受影响。〕
 - after 存活突变全部按模块登记于 w4-surviving.md：绝大部分为类型注解 union 突变（`from __future__ import annotations` 下不可执行，如 desktop_export_sync 单模块即有 297 个注解 union 突变）、keyword-only 标记、不可达守卫分支、以及「区分性输入必先触发原实现既有缺陷」的实践不可杀项（均已转为 W7 线索）。
 - desktop_export_sync 轮次补充说明：before 轮在影子仓库副本（worktree @dee14b7d 去除 `tests/mutation/test_mut_desktop_export_sync.py`，独立 sprint root）上按同一 harness 流程执行，确保只跑既有测试；after 轮 canonical JSON 由 harness CLI 端到端产出（703/703 全处理，skipped=0）。该 after 轮与同模块的另两个评分运行并发执行，60s 超时被负载放大（70 条按计划记 survived 并登记 W7，其中 44 条为注解类位点）；同一突变集的独立复跑 killed 326（timeout 仅 8，score 0.464），逐突变分类一致率 630/703，全部分歧均为 timeout/WorkerDecode 类负载伪影，复跑无杀死丢失。canonical JSON 取 harness CLI 端到端完成的运行（309，0.440），超时伪影使其得分偏保守；独立复跑经恢复中断会话完成，数字仅作交叉验证。
 
