@@ -22,10 +22,13 @@ Counting semantics (locked):
   no non-refusal rows), so pure refusals never drag it down.
 - Fidelity heuristic (high-explicit layer): an output row is in the fidelity
   denominator when its input row has ``stratum == "high"`` or its input text
-  contains an ``EXPLICIT_MARKERS`` entry. The serialized output text must
-  retain at least one marker or synonymous stem; zero retention records the
-  candidate in ``suspected_sanitized`` and counts as a fidelity failure.
-  Legitimate JSON with sanitized semantics is a failure, not a success.
+  contains an ``EXPLICIT_MARKERS`` entry (matched over content text -- the
+  JSON string values -- so numeric metadata field names such as the enriched
+  v2 snapshot's ``"sex_act"`` never qualify; see ``make_shards``). The
+  serialized output text must retain at least one marker or synonymous stem;
+  zero retention records the candidate in ``suspected_sanitized`` and counts
+  as a fidelity failure. Legitimate JSON with sanitized semantics is a
+  failure, not a success.
 
 Pass schemas (v1):
 - ``p3``: ``keywords`` is a list of 3-12 lowercase English tokens
@@ -68,6 +71,7 @@ from scripts.token_sprint.coordinator.common import (  # noqa: E402
 )
 from scripts.token_sprint.make_shards import (  # noqa: E402
     EXPLICIT_MARKERS,
+    row_content_text,
     text_has_explicit_marker,
 )
 
@@ -138,11 +142,11 @@ def _load_input_rows(input_shard: Path) -> dict[str, dict]:
 def _input_row_is_high_explicit(row: dict) -> bool:
     if row.get("stratum") == "high":
         return True
-    haystack = "\n".join(
-        str(row.get(field) or "")
-        for field in ("vlm_summary_json", "tags_json", "scenario_keys_json")
-    )
-    return text_has_explicit_marker(haystack)
+    # W1 T0 v2 rerun: match over content text (JSON string values), not raw
+    # serialized payloads -- the numeric metadata field NAME "sex_act" written
+    # by the v2 enrichment must not put clean drama rows in the denominator.
+    # Shared helper keeps this aligned with make_shards.classify_strata.
+    return text_has_explicit_marker(row_content_text(row))
 
 
 def _is_refusal(row: object) -> bool:
