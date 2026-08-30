@@ -3,8 +3,26 @@
 import json
 from pathlib import Path
 
+import pytest
 
-def test_preference_memory_status_reports_safe_defaults(tmp_path):
+
+@pytest.fixture
+def preference_memory_enabled(monkeypatch):
+    """Pin the config flag to enabled.
+
+    These tests exercise status-reporting mechanics, not the models.yaml value
+    (which was reverted to false in 9e39ac1e without flipping the assertions).
+    A disabled-state control lives in
+    test_preference_memory_status_reports_disabled_flag.
+    """
+    import app.config as app_config
+
+    monkeypatch.setattr(
+        app_config, "_config", {"preference_memory": {"enabled": True}}
+    )
+
+
+def test_preference_memory_status_reports_safe_defaults(tmp_path, preference_memory_enabled):
     from scripts.preference_memory import collect_status
 
     db_path = tmp_path / "library.db"
@@ -26,7 +44,7 @@ def test_preference_memory_status_reports_safe_defaults(tmp_path):
     assert status["manifest_error"] is None
 
 
-def test_status_handles_missing_manifest(tmp_path):
+def test_status_handles_missing_manifest(tmp_path, preference_memory_enabled):
     """Manifest file does not exist — status still returns safe defaults with manifest_error set."""
     from scripts.preference_memory import collect_status
 
@@ -47,7 +65,7 @@ def test_status_handles_missing_manifest(tmp_path):
     assert "manifest not found" in (status["manifest_error"] or "")
 
 
-def test_status_handles_malformed_manifest(tmp_path):
+def test_status_handles_malformed_manifest(tmp_path, preference_memory_enabled):
     """Manifest is not valid JSON — handled gracefully."""
     from scripts.preference_memory import collect_status
 
@@ -88,3 +106,18 @@ def test_wal_file_exists_detected(tmp_path):
 
     assert status["wal_file_exists"] is True
     assert status["production_write_allowed"] is False  # not wal_file_exists = not True = False
+
+
+def test_preference_memory_status_reports_disabled_flag(tmp_path, monkeypatch):
+    """Control: with the flag disabled, preference_memory_enabled is False."""
+    import app.config as app_config
+
+    from scripts.preference_memory import collect_status
+
+    monkeypatch.setattr(app_config, "_config", {"preference_memory": {"enabled": False}})
+
+    status = collect_status(
+        library_db_path=tmp_path / "library.db", faiss_manifest_path=None
+    )
+
+    assert status["preference_memory_enabled"] is False

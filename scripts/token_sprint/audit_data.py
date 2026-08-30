@@ -658,8 +658,16 @@ def scan_batch_checkpoint(data, data_root, observations):
 # ---------------------------------------------------------------------------
 
 
+def _quote_ident(name: str) -> str:
+    """SQLite identifier literal: escape embedded double quotes.
+
+    Table/column names come from the audited snapshot's own sqlite_master /
+    PRAGMA readback; the DB file is CLI-supplied, so quote defensively."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 def _table_columns(cursor, table):
-    return [row[1] for row in cursor.execute(f'PRAGMA table_info("{table}")')]
+    return [row[1] for row in cursor.execute(f'PRAGMA table_info({_quote_ident(table)})')]
 
 
 def _generic_spec(columns) -> TableSpec:
@@ -726,12 +734,12 @@ def scan_snapshot(db_path: Path, data_root, observations):
 
 def _scan_table(cursor, table, columns, spec, source, data_root, findings,
                 observations):
-    select_cols = ", ".join(f'"{c}"' for c in columns)
+    select_cols = ", ".join(_quote_ident(c) for c in columns)
     score_columns = [c for c in spec.score_fields if c in columns]
     try:
-        cursor.execute(f"SELECT rowid, {select_cols} FROM \"{table}\"")
+        cursor.execute(f"SELECT rowid, {select_cols} FROM {_quote_ident(table)}")
     except sqlite3.OperationalError:
-        cursor.execute(f"SELECT -1 AS __rowid, {select_cols} FROM \"{table}\"")
+        cursor.execute(f"SELECT -1 AS __rowid, {select_cols} FROM {_quote_ident(table)}")
     names = ["__rowid"] + columns
     rows_scanned = 0
     score_null_counts = {c: 0 for c in score_columns}

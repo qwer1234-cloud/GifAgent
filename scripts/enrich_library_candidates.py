@@ -41,7 +41,7 @@ from app.quality_moe.evaluator import _contact_sheet  # noqa: E402
 from app.services.scenario import normalize_scenario_keys  # noqa: E402
 
 DEFAULT_DB = "dist/GifAgentUI/data/library.db"
-DEFAULT_BASE_URL = os.environ.get("GIFAGENT_OLLAMA_BASE", "http://localhost:11434")
+DEFAULT_BASE_URL = os.environ.get("GIFAGENT_OLLAMA_BASE", "http://127.0.0.1:11434")
 DEFAULT_MODEL = "huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0"
 DEFAULT_WORK_DIR = "data/token_sprint/enrichment_v1"
 
