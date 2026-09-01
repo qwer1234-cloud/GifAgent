@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from app.db import init_db
+from app.routers.candidates import _materialize_filesystem_candidates_for_folder
 from app.services.candidates import CandidateService
 from app.services.collections import CollectionService
 from app.services.library_search import LibrarySearchService, SearchQuery
@@ -207,6 +208,28 @@ def test_candidate_service_and_import_sync_deduplicates_fts(test_db):
     assert "hallway" in rows_after[0]["summary"]
 
 
+def test_import_folder_syncs_and_deduplicates_fts(test_db, tmp_path):
+    conn, _ = test_db
+    folder = tmp_path / "gifs"
+    folder.mkdir()
+    gif1 = folder / "movie_clip_001.gif"
+    gif1.write_bytes(b"GIF89a dummy content")
+
+    # Import folder
+    created = _materialize_filesystem_candidates_for_folder(conn, folder)
+    assert created == 1
+
+    # Verify FTS row exists
+    fts_rows = conn.execute("SELECT candidate_id, source_path FROM candidate_search_fts").fetchall()
+    assert len(fts_rows) == 1
+
+    # Re-import should not duplicate in FTS
+    created2 = _materialize_filesystem_candidates_for_folder(conn, folder)
+    assert created2 == 0
+    fts_rows2 = conn.execute("SELECT candidate_id, source_path FROM candidate_search_fts").fetchall()
+    assert len(fts_rows2) == 1
+
+
 def test_collections_farthest_first_diversity_with_no_vectors_in_selected(test_db):
     conn, _ = test_db
     search_svc = LibrarySearchService(conn)
@@ -262,3 +285,33 @@ def test_rank_with_text_logs_warning_and_surfaces_diagnostic(test_db, caplog):
         assert res.degraded is True
         assert "FTS query error" in res.diagnosis
         assert any("FTS query failed" in r.message for r in caplog.records)
+
+
+def test_index_health_logs_warning_on_missing_or_failed_tables(test_db, caplog):
+    conn, _ = test_db
+    svc = LibrarySearchService(conn)
+
+    # Drop candidate_search_fts to trigger warning
+    conn.execute("DROP TABLE candidate_search_fts")
+    conn.commit()
+
+    with caplog.at_level(logging.WARNING):
+        health = svc.index_health()
+        assert health.indexed_in_fts == 0
+        assert any("candidate_search_fts query failed" in r.message for r in caplog.records)
+
+
+def test_build_fts_v2_allow_production_guard(tmp_path):
+    from scripts.token_sprint.build_fts_v2 import _guard_db_target, BuildError
+
+    sprint_root = Path("data/token_sprint")
+    dist_db = tmp_path / "dist" / "GifAgentUI" / "data" / "library.db"
+    dist_db.parent.mkdir(parents=True, exist_ok=True)
+    dist_db.touch()
+
+    # Without allow_production: must raise BuildError
+    with pytest.raises(BuildError, match="must not point under a dist/ tree"):
+        _guard_db_target(dist_db, sprint_root, allow_production=False)
+
+    # With allow_production: succeeds
+    _guard_db_target(dist_db, sprint_root, allow_production=True)

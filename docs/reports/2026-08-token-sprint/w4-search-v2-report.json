@@ -1,0 +1,320 @@
+{
+  "coverage": 0.9,
+  "determinism": {
+    "float_rounding_decimals": 6,
+    "mean_aggregation": "math.fsum / n over per-query rounded values",
+    "query_ordering": "query_id asc"
+  },
+  "excluded_queries": [],
+  "n_bank_queries": 40,
+  "n_excluded_queries": 0,
+  "n_judged_queries": 36,
+  "n_pool_queries": 36,
+  "n_qrels_rows_pool_version": 828,
+  "n_qrels_rows_total": 828,
+  "ndcg_at_10": 0.715429,
+  "ndcg_at_24": 0.836895,
+  "notes": [],
+  "per_query": [
+    {
+      "n_pool_candidates": 19,
+      "ndcg_at_10": 0.788162,
+      "ndcg_at_24": 0.927018,
+      "query_id": "q_act_dancing",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.663358,
+      "ndcg_at_24": 0.849716,
+      "query_id": "q_act_kissing",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.519983,
+      "ndcg_at_24": 0.795927,
+      "query_id": "q_act_shower",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 0.995976,
+      "query_id": "q_act_smiling",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.4815,
+      "ndcg_at_24": 0.772326,
+      "query_id": "q_app_black_lingerie",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 1.0,
+      "query_id": "q_app_blonde",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.342847,
+      "ndcg_at_24": 0.577726,
+      "query_id": "q_app_glasses",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 0.997851,
+      "query_id": "q_app_nude",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.795166,
+      "ndcg_at_24": 0.912268,
+      "query_id": "q_app_redhead",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 1.0,
+      "query_id": "q_app_tattoo",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 1.0,
+      "query_id": "q_combo_bedroom_lingerie",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 1.0,
+      "query_id": "q_combo_blonde_woman",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.687362,
+      "ndcg_at_24": 0.859759,
+      "query_id": "q_combo_kissing_couch",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.505935,
+      "ndcg_at_24": 0.747086,
+      "query_id": "q_combo_office_woman",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 1.0,
+      "query_id": "q_combo_poolside_woman",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 16,
+      "ndcg_at_10": 0.399654,
+      "ndcg_at_24": 0.704786,
+      "query_id": "q_combo_woman_dancing",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.377085,
+      "ndcg_at_24": 0.611964,
+      "query_id": "q_combo_woman_glasses",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.844695,
+      "ndcg_at_24": 0.897653,
+      "query_id": "q_combo_woman_mirror",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.469279,
+      "ndcg_at_24": 0.676863,
+      "query_id": "q_emo_excitement",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.84265,
+      "ndcg_at_24": 0.961147,
+      "query_id": "q_emo_intimacy",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.11918,
+      "ndcg_at_24": 0.328509,
+      "query_id": "q_emo_joy",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.0,
+      "ndcg_at_24": 0.0,
+      "query_id": "q_emo_longing",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 10,
+      "ndcg_at_10": 0.84142,
+      "ndcg_at_24": 0.84142,
+      "query_id": "q_emo_serenity",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.772169,
+      "ndcg_at_24": 0.919018,
+      "query_id": "q_emo_tension",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.932801,
+      "ndcg_at_24": 0.984389,
+      "query_id": "q_obj_mirror",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 0.998494,
+      "query_id": "q_obj_phone",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 0.993859,
+      "query_id": "q_obj_pool",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 15,
+      "ndcg_at_10": 0.619913,
+      "ndcg_at_24": 0.810172,
+      "query_id": "q_obj_sunset",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.476246,
+      "ndcg_at_24": 0.712586,
+      "query_id": "q_scene_bathroom",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.963645,
+      "ndcg_at_24": 0.993219,
+      "query_id": "q_scene_bedroom",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.582217,
+      "ndcg_at_24": 0.803437,
+      "query_id": "q_scene_couch",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.92065,
+      "ndcg_at_24": 0.957805,
+      "query_id": "q_scene_hallway",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.694356,
+      "ndcg_at_24": 0.844273,
+      "query_id": "q_scene_kitchen",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.605528,
+      "ndcg_at_24": 0.832479,
+      "query_id": "q_scene_office",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 0.509627,
+      "ndcg_at_24": 0.820491,
+      "query_id": "q_scene_outdoor",
+      "status": "judged",
+      "stored_ranks_used": 0
+    },
+    {
+      "n_pool_candidates": 24,
+      "ndcg_at_10": 1.0,
+      "ndcg_at_24": 1.0,
+      "query_id": "q_scene_poolside",
+      "status": "judged",
+      "stored_ranks_used": 0
+    }
+  ],
+  "pool_version": "pool_v2_snapshot_20260830",
+  "ranker": "fts_v2",
+  "ranker_mode": "live_rerun",
+  "ranker_set_hash": "sha256:d20cdfe28e88adf65c86a63a2cc704a1b805af5145921328e4b27e7ac9ba2811",
+  "ranker_status": "ok:live_rerun",
+  "ranking_contract": "pool candidates ordered by stored 1-based rank (nulls last, candidate_id asc); NDCG@10/@24 via app.quality_lab.metrics.ndcg_at_k over grades 0-3; disputed queries excluded whole, never grade 0",
+  "schema": "gifagent.token_sprint.eval_harness.report.v1",
+  "snapshot": {
+    "manifest_check": "skipped:no_manifest_and_uncanonical_allowed",
+    "snapshot_path": "C:/Users/sunhao/Desktop/code/GifAgent/data/token_sprint/t1v2/test_snapshot_eval.db",
+    "snapshot_sha256": "edd61e1776e844c5a7c8f17598bbe2773684ca33a30901f7e5561447913dae5b"
+  }
+}

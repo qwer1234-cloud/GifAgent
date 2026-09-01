@@ -200,7 +200,8 @@ class LibrarySearchService:
             total = self.conn.execute(
                 "SELECT COUNT(*) FROM candidate_gifs"
             ).fetchone()[0]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.warning("candidate_gifs table missing or inaccessible in index_health: %s", exc)
             return IndexHealth(
                 total_candidates=0, indexed_in_fts=0,
                 vectors_available=0, vectors_missing=0,
@@ -212,7 +213,7 @@ class LibrarySearchService:
                 "SELECT COUNT(*) FROM candidate_search_fts"
             ).fetchone()[0]
         except sqlite3.OperationalError as exc:
-            logger.debug("candidate_search_fts query failed in index_health: %s", exc)
+            logger.warning("candidate_search_fts query failed in index_health: %s", exc)
             indexed = 0
 
         try:
@@ -223,7 +224,7 @@ class LibrarySearchService:
                 (REQUIRED_EMBEDDING_MODEL, REQUIRED_EMBEDDING_DIM),
             ).fetchone()[0]
         except sqlite3.OperationalError as exc:
-            logger.debug("candidate_vectors query failed in index_health: %s", exc)
+            logger.warning("candidate_vectors query failed in index_health: %s", exc)
             vectors_avail = 0
 
         complete = total > 0 and indexed >= total and vectors_avail >= total
@@ -359,7 +360,11 @@ class LibrarySearchService:
 
             try:
                 self.conn.execute(
-                    """INSERT OR REPLACE INTO candidate_search_fts
+                    "DELETE FROM candidate_search_fts WHERE candidate_id = ?",
+                    (candidate_id,),
+                )
+                self.conn.execute(
+                    """INSERT INTO candidate_search_fts
                        (candidate_id, summary, tags, source_path)
                        VALUES (?, ?, ?, ?)""",
                     (candidate_id, summary, tags_text, source_path),
