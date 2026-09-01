@@ -1,15 +1,19 @@
 # GifAgent 新对话交接文档
 
-更新时间：2026-06-27
+更新时间：2026-09-01（Token Sprint 全量结项）
 
 用途：新开一个 Codex/Agent 对话时，先让对方阅读本文件，再继续实现、评估或讨论 GifAgent。本文是项目状态、关键决策和下一步实施顺序的压缩上下文。
+
+> **最新重要里程碑（2026-09-01）**：**2026-08 Token Sprint 已 100% 全量交付结项**。
+> - 详见最终交付报告：`docs/reports/2026-08-token-sprint/delivery-report.md` 与 `docs/reports/2026-08-token-sprint/handoff.md`。
+> - 核心成果：生产库历史路径重链完成（断链直降至 2,661 处，现存率 93.0%）；本地 Qwen3-VL 8B 完成全量 12,827 行（94.1%）富化；Stage C 场景元数据 30/30 分片 100% 交付；突变测试杀伤率 72.5%；属性测试 42 条全绿；Mypy strict 清零；回归套件 533 passed 全绿。
 
 ## 新对话启动提示
 
 可以在新对话开头直接发送：
 
 ```text
-请先阅读 C:\Users\sunhao\Desktop\code\GifAgent\docs\HANDOFF_NEW_CHAT.md，理解 GifAgent 当前项目状态、Preference Memory 方案、LangGraph 重构顺序、运行中数据保护要求和已有实施文档。随后再根据我的新需求继续工作。除非我明确要求，不要修改 data/*.db*、data/*.log、FAISS 文件或正在运行的入库流程。
+请先阅读 C:\Users\sunhao\Desktop\code\GifAgent\docs\HANDOFF_NEW_CHAT.md 以及 C:\Users\sunhao\Desktop\code\GifAgent\docs\reports\2026-08-token-sprint\delivery-report.md，理解 GifAgent 当前项目状态、Token Sprint 交付成果、Preference Memory 方案、LangGraph 重构顺序、运行中数据保护要求和已有实施文档。随后再根据我的新需求继续工作。除非我明确要求，不要修改 data/*.db*、data/*.log、FAISS 文件或正在运行的入库流程。
 ```
 
 ## 项目位置和工作方式
