@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json as std_json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
@@ -169,7 +172,25 @@ def _materialize_filesystem_candidates_for_folder(conn, folder: Path) -> int:
                 now,
             ),
         )
-        created += cursor.rowcount
+        if cursor.rowcount > 0:
+            created += cursor.rowcount
+            try:
+                conn.execute(
+                    "DELETE FROM candidate_search_fts WHERE candidate_id = ?",
+                    (candidate_id,),
+                )
+                conn.execute(
+                    """INSERT INTO candidate_search_fts
+                       (candidate_id, summary, tags, source_path)
+                       VALUES (?, ?, ?, ?)""",
+                    (candidate_id, "", "", artifact_path),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to sync imported candidate %s to FTS: %s",
+                    candidate_id,
+                    exc,
+                )
 
     if created:
         conn.commit()

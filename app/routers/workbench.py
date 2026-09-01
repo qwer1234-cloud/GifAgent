@@ -214,12 +214,13 @@ def search_index_health():
 @router.post("/search/rebuild", response_model=RebuildReport)
 def rebuild_search_index(
     batch_size: int = 200,
+    force: bool = True,
 ):
-    """Resumable rebuild of the FTS5 search index."""
+    """Rebuild of the FTS5 search index (force defaults to True for clean re-index)."""
     conn = get_library_conn()
     try:
         svc = LibrarySearchService(conn)
-        return svc.rebuild_index(batch_size=batch_size)
+        return svc.rebuild_index(batch_size=batch_size, force=force)
     finally:
         conn.close()
 

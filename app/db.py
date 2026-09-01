@@ -1,6 +1,9 @@
-import sqlite3
+import logging
 import os
+import sqlite3
 from app.config import get
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = get("database.path", "data/library.db")
 
@@ -153,9 +156,10 @@ def init_db(apply_preference: bool = False):
         if cand_count > 0 and fts_count == 0:
             from app.services.library_search import LibrarySearchService
 
-            LibrarySearchService(conn).rebuild_index()
-    except Exception:
-        pass
+            report = LibrarySearchService(conn).rebuild_index(force=True)
+            logger.info("Auto-healed empty FTS index: %s candidates indexed", report.inserted)
+    except Exception as exc:
+        logger.warning("Auto FTS rebuild check failed in init_db: %s", exc)
     conn.close()
 
 def _migrate(conn):

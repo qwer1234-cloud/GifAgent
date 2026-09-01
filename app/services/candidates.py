@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.services.preference_types import MaterializedCandidate
 from app.services.scenario import normalize_scenario_keys, json_dumps
@@ -103,21 +106,22 @@ class CandidateService:
                 now,
             ),
         )
-        # Sync into FTS index if table exists
+        # Sync into FTS index with clean deduplication
         summary_text = ""
         if isinstance(vlm_summary, dict):
             summary_text = vlm_summary.get("caption") or vlm_summary.get("summary") or ""
         tags_text = " ".join(str(t) for t in (tags or []) if t)
         fts_source = source_video_path or artifact_path or preview_path or ""
         try:
+            self.conn.execute("DELETE FROM candidate_search_fts WHERE candidate_id = ?", (candidate_id,))
             self.conn.execute(
-                """INSERT OR REPLACE INTO candidate_search_fts
+                """INSERT INTO candidate_search_fts
                    (candidate_id, summary, tags, source_path)
                    VALUES (?, ?, ?, ?)""",
                 (candidate_id, summary_text, tags_text, fts_source),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to sync candidate %s to FTS: %s", candidate_id, exc)
         self.conn.commit()
 
         # If INSERT OR IGNORE silently skipped (race), re-read

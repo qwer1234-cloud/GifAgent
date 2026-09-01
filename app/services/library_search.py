@@ -211,7 +211,8 @@ class LibrarySearchService:
             indexed = self.conn.execute(
                 "SELECT COUNT(*) FROM candidate_search_fts"
             ).fetchone()[0]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.debug("candidate_search_fts query failed in index_health: %s", exc)
             indexed = 0
 
         try:
@@ -221,7 +222,8 @@ class LibrarySearchService:
                    WHERE embedding_model=? AND embedding_dim=?""",
                 (REQUIRED_EMBEDDING_MODEL, REQUIRED_EMBEDDING_DIM),
             ).fetchone()[0]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.debug("candidate_vectors query failed in index_health: %s", exc)
             vectors_avail = 0
 
         complete = total > 0 and indexed >= total and vectors_avail >= total
@@ -250,13 +252,33 @@ class LibrarySearchService:
             diagnosis=diagnosis,
         )
 
-    def rebuild_index(self, batch_size: int = 200) -> RebuildReport:
+    def rebuild_index(self, batch_size: int = 200, force: bool = False) -> RebuildReport:
         """Resumable FTS5 index rebuild.
 
-        Reads ``search_index_state.last_candidate_id`` and processes only
-        candidates whose ID is strictly greater.  Each batch is committed
-        independently.
+        If *force* is True, or if the FTS index is empty while candidates
+        exist in the database (broken/stale state recovery), both the FTS
+        table and the state tracking row are cleared first for a full re-index.
         """
+        try:
+            fts_count = self.conn.execute("SELECT COUNT(*) FROM candidate_search_fts").fetchone()[0]
+        except sqlite3.OperationalError:
+            fts_count = 0
+
+        try:
+            cand_count = self.conn.execute("SELECT COUNT(*) FROM candidate_gifs").fetchone()[0]
+        except sqlite3.OperationalError:
+            cand_count = 0
+
+        # When force is requested, or when FTS is empty but candidates exist
+        # (broken state recovery), reset state and clear FTS.
+        if force or (cand_count > 0 and fts_count == 0):
+            try:
+                self.conn.execute("DELETE FROM candidate_search_fts")
+                self.conn.execute("DELETE FROM search_index_state")
+                self.conn.commit()
+            except sqlite3.OperationalError as exc:
+                logger.warning("Failed to reset FTS/state before rebuild: %s", exc)
+
         scanned = 0
         inserted = 0
         skipped = 0

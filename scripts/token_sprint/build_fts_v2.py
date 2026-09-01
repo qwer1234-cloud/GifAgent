@@ -114,11 +114,16 @@ class BuildError(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
-def _guard_db_target(db: Path, sprint_root: Path) -> None:
-    """Reject production/protected database targets before opening anything."""
+def _guard_db_target(
+    db: Path, sprint_root: Path, *, allow_production: bool = False
+) -> None:
+    """Reject production/protected database targets unless explicitly allowed."""
     resolved = db.resolve()
-    if "dist" in resolved.parts:
-        raise BuildError(f"--db must not point under a dist/ tree: {resolved.as_posix()}")
+    if "dist" in resolved.parts and not allow_production:
+        raise BuildError(
+            f"--db must not point under a dist/ tree without --allow-production: "
+            f"{resolved.as_posix()}"
+        )
 
     inputs_manifest_path = sprint_root / INPUTS_MANIFEST_NAME
     if not inputs_manifest_path.is_file():
@@ -132,10 +137,10 @@ def _guard_db_target(db: Path, sprint_root: Path) -> None:
     source_db_abs = inputs_manifest.get("source_db_abs")
     if not source_db_abs:
         raise BuildError("inputs_manifest.json is missing 'source_db_abs'")
-    if resolved == Path(source_db_abs).resolve():
+    if resolved == Path(source_db_abs).resolve() and not allow_production:
         raise BuildError(
             f"--db must not be the production library pinned by "
-            f"inputs_manifest.json: {resolved.as_posix()}"
+            f"inputs_manifest.json without --allow-production: {resolved.as_posix()}"
         )
 
     snapshot_original = sprint_root / SNAPSHOT_ORIGINAL_NAME
@@ -460,12 +465,17 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Snapshot copy or temp database to build the shadow index into.",
     )
+    parser.add_argument(
+        "--allow-production",
+        action="store_true",
+        help="Explicitly permit building into production or dist/ databases.",
+    )
     args = parser.parse_args(argv)
 
     try:
         sprint_root = resolve_sprint_root(args.sprint_root)
         db = Path(args.db)
-        _guard_db_target(db, sprint_root)
+        _guard_db_target(db, sprint_root, allow_production=args.allow_production)
         if not db.is_file():
             raise BuildError(
                 f"--db does not exist; build into a snapshot copy or a prepared "
