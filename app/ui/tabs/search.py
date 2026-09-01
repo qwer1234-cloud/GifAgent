@@ -146,7 +146,9 @@ def build_search_tab(context) -> None:
                 placeholder="Describe what you're looking for...",
             )
         with gr.Column(scale=1):
-            search_btn = gr.Button("Search", variant="primary", size="lg")
+            with gr.Row():
+                search_btn = gr.Button("Search", variant="primary", size="lg", scale=2)
+                rebuild_btn = gr.Button("Rebuild Index", variant="secondary", size="lg", scale=1)
 
     with gr.Accordion("Filters", open=False):
         with gr.Row():
@@ -213,6 +215,18 @@ def build_search_tab(context) -> None:
         """Call _search with the new page and existing filter values."""
         return _search(*args, page=int(page_val))
 
+    def _do_rebuild() -> str:
+        """Trigger FTS index rebuild via workbench API."""
+        try:
+            resp = httpx.post(f"{API_BASE}/api/workbench/search/rebuild", timeout=120)
+            resp.raise_for_status()
+            data = resp.json()
+            inserted = data.get("inserted", 0)
+            errors = data.get("errors", 0)
+            return f"Index rebuild complete: {inserted} candidates indexed (errors: {errors})."
+        except Exception as exc:
+            return f"Index rebuild failed: {exc}"
+
     def _on_select(evt: gr.SelectData, results: list) -> str:
         """When a gallery item is selected, fetch and render its timeline."""
         if not results:
@@ -235,6 +249,12 @@ def build_search_tab(context) -> None:
         outputs=[gallery, status_text, page_slider, total_state, result_state],
     )
 
+    rebuild_btn.click(
+        fn=_do_rebuild,
+        inputs=[],
+        outputs=[status_text],
+    )
+
     query_text.submit(
         fn=_do_search,
         inputs=_search_inputs,
@@ -252,3 +272,4 @@ def build_search_tab(context) -> None:
         inputs=[result_state],
         outputs=[timeline_html],
     )
+

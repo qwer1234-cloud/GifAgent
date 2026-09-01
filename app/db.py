@@ -147,6 +147,15 @@ def init_db(apply_preference: bool = False):
 
     apply_search_schema(conn)
     apply_collections_schema(conn)
+    try:
+        cand_count = conn.execute("SELECT COUNT(*) FROM candidate_gifs").fetchone()[0]
+        fts_count = conn.execute("SELECT COUNT(*) FROM candidate_search_fts").fetchone()[0]
+        if cand_count > 0 and fts_count == 0:
+            from app.services.library_search import LibrarySearchService
+
+            LibrarySearchService(conn).rebuild_index()
+    except Exception:
+        pass
     conn.close()
 
 def _migrate(conn):

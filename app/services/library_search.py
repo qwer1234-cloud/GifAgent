@@ -10,9 +10,12 @@ Exposes three public operations:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sqlite3
+
+logger = logging.getLogger(__name__)
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -475,12 +478,14 @@ class LibrarySearchService:
                     # Normalize FTS rank: lower raw rank = better match.
                     # Convert so higher = better, range approx [0, 1).
                     fts_results[cid] = 1.0 / (1.0 + abs(row["rank"]))
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            logger.warning("FTS query failed for table %s: %s", fts_table, exc)
             if v2:
                 # Opt-in v2 mode must surface the failure, not degrade
                 # silently to an empty result.
                 self._fts_diagnostic = "FTS v2 missing"
-            # v1 (default): FTS table might be empty or not exist.
+            else:
+                self._fts_diagnostic = f"FTS query error: {exc}"
 
         # Compute vector similarity for filtered candidates
         vec_sims: dict[str, float] = {}

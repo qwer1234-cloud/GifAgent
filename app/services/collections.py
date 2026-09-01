@@ -462,11 +462,12 @@ class CollectionService:
             for i, (cid_i, sc_i) in enumerate(remaining):
                 # Compute min cosine distance to any selected candidate
                 if cid_i in cid_to_vec and selected_ids:
-                    min_dist = min(
+                    dists = [
                         _cosine_distance(cid_to_vec[cid_i], cid_to_vec[sid])
                         for sid in selected_ids
                         if sid in cid_to_vec
-                    )
+                    ]
+                    min_dist = min(dists) if dists else 0.0
                 else:
                     min_dist = 0.0
 

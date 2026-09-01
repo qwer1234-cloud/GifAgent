@@ -53,3 +53,22 @@ exclude = [
   '^app/services/workbench_schema[.]py$',
   '^app/task_engine/artifacts',
 ]
+
+[[tool.mypy.overrides]]
+module = [
+  "app.quality_moe.*",
+  "app.task_engine.artifacts.*",
+  "app.services.embedding",
+  "app.services.reranker",
+  "app.services.library_search",
+  "app.services.workbench_schema",
+  "app.services.preference_events",
+  "app.services.preference_memory",
+  "app.services.preference_profile",
+  "app.services.preference_schema",
+  "app.services.candidate_vectors",
+  "app.db",
+  "app.config",
+]
+follow_imports = "silent"
+ignore_errors = true

@@ -482,15 +482,27 @@ def live_rank_ids(
     ``skipped:`` when the ranker cannot be run honestly (then ids are empty
     and the report carries no scores for it).
     """
-    if ranker == "fts_v2":
-        # W8 owns the v2 table + ranking path; never fabricate scores.
-        return [], SKIP_FTS_V2_LIVE
-
     from app.services.library_search import LibrarySearchService
     from app.services.workbench_schema import SearchQuery
 
     if ranker == "fts_v1":
         service = LibrarySearchService(conn, embedder=None)
+    elif ranker == "fts_v2":
+        import os
+
+        old_env = os.environ.get("GIFAGENT_SEARCH_FTS_V2")
+        try:
+            os.environ["GIFAGENT_SEARCH_FTS_V2"] = "1"
+            service = LibrarySearchService(conn, embedder=None)
+            page = service.search(SearchQuery(text=query_text), limit=limit)
+            if page.degraded and page.diagnosis and "FTS v2 missing" in page.diagnosis:
+                return [], SKIP_FTS_V2_LIVE
+            return [item.candidate_id for item in page.items], "ok:live_rerun"
+        finally:
+            if old_env is None:
+                os.environ.pop("GIFAGENT_SEARCH_FTS_V2", None)
+            else:
+                os.environ["GIFAGENT_SEARCH_FTS_V2"] = old_env
     else:  # hybrid: caller must have resolved a query vector
         if query_vector is None:
             return [], SKIP_NO_QUERY_VECTOR
@@ -520,7 +532,12 @@ def prepare_live_rerank(
     embedder or cache); if any is missing the whole hybrid column is skipped.
     """
     if ranker == "fts_v2":
-        return {"status": SKIP_FTS_V2_LIVE}
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM candidate_search_fts_v2").fetchone()[0]
+            if count == 0:
+                return {"status": SKIP_FTS_V2_LIVE}
+        except sqlite3.OperationalError:
+            return {"status": SKIP_FTS_V2_LIVE}
     if ranker == "hybrid" and not _snapshot_has_vectors(conn):
         return {"status": SKIP_NO_CANDIDATE_VECTORS}
     grades_by_query, _excluded, _hash, _n = select_fully_judged(

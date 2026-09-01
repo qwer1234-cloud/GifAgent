@@ -103,6 +103,21 @@ class CandidateService:
                 now,
             ),
         )
+        # Sync into FTS index if table exists
+        summary_text = ""
+        if isinstance(vlm_summary, dict):
+            summary_text = vlm_summary.get("caption") or vlm_summary.get("summary") or ""
+        tags_text = " ".join(str(t) for t in (tags or []) if t)
+        fts_source = source_video_path or artifact_path or preview_path or ""
+        try:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO candidate_search_fts
+                   (candidate_id, summary, tags, source_path)
+                   VALUES (?, ?, ?, ?)""",
+                (candidate_id, summary_text, tags_text, fts_source),
+            )
+        except Exception:
+            pass
         self.conn.commit()
 
         # If INSERT OR IGNORE silently skipped (race), re-read
