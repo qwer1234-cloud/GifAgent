@@ -78,21 +78,19 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 4. **重新快照 + 重跑 T0**：等富化完成后执行（空文本会 100% 触发拒绝门，富化前跑无意义）。
 5. **五项后续工作启动（用户批准 #3–#7）**：Mimosa 深扫后台进行（jobId `scan-job-mte9fkh3`）；W6 mypy strict 与 Stage C p2/v2 agent 并行（分支 `sprint/w6-mypy`、`sprint/w1-stagec`，均自 master b31eb794）；W8 首派被并发上限杀、已排队（approved_enrichment_manifest.json 已由 coordinator 落盘）；歧义 2,099 条工作集重建完成（绕过明细 1,000 条上限）——**全部 2,099 条候选内容一致，可自动裁定**（全量 MD5 终验在跑），0 条需要 LLM 裁定，写入生产库仍等用户确认；#4 搜索评测基线 staged（evalsets 为空，qrels 需富化完成后构建）。manifest **rev22**。
 
-## 8. Stage C 滚动扩片终态（2026-08-31 更新，配额墙终止）
+## 8. Stage C 滚动扩片终态（2026-09-01 更新，Stage C 100% 结项）
 
 ### 终态数字
-- **已验收 29/30 分片**（shard-001–029，四链齐全，全部「全量 facet 逐字 0 失败」）：
-  - rowid 覆盖 **80–13277**，**12,400 / 12,827 已富化行（96.7%）**
-  - manifest **rev60**（62 artifacts）；master tip `080c0a75`
-- **shard-030（末片，约 427 行，rowid 13277 之后全部）未执行**：派发 25 秒即报 **exceed quota limit**（明确的额度耗尽，非瞬时故障）——配额墙确认，滚动终止。无任何残留（worktree/分片均未创建）。
+- **已验收 30/30 全量分片**（shard-001–030，四链齐全，全部「全量 facet 逐字 0 失败」）：
+  - rowid 覆盖 **80–13704**，**12,827 / 12,827 已富化行（100.0%）**
+  - canonical manifest **rev61**（63 artifacts）；master tip `27e52009`
+- **shard-030（末片，427 行，rowid 13278–13704）已执行并通过独立验收**：
+  - 产出 `shard-030.p2.v2.c760b35a-6cf0-45db-8de0-015c5d2ce8bf.jsonl`（427 行，sha256 `0884bce5…`）；
+  - Stock validator 与独立全量 audit（454 个可选 facet 逐字比对 0 失败）全部 PASS；
+  - .ready、.done 与 receipt 链条完整，已由 coordinator 收账合入 manifest rev61，分支 `sprint/w1-stagec30` 合入 master。
+- **Stage C 结项**：累计覆盖 12,827/12,827 生产富化行，P2 场景元数据全量交付完毕。
 
-### 恢复配方（额度恢复后照做即可）
-1. 建分支 worktree：`git worktree add .worktrees/sprint-w1-stagec30 -b sprint/w1-stagec30 master`
-2. 派一个 Stage C executor（**单槽**），prompt 模板与 shard-029 相同，仅改：接力基线 rowid **13277**、行数=「13277 之后全部已富化行」（约 427 行，9 子批 × 50）、报告文件名 shard30；硬规则（源文逐字 + 连字符≡分隔符裁定 + 禁写 .done）必须原样保留
-3. 验收：协调会话用 `data/token_sprint/tmp_verify_shard.py <output> <input>`（校验 sha 链/ID 序/全量逐字）→ `write_done` + `write_receipt` → `reconcile_receipts.py --once` → merge → 删临时校验脚本
-4. 全部完成后：累计覆盖 12,827/12,827，Stage C 结项
-
-### 过程要点（后续扩片者必读）
+### 过程要点（经验归档）
 - **接力式窗口**：以上一片输入末行 rowid 为基线取「之后全部已富化行」——库内散布 artifact 缺失的未富化行（设计排除，约占 25–30%），固定 OFFSET 会漂移（shard-009 教训）
 - **分批节奏**：500 行 = 10 子批 × 50，每子批 tmp+os.replace 原子落盘 + 逐字断言——多次模型故障只损失当时子批，恢复 agent「核验已有行 → 续写」即可（shard-011/012/016/019 四次恢复全部成功）
 - **连字符≡分隔符裁定**（2026-08-30）：caption 连字符与 scene 标签下划线等价（thigh-highs → thigh_highs），校验器已按此归一
@@ -101,15 +99,16 @@ canonical manifest **rev16，27 artifacts**（w1=10、w2=2、w3=8、w5=1、w7=6�
 ### 本阶段全部收官项（自冲刺结束起）
 | 项 | 结果 |
 |---|---|
-| master 合并 | sprint/integration 97 commits 快进 + 后续全部工作（tip `080c0a75`） |
+| master 合并 | sprint/integration 97 commits 快进 + 后续全部工作（tip `27e52009`） |
 | 生产库重链 | 25,109 + 2,099 条应用（零漂移），断链 29,875 → **2,661**（终态=未下载文件） |
 | 生产富化 | 12,827/13,625（94.1%，本地 Ollama Qwen3-VL 8B，零 GLM 消耗）；798 条=无文件可富化 |
 | v2 快照 + T0 重跑 | 三门全过（拒绝 0% / schema 100% / 保真 95%），数据轨复活 |
 | 搜索基线 | NDCG@10 0.6935 / @24 0.8290（fts_v1）；hybrid 未超；词干碰撞=改进路线图 |
-| Stage C p2/v2 | 29 片 12,400 行（96.7%），见上节 |
+| Stage C p2/v2 | 30 片 12,827 行（**100.0%**），全量结项 |
 | W6 mypy | 白名单 196→0，冻结区零 diff |
 | W8 shadow FTS | 工具链 + 篡改 fail-closed + env 门，影子验证完成 |
 | 歧义裁定 | 2,099 条全内容一致 → 已写回 |
 | Mimosa 分诊 | 39 = 36 FP / 0 real / 3 hardening（已修）；P1=0 |
-| 测试修复 | 4 个预存失败全解（3 过时断言 + 富化脚本 localhost）；全量 2159 passed |
+| 测试修复 | 4 个预存失败全解（3 过时断言 + 富化脚本 localhost）；全量 2159+ passed |
 | final_score | 不盲填（语义冲突+校准关闭+守卫存在）；worthiness 特性接入待用户立项 |
+
