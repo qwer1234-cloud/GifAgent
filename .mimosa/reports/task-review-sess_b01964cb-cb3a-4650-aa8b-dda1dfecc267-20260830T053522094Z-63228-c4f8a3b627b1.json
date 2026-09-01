@@ -1,0 +1,207 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260830T053522094Z-63228-c4f8a3b627b1",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "bash-discovery",
+      "target": ".worktrees/sprint-triage/app/services/schemas.py",
+      "reason": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files"
+    },
+    {
+      "stage": "baseline",
+      "target": ".",
+      "reason": "baseline_partial: baseline capture had enumeration or snapshot errors"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": false,
+      "captured_files": 3,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 3
+    },
+    "change_tracking": {
+      "touched_observed": 3,
+      "touched_retained": 3,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 3,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 3,
+      "selected_files": 3,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 3,
+      "scanned_files": 3,
+      "skipped_files": 0,
+      "failed_files": 0,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "bash_discovery_incomplete": 1,
+      "baseline_partial": 1,
+      "project_check_failed": 2
+    },
+    "reasons": [
+      {
+        "code": "bash_discovery_incomplete",
+        "stage": "bash-discovery",
+        "target": ".worktrees/sprint-triage/app/services/schemas.py",
+        "detail": "project enumeration exceeded 5000 reviewable files",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_partial",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline capture had enumeration or snapshot errors",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": ".worktrees/sprint-triage/app/services/schemas.py",
+        "detail": "bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline",
+        "target": ".",
+        "detail": "baseline_partial: baseline capture had enumeration or snapshot errors",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-08-30T05:35:22.094Z",
+  "session_id": "sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267",
+  "target": ".",
+  "revision": "23158a6804ac89dccc7c5c9aad075f5da099789a",
+  "rules_version": "unavailable",
+  "diff_hash": "b7966b8ad99723e4c909254aa955bfb1a7bace565fd41a409b425c96b0b873f1",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 3,
+    "changed_files": [
+      {
+        "file": "scripts/enrich_library_candidates.py",
+        "ranges": [
+          {
+            "start": 44,
+            "end": 44
+          }
+        ],
+        "before_hash": "59fa2b3fcf2e853124c0e86b1058ea206cba1b49cc8b3ab46352593a744f403a",
+        "after_hash": "2d21bdad12904655210e24c5f5d8a2fe855dd47a5455ef7ab88bb2f09b9d7e8e"
+      },
+      {
+        "file": "tests/test_preference_preflight.py",
+        "ranges": [
+          {
+            "start": 6,
+            "end": 6
+          },
+          {
+            "start": 8,
+            "end": 25
+          },
+          {
+            "start": 47,
+            "end": 47
+          },
+          {
+            "start": 68,
+            "end": 68
+          },
+          {
+            "start": 109,
+            "end": 123
+          }
+        ],
+        "before_hash": "c5add815c5815df127a92bd1e3f8dc35c508f209d1bc0ea00fcc8dec9813b08a",
+        "after_hash": "33c63b079bd0fa7c9fffab7f7b5125f1f9876e71c38922f84a7f85acc3c513b0"
+      },
+      {
+        "file": "tests/token_sprint/test_audit_data_quote_ident.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 36
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "45501d7f4511b18994deb570b44e9e48a9ed1636b81d1d83cd9da106092f38fa"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-08-30T05:35:20.061Z",
+    "completed_at": "2026-08-30T05:35:22.094Z",
+    "duration_ms": 2033,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 2033,
+    "peakMemoryBytes": 143241216,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 3,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260830T053522094Z-63228-c4f8a3b627b1.json",
+    "latest_report": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267.json",
+    "history_summary": ".mimosa/history/run-20260830T053522094Z-63228-c4f8a3b627b1.json"
+  }
+}

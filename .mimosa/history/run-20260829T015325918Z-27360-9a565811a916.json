@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260829T015325918Z-27360-9a565811a916",
+  "runStatus": "inconclusive",
+  "errors": [
+    "candidate-select:.worktrees/sprint-integration/tests/property/test_vector_math.py: candidate_limit_exceeded: 13 changed reviewable file(s) were not scanned because the limit is 20",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_audit_data.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_eval_harness.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_ingest_export_corpus.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_make_export_shards.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_make_shards.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_merge_shards.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_prompt_version.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_relink_proposals.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_snapshot_fts_rebuild.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_synth_preference_stress.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_validate_shard.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/token_sprint/test_validate_vocab_entries.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/conftest.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_calibration.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_clip_merge.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_extract_config.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_grid_select.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_normalize_vlm_unit_score.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_taste_map.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-integration/tests/property/test_timeline.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_audit_data.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_eval_harness.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_ingest_export_corpus.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_make_export_shards.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_make_shards.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_merge_shards.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_prompt_version.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_relink_proposals.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_snapshot_fts_rebuild.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_synth_preference_stress.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_validate_shard.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_validate_vocab_entries.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/conftest.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_calibration.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_clip_merge.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_extract_config.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_grid_select.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_normalize_vlm_unit_score.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_taste_map.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/property/test_timeline.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "df3dde0b3250809c78539e919addba63823d3fed",
+  "diffHash": "1477e03b8cdfd72400e3b32c5f40a89cc036d70498d4433f8c6c5d7ce29a4d94",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-08-29T01:53:25.918Z",
+  "timing": {
+    "startedAt": "2026-08-29T01:53:21.850Z",
+    "completedAt": "2026-08-29T01:53:25.918Z",
+    "durationMs": 4068
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "candidate_limit_exceeded": 1,
+      "baseline_snapshot_unreadable": 20,
+      "scanner_failed": 20,
+      "project_check_failed": 41
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260829T015325918Z-27360-9a565811a916.json"
+}

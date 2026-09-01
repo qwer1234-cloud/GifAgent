@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260829T120507125Z-46496-6bdfc09acf89",
+  "runStatus": "inconclusive",
+  "errors": [
+    "baseline-read:tests/token_sprint/test_search_fts_v2.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:scripts/token_sprint/build_fts_v2.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "scan:tests/token_sprint/test_search_fts_v2.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/build_fts_v2.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:app/services/library_search.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:app/services/workbench_schema.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+  ],
+  "target": ".",
+  "revision": "f27567c13cd9ae416eefe900b18fa18fe74d30fd",
+  "diffHash": "c8bf63808b3a5e3e97411578c72f69540d92ebd00c31ea565b977fddaf1d1067",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-08-29T12:05:07.125Z",
+  "timing": {
+    "startedAt": "2026-08-29T12:05:01.210Z",
+    "completedAt": "2026-08-29T12:05:07.125Z",
+    "durationMs": 5915
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "baseline_snapshot_unreadable": 2,
+      "scanner_failed": 4,
+      "project_check_failed": 6
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260829T120507125Z-46496-6bdfc09acf89.json"
+}

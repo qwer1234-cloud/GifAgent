@@ -1,0 +1,41 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260830T081340353Z-66888-283f82a6bf6a",
+  "runStatus": "inconclusive",
+  "errors": [
+    "bash-discovery:.worktrees/sprint-w1-stagec2/app/task_engine/artifacts/store.py: bash_discovery_incomplete: project enumeration exceeded 5000 reviewable files",
+    "baseline:.: baseline_partial: baseline capture had enumeration or snapshot errors"
+  ],
+  "target": ".",
+  "revision": "e9ca5bab26dd11a0ba5a2cb0e51d31498661dc15",
+  "diffHash": "fb6720d618cf0f0f517fff6f3d3832a8ea9b1dccefabc0fe9a9ed8301bb71feb",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-08-30T08:13:40.353Z",
+  "timing": {
+    "startedAt": "2026-08-30T08:13:38.500Z",
+    "completedAt": "2026-08-30T08:13:40.353Z",
+    "durationMs": 1853
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "bash_discovery_incomplete": 1,
+      "baseline_partial": 1,
+      "project_check_failed": 2
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260830T081340353Z-66888-283f82a6bf6a.json"
+}

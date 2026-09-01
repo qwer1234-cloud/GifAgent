@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "mimosa-finding-ledger-batch/v1",
+  "batchId": "stop-20260829T104354418Z-60528-70261fa6b0d9",
+  "runId": "20260829T104354418Z-60528-70261fa6b0d9",
+  "runStatus": "inconclusive",
+  "coverage": {
+    "status": "partial",
+    "reasons": [
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "scripts/enrich_library_candidates.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affectsCompletion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "scripts/enrich_library_candidates.py",
+        "detail": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affectsCompletion": true
+      }
+    ]
+  },
+  "source": {
+    "component": "zcode-hook",
+    "operationId": "Stop"
+  },
+  "revision": "00f99bc906de75014039c0a5fa834e96a5464a24",
+  "diffHash": "a3a17edc1fb4aeaea29b140166f7762700edfa39e5299549ccfb921435f3e281",
+  "rulesVersion": "unavailable",
+  "sessionHash": "198a68f25b95d2484302f1fa8f739029706914bb15355b3625274f09da03d792",
+  "reportRef": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260829T104354418Z-60528-70261fa6b0d9.json",
+  "events": [
+    {
+      "eventId": "hook-9cc2b4a8b8e03ae786c6d5bdb50e8d09",
+      "findingId": "mimosa-4e3efe59dda4791ac1d94cac",
+      "type": "finding_blocked",
+      "at": "2026-08-29T10:38:50.721Z",
+      "identity": {
+        "projectRelativeFile": "scripts/enrich_library_candidates.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 202,
+      "endLine": 202,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5"
+      },
+      "sequence": 0
+    },
+    {
+      "eventId": "hook-9256d2800ab4c6a25337839eb0b69430",
+      "findingId": "mimosa-1bd71937f19518aa3c81070d",
+      "type": "finding_blocked",
+      "at": "2026-08-29T10:38:50.721Z",
+      "identity": {
+        "projectRelativeFile": "scripts/enrich_library_candidates.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 253,
+      "endLine": 253,
+      "reasonCode": "deny",
+      "reportedToAgent": true,
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "evidenceHash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8"
+      },
+      "sequence": 1
+    },
+    {
+      "eventId": "hook-fa93b5b11af8de971ed2355c59d23e52",
+      "findingId": "mimosa-4e3efe59dda4791ac1d94cac",
+      "type": "static_fix_verified",
+      "at": "2026-08-29T10:39:52.676Z",
+      "identity": {
+        "projectRelativeFile": "scripts/enrich_library_candidates.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 202,
+      "endLine": 202,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5"
+      },
+      "sequence": 2
+    },
+    {
+      "eventId": "hook-8563a6b7bf61c2c41fc18aa09f6dd7c8",
+      "findingId": "mimosa-1bd71937f19518aa3c81070d",
+      "type": "static_fix_verified",
+      "at": "2026-08-29T10:39:52.676Z",
+      "identity": {
+        "projectRelativeFile": "scripts/enrich_library_candidates.py",
+        "ruleId": "security",
+        "codeEvidenceHash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "confidence": "stable"
+      },
+      "scope": "direct",
+      "line": 253,
+      "endLine": 253,
+      "reasonCode": "static_rescan_passed",
+      "reportedToAgent": false,
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "evidenceHash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8"
+      },
+      "sequence": 3
+    }
+  ],
+  "observedFindingIds": [],
+  "verifiedFiles": [],
+  "recordedAt": "2026-08-29T10:43:54.960Z"
+}

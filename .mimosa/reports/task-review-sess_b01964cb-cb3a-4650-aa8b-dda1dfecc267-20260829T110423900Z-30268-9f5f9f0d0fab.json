@@ -1,0 +1,1001 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260829T110423900Z-30268-9f5f9f0d0fab",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "bash-discovery",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_timeline.py",
+      "reason": "bash_discovery_truncated: changed-file discovery exceeded 80 files"
+    },
+    {
+      "stage": "candidate-select",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_batch_queue.py",
+      "reason": "candidate_limit_exceeded: 60 changed reviewable file(s) were not scanned because the limit is 20"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/requirements.txt",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/action_media_fixtures.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_boundary.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_candidates.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_pipeline.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_vlm.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_api.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_ui.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_config.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_action.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_transition.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_filename.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_attention_inbox.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_batch_logging.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_batch_process_status.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_batch_queue.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_boundary_snap.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidates_api.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_materialization.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "baseline-read",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_auto_advance.py",
+      "reason": "baseline_snapshot_unreadable: file is missing from task baseline"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/action_media_fixtures.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_boundary.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_candidates.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_pipeline.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_action_vlm.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_api.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_ui.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_config.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_action.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_transition.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_filename.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_attention_inbox.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_batch_logging.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_batch_process_status.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_batch_queue.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_boundary_snap.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidates_api.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_materialization.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "scan",
+      "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_auto_advance.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "stage": "supply-chain-check",
+      "target": ".",
+      "reason": "stop_budget_exhausted: focused supply-chain check was not run before the gate budget"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 3810,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 0
+    },
+    "change_tracking": {
+      "touched_observed": 0,
+      "touched_retained": 0,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 80,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": true
+    },
+    "candidates": {
+      "eligible_files": 80,
+      "selected_files": 20,
+      "limit": 20,
+      "truncated": true
+    },
+    "scanning": {
+      "required_files": 19,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 19,
+      "project_checks_required": 1,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "bash_discovery_truncated": 1,
+      "candidate_limit_exceeded": 1,
+      "baseline_snapshot_unreadable": 20,
+      "scanner_failed": 19,
+      "stop_budget_exhausted": 1,
+      "project_check_failed": 42
+    },
+    "reasons": [
+      {
+        "code": "bash_discovery_truncated",
+        "stage": "bash-discovery",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_timeline.py",
+        "detail": "changed-file discovery exceeded 80 files",
+        "affects_completion": true
+      },
+      {
+        "code": "candidate_limit_exceeded",
+        "stage": "candidate-select",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_batch_queue.py",
+        "detail": "60 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/requirements.txt",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/action_media_fixtures.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_boundary.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_candidates.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_pipeline.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_vlm.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_api.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_ui.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_config.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_action.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_transition.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_filename.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_attention_inbox.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_logging.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_process_status.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_queue.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_boundary_snap.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidates_api.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_materialization.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "baseline_snapshot_unreadable",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_auto_advance.py",
+        "detail": "file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/action_media_fixtures.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_boundary.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_candidates.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_pipeline.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_vlm.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_api.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_ui.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_config.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_action.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_transition.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_filename.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_attention_inbox.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_logging.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_process_status.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_queue.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_boundary_snap.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidates_api.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_materialization.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_auto_advance.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "stop_budget_exhausted",
+        "stage": "supply-chain-check",
+        "target": ".",
+        "detail": "focused supply-chain check was not run before the gate budget",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "bash-discovery",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_timeline.py",
+        "detail": "bash_discovery_truncated: changed-file discovery exceeded 80 files",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "candidate-select",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_batch_queue.py",
+        "detail": "candidate_limit_exceeded: 60 changed reviewable file(s) were not scanned because the limit is 20",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/requirements.txt",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/action_media_fixtures.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_boundary.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_candidates.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_pipeline.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_action_vlm.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_api.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_active_review_ui.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_config.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_action.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_transition.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_adaptive_filename.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_attention_inbox.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_logging.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_process_status.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_batch_queue.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_boundary_snap.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidates_api.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_materialization.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "baseline-read",
+        "target": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_auto_advance.py",
+        "detail": "baseline_snapshot_unreadable: file is missing from task baseline",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": true
+  },
+  "generated_at": "2026-08-29T11:04:23.900Z",
+  "session_id": "sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267",
+  "target": ".",
+  "revision": "72d58b7bfb48dd10bbad8526c5e241aef4af4034",
+  "rules_version": "unavailable",
+  "diff_hash": "47066e547237673a6fe9de9ba02e6b38011365fdc359701d1670a187044a4d4d",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 20,
+    "changed_files": [
+      {
+        "file": ".worktrees/sprint-w6-mypy/requirements.txt",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 13
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "f146bc802489cf5b124ca150407c455a2130047787b9dfccc44bb91bdb6d6851"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/action_media_fixtures.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 197
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "ddf81c2ad00db823acf7bbd0f37e0f0aa9f7a57f99f68c0d527113b022d3af27"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_action_boundary.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 278
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "74f4212eb7a27fb253dd27000cfc85d7a179ea49a3ba0d75031eebcf2892f8e3"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_action_candidates.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 405
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "e7eeacc5fbb3dd5a77065a302e63637d695582e9ffb8e9c65873448e20b898ec"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_action_pipeline.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 942
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c38a1ae6bd88ab96c426f99ad6e99fd9b227065570f9b32fe3e76a4e0305e972"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_action_vlm.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 145
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "5e8022402777b284cf8c7eb9af3be0535f0829a9bd39e72802ed4bfd8f4eb920"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_active_review_api.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 584
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "2ce4ef571e79d85dd84ebc1101bade77081079762d723d699b98b9947f3259e7"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_active_review_ui.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 150
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "c8bad5430738356f1d0d809e42a3a53856962e6207011590a7e673113960bf20"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_adaptive_config.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 818
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "318d534cb21299a2ed967ab01d6205b191fde2a86aff07d5be962a17eb95fe40"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_action.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 275
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "a9eebc8e13d561c43670cb6abe13c35ff59073780e6fac7759bac0bff79844f6"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_adaptive_direct_transition.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 360
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "28c3749b8841e35c0b1f2d65064d96e6ababb5e31a7e854c12bec269a9c44fee"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_adaptive_filename.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 11
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "0f7384b4d7096be9695fd5c6d0e74d20d9622f816470f8dd626bc684603210a1"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_attention_inbox.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 752
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "6a16668f6d2dbfcba392893e5bacc1c36148951fc63ed2f9435f3577b4c22daf"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_batch_logging.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 194
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "43e309e11eef4b46069ccec77b277f0352d9aee6e367463c66e15af8d2d2cdbe"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_batch_process_status.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 96
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "3778924bb19afd9bb19ddd74d5087a7b3d386824dc76b7a46f3ffb5d1d84c3ab"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_batch_queue.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 215
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "f40b2801fb3b9739dd03c2b5a9458c0dd80c1032bd9f68d9f1154d3a4cf8001d"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_boundary_snap.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 148
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "6f42e06164a7f1e286dd9fac59b918426af1be36d1592b44b292bcfa79e4fdda"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_candidate_materialization.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 193
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "f415f2b3b76463ff308f390cbc7cc58d3600c05cc2942cb5bf002bc6e435d8ca"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_candidate_review_auto_advance.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 483
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "5f3e04153d76e235608c04727986c5a03b12c668a3f9ba130daca407e0881426"
+      },
+      {
+        "file": ".worktrees/sprint-w6-mypy/tests/test_candidates_api.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 588
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "2baea7b51df0c710ef94ff16df5fbf06b4853957e45f63804a4216af9915ef7f"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-08-29T11:04:18.766Z",
+    "completed_at": "2026-08-29T11:04:23.900Z",
+    "duration_ms": 5134,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 5134,
+    "peakMemoryBytes": 134053888,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260829T110423900Z-30268-9f5f9f0d0fab.json",
+    "latest_report": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267.json",
+    "history_summary": ".mimosa/history/run-20260829T110423900Z-30268-9f5f9f0d0fab.json"
+  }
+}

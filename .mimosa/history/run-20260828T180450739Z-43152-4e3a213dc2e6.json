@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "mimosa-finding-history/v1",
+  "runId": "20260828T180450739Z-43152-4e3a213dc2e6",
+  "runStatus": "inconclusive",
+  "errors": [
+    "bash-discovery:.worktrees/sprint-w8-shadow-fts/tests/test_rank_pipeline_preference.py: bash_discovery_truncated: changed-file discovery exceeded 80 files",
+    "candidate-select:.worktrees/sprint-w8-shadow-fts/tests/test_action_boundary.py: candidate_limit_exceeded: 69 changed reviewable file(s) were not scanned because the limit is 20",
+    "baseline-read:.worktrees/sprint-w8-shadow-fts/requirements.txt: baseline_snapshot_unreadable: file is missing from task baseline",
+    "baseline-read:.worktrees/sprint-w8-shadow-fts/tests/action_media_fixtures.py: baseline_snapshot_unreadable: file is missing from task baseline",
+    "scan:scripts/token_sprint/__init__.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/coordinator/__init__.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/coordinator/common.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:tests/token_sprint/__init__.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:tests/token_sprint/test_coordinator_protocol.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/coordinator/preflight.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/coordinator/protocol.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/coordinator/reconcile_receipts.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:scripts/token_sprint/coordinator/prepare_inputs.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/__init__.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/__init__.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/coordinator/__init__.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/coordinator/common.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/coordinator/preflight.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/coordinator/protocol.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/coordinator/reconcile_receipts.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/scripts/token_sprint/coordinator/prepare_inputs.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-integration/tests/token_sprint/test_coordinator_protocol.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "scan:.worktrees/sprint-w8-shadow-fts/tests/action_media_fixtures.py: scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+    "supply-chain-check:.: stop_budget_exhausted: focused supply-chain check was not run before the gate budget"
+  ],
+  "target": ".",
+  "revision": "df3dde0b3250809c78539e919addba63823d3fed",
+  "diffHash": "fc353a8955406e0f92fda1d809a41400cc2f369f6dc603f881fac03bc6156287",
+  "rulesVersion": "unavailable",
+  "recordedAt": "2026-08-28T18:04:50.739Z",
+  "timing": {
+    "startedAt": "2026-08-28T18:04:47.302Z",
+    "completedAt": "2026-08-28T18:04:50.739Z",
+    "durationMs": 3437
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "modelCalls": 0,
+    "measurement": "known-zero"
+  },
+  "findings": {
+    "total": 0,
+    "bySeverity": {},
+    "byStatus": {}
+  },
+  "coverage": {
+    "status": "partial",
+    "reasonCounts": {
+      "bash_discovery_truncated": 1,
+      "candidate_limit_exceeded": 1,
+      "baseline_snapshot_unreadable": 2,
+      "scanner_failed": 19,
+      "stop_budget_exhausted": 1,
+      "project_check_failed": 24
+    }
+  },
+  "evidenceBoundary": "static_only",
+  "immutableReport": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260828T180450739Z-43152-4e3a213dc2e6.json"
+}

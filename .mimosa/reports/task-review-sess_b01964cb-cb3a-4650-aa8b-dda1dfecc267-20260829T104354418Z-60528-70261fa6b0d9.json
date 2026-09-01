@@ -1,0 +1,292 @@
+{
+  "schema_version": "mimosa-task-review/v2",
+  "run_id": "20260829T104354418Z-60528-70261fa6b0d9",
+  "run_status": "inconclusive",
+  "errors": [
+    {
+      "stage": "scan",
+      "target": "scripts/enrich_library_candidates.py",
+      "reason": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT"
+    }
+  ],
+  "coverage": {
+    "schema_version": "mimosa-hook-coverage/v1",
+    "status": "partial",
+    "scope": "hook_observed_diff",
+    "baseline": {
+      "complete": true,
+      "captured_files": 3810,
+      "candidate_limit": 5000,
+      "truncated": false,
+      "enumeration_error_count": 0,
+      "snapshot_error_count": 0,
+      "compensated_target_count": 1
+    },
+    "change_tracking": {
+      "touched_observed": 1,
+      "touched_retained": 1,
+      "truncated": false,
+      "bash_mutation": true,
+      "bash_discovered": 1,
+      "bash_discovery_limit": 80,
+      "bash_discovery_truncated": false
+    },
+    "candidates": {
+      "eligible_files": 1,
+      "selected_files": 1,
+      "limit": 20,
+      "truncated": false
+    },
+    "scanning": {
+      "required_files": 1,
+      "scanned_files": 0,
+      "skipped_files": 0,
+      "failed_files": 1,
+      "project_checks_required": 0,
+      "project_checks_completed": 0
+    },
+    "notification": {
+      "eligible_findings": 0,
+      "detailed_findings": 0,
+      "detail_limit": 3,
+      "truncated": false
+    },
+    "reason_counts": {
+      "scanner_failed": 1,
+      "project_check_failed": 1
+    },
+    "reasons": [
+      {
+        "code": "scanner_failed",
+        "stage": "scan",
+        "target": "scripts/enrich_library_candidates.py",
+        "detail": "spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      },
+      {
+        "code": "project_check_failed",
+        "stage": "scan",
+        "target": "scripts/enrich_library_candidates.py",
+        "detail": "scanner_failed: spawnSync C:\\nvm4w\\nodejs\\node.exe ETIMEDOUT",
+        "affects_completion": true
+      }
+    ],
+    "reasons_truncated": false
+  },
+  "generated_at": "2026-08-29T10:43:54.418Z",
+  "session_id": "sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267",
+  "target": ".",
+  "revision": "00f99bc906de75014039c0a5fa834e96a5464a24",
+  "rules_version": "unavailable",
+  "diff_hash": "a3a17edc1fb4aeaea29b140166f7762700edfa39e5299549ccfb921435f3e281",
+  "diff": {
+    "algorithm": "sha256",
+    "changed_file_count": 1,
+    "changed_files": [
+      {
+        "file": "scripts/enrich_library_candidates.py",
+        "ranges": [
+          {
+            "start": 1,
+            "end": 280
+          }
+        ],
+        "before_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "after_hash": "59fa2b3fcf2e853124c0e86b1058ea206cba1b49cc8b3ab46352593a744f403a"
+      }
+    ]
+  },
+  "timing": {
+    "started_at": "2026-08-29T10:43:49.279Z",
+    "completed_at": "2026-08-29T10:43:54.418Z",
+    "duration_ms": 5139,
+    "measurement": "hook_wall_clock"
+  },
+  "tokens": {
+    "input": 0,
+    "output": 0,
+    "total": 0,
+    "model_calls": 0,
+    "measurement": "known-zero"
+  },
+  "telemetry": {
+    "schemaVersion": "mimosa-gate-telemetry/v1",
+    "profile": "gate",
+    "operation": "Stop",
+    "outcome": "partial/INCONCLUSIVE",
+    "latencyMs": 5139,
+    "peakMemoryBytes": 130785280,
+    "memoryMeasurement": "max-observed-process-rss",
+    "scannedFiles": 0,
+    "cache": {
+      "hits": 0,
+      "misses": 0,
+      "measurement": "not-applicable"
+    },
+    "denyCount": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "total": 0,
+      "modelCalls": 0,
+      "measurement": "known-zero"
+    }
+  },
+  "finding_count": 0,
+  "rewake_finding_count": 0,
+  "evidence_boundary": {
+    "scan": "candidate",
+    "static_fix_verification": "observed_static_only",
+    "runtime_verification": "not_performed"
+  },
+  "finding_events": [
+    {
+      "finding_id": "mimosa-4e3efe59dda4791ac1d94cac",
+      "file": "scripts/enrich_library_candidates.py",
+      "line": 202,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "SQL 注入",
+      "status": "blocked",
+      "decision": "deny",
+      "at": "2026-08-29T10:38:50.721Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-1bd71937f19518aa3c81070d",
+      "file": "scripts/enrich_library_candidates.py",
+      "line": 253,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "SQL 注入",
+      "status": "blocked",
+      "decision": "deny",
+      "at": "2026-08-29T10:38:50.721Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "runtime_oracle": false
+      }
+    },
+    {
+      "finding_id": "mimosa-4e3efe59dda4791ac1d94cac",
+      "file": "scripts/enrich_library_candidates.py",
+      "line": 202,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "SQL 注入",
+      "status": "fixed_candidate",
+      "decision": "repair_observed",
+      "at": "2026-08-29T10:39:52.676Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "candidate_before_evidence_hash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "post_change_evidence_hash_at_previous_location": "e541785a2d057bbf9a7accf7a3e42dc2be679024c066a99a179e33dfede24aac",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    },
+    {
+      "finding_id": "mimosa-4e3efe59dda4791ac1d94cac",
+      "file": "scripts/enrich_library_candidates.py",
+      "line": 202,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "SQL 注入",
+      "status": "static_verified",
+      "decision": "static_rescan_passed",
+      "at": "2026-08-29T10:39:52.676Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "candidate_before_evidence_hash": "c7f27d4c021f5e58b39d9d2a32c6a9d916dbc61392d2c54422aa01e155c7bed5",
+        "post_change_evidence_hash_at_previous_location": "e541785a2d057bbf9a7accf7a3e42dc2be679024c066a99a179e33dfede24aac",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    },
+    {
+      "finding_id": "mimosa-1bd71937f19518aa3c81070d",
+      "file": "scripts/enrich_library_candidates.py",
+      "line": 253,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "SQL 注入",
+      "status": "fixed_candidate",
+      "decision": "repair_observed",
+      "at": "2026-08-29T10:39:52.676Z",
+      "evidence": {
+        "kind": "source",
+        "boundary": "candidate",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "candidate_before_evidence_hash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "post_change_evidence_hash_at_previous_location": "e0503df1373fd727579e424dae4e2e420749bd91d23dabac600388e4ba2ccbe7",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    },
+    {
+      "finding_id": "mimosa-1bd71937f19518aa3c81070d",
+      "file": "scripts/enrich_library_candidates.py",
+      "line": 253,
+      "rule_id": "security",
+      "severity": "high",
+      "category": "SQL 注入",
+      "status": "static_verified",
+      "decision": "static_rescan_passed",
+      "at": "2026-08-29T10:39:52.676Z",
+      "evidence": {
+        "kind": "static_scan",
+        "boundary": "observed",
+        "producer": "deterministic",
+        "source": "semgrep",
+        "evidence_hash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "candidate_before_evidence_hash": "6cc1d2a7a055b8f7cf82eed227da78255e54eccac860f4a417f643d8e98851d8",
+        "post_change_evidence_hash_at_previous_location": "e0503df1373fd727579e424dae4e2e420749bd91d23dabac600388e4ba2ccbe7",
+        "runtime_oracle": false,
+        "verification": {
+          "method": "mimosa-posttool-static-rescan",
+          "finding_absent": true,
+          "runtime_oracle": false
+        }
+      }
+    }
+  ],
+  "findings": [],
+  "artifacts": {
+    "immutable_report": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267-20260829T104354418Z-60528-70261fa6b0d9.json",
+    "latest_report": ".mimosa/reports/task-review-sess_b01964cb-cb3a-4650-aa8b-dda1dfecc267.json",
+    "history_summary": ".mimosa/history/run-20260829T104354418Z-60528-70261fa6b0d9.json"
+  }
+}
