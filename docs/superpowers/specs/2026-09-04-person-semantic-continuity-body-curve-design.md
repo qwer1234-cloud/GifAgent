@@ -2,9 +2,11 @@
 
 日期：2026-09-04
 
+修订日期：2026-09-05
+
 状态：review 修订完成，待用户复核
 
-范围：新增素材的强制连续性门禁、历史 GIF 的有限回刷、身体曲线偏好评分
+范围：新增素材的强制连续性门禁、动作幅度与条件式人脸表情判定、历史 GIF 的有限回刷、身体曲线偏好评分
 
 ## 1. 背景
 
@@ -55,6 +57,8 @@ GifAgent 当前已经具备转场检测、基于运动残差的动作边界分�
 5. 为身体曲线审美建立独立、可关闭、可评估的 Preference Memory 特征通道。
 6. 对历史 GIF 做可恢复的内部连续性回刷，同时诚实标记无法验证的外部上下文。
 7. 允许 GLM-5.3-Flash 在 Harness 中辅助开发、标注和离线复核，但生产流水线不依赖 Coding Plan。
+8. 以相机运动补偿后的归一化时序曲线判断动作幅度和动作阶段，不把低幅动作简单判坏。
+9. 当画面中存在可用人脸时检查可观察表情变化是否连续；没有可用人脸时明确记为不适用，而不是猜测情绪。
 
 ### 3.2 非目标
 
@@ -91,6 +95,8 @@ Person Evidence Extractor
         ├── 人体检测与主角跟踪
         ├── 姿态关键点
         ├── 人体分割轮廓
+        ├── 动作幅度时序
+        ├── 条件式人脸与表情时序
         └── 接触与相对位置证据
         │
         ▼
@@ -134,12 +140,14 @@ Continuity Gate 位于 `_apply_boundary_snaps` 之后、`_evaluate_quality_pipel
 - 人体框、跟踪 ID、检测置信度；
 - 姿态关键点、关键点置信度和可见性；
 - 主角人体掩码及轮廓；
+- 相机运动补偿后的全身/局部动作幅度曲线；
+- 可见人脸框、面部关键点、质量和表情动态；
 - 其他人物、相关物体和接触候选；
-- 解码、检测、姿态和分割覆盖率。
+- 解码、检测、姿态、分割和条件式人脸证据覆盖率。
 
 首版采用基础 8 FPS、疑难区间最高 16 FPS 的自适应采样。burst 只由 `temporal_evidence.py` 已有的运动残差、光流幅度和方向变化触发，不由姿态模型自身的低置信度触发，避免“低置信度—加密采样—仍低置信度”的循环。加密后仍不能把连续证据缺口压到 0.25 秒以内时，结果进入人工复核。
 
-后端通过 `DetectorBackend`、`PoseBackend`、`MaskBackend` 和 `ReIdBackend` 协议隔离。参考模型组合优先评测 RTMDet/RTMPose 类检测姿态后端、具备视频掩码传播能力的分割后端以及独立外观嵌入；任何具体组合在通过第 13 节资格门禁前都只能运行影子模式。
+后端通过 `DetectorBackend`、`PoseBackend`、`MaskBackend`、`ReIdBackend`、`FaceBackend` 和 `ExpressionBackend` 协议隔离。参考模型组合优先评测 RTMDet/RTMPose 类检测姿态后端、具备视频掩码传播能力的分割后端、独立外观嵌入以及轻量人脸关键点/表情动态后端；任何具体组合在通过第 13 节资格门禁前都只能运行影子模式。
 
 ### 5.2 `PrimarySubjectSetTracker`
 
@@ -175,7 +183,32 @@ Continuity Gate 位于 `_apply_boundary_snaps` 之后、`_evaluate_quality_pipel
 
 软特征包括姿态舒展度、轮廓可读性、曲线节奏、主体构图和遮挡程度。这些特征单独版本化并送入 Preference Memory。
 
-### 5.4 `ActionSemanticAnalyzer`
+### 5.4 `MotionAmplitudeAnalyzer`
+
+动作幅度不是单帧位移或固定阈值，而是相机运动补偿后的多信号时序曲线。组件融合：
+
+- 以躯干尺度归一化的关键点位移、关节角变化和有效肢体活动范围；
+- 主体框/掩码相对相机背景运动的残差；
+- `temporal_evidence.py` 已有光流幅度、运动残差和方向变化；
+- 主体集合成员之间的相对位移、接近/分离和接触变化。
+
+输出至少包括 `subtle`、`moderate`、`large` 三档描述，归一化峰值、持续时间、上升/峰值/恢复阶段、周期振幅稳定度和噪声底。幅度较小本身不是拒绝理由：只要信号高于自适应噪声底、动作阶段完整且语义可解释，细微动作仍可通过。低于可观察噪声底、幅度曲线突然塌缩/爆发或窗口只截到峰值一侧时进入 `REVIEW_REQUIRED`；单一幅度异常不能独立触发 `HARD_REJECT`。
+
+该组件是首版必需证据，也是 16 FPS burst 的触发来源之一。burst 仍只依赖评估前可取得的运动残差/光流，而不以本组件最终结论循环触发自身重算。
+
+### 5.5 `FaceExpressionAnalyzer`
+
+人脸表情采用条件式证据：先检测是否存在“可用人脸”，只有满足首版质量门槛时才激活表情判断。初始门槛为至少 3 个采样帧、脸框短边至少 64 px、面部关键点平均置信度至少 0.70，且在人脸可见区间中的可用覆盖率至少 60%。这些阈值只用于影子模式并由真实 spike 校准。
+
+激活后，组件跟踪可观察的眉眼、眼睑、嘴部和面部肌肉运动，判断变化是否平滑、是否存在无转场/遮挡解释的突跳，以及是否与动作阶段的开始、峰值和恢复存在明显时序冲突。它描述的是可观察表情动态，不推断真实心理状态、性格、同意与否或敏感属性。
+
+- 没检测到人脸时为 `NOT_APPLICABLE`，不影响 `AUTO_PASS`；
+- 检测到人脸但未达到可用门槛时为 `DETECTED_UNUSABLE`，记录覆盖率但不猜测表情，也不因缺失本身阻断自动通过；
+- 检测到可用人脸时，表情分析成为条件式必需证据；模型不可用、`ABSTAIN` 或覆盖中断时为 `REVIEW_REQUIRED`；
+- 单一表情异常只能触发 `REVIEW_REQUIRED`，不能独立触发 `HARD_REJECT`；
+- 表情特征在独立 holdout 证明排序增益前不进入 Preference Memory。
+
+### 5.6 `ActionSemanticAnalyzer`
 
 该组件把人物、肢体、相关物体和接触关系组织成时间图：
 
@@ -191,7 +224,7 @@ VLM 只提供一个独立语义证据族：
 - 它不能越过缺失的必需姿态或跟踪证据单独产生 `AUTO_PASS`；
 - 拒答、超时、非结构化输出或低置信度均视为 `ABSTAIN`。
 
-### 5.5 `ContinuityGate`
+### 5.7 `ContinuityGate`
 
 门禁不计算一个能够相互抵消的总分。continuity-v1 的自动通过条件是所有首版必需断言的合取：
 
@@ -200,9 +233,11 @@ AUTO_PASS =
     镜头连续
     AND 主体集合连续
     AND 姿态证据覆盖达标
+    AND 动作幅度可观察且阶段连续
     AND 无未解决的几何异常
     AND 接触关系变化可解释
     AND 动作阶段完整
+    AND (无可用人脸 OR 表情动态证据通过)
     AND 语义复核无冲突
 ```
 
@@ -214,7 +249,7 @@ AUTO_PASS =
 
 Boundary snap 是门禁前的窗口规范化，不占用修正次数。Continuity Analyzer 在 snap 后最多再建议一次语义边界修正；修正后必须从头重跑完整评估，不能复用与新窗口不一致的旧结果，也不能循环调整直到偶然通过。
 
-### 5.6 `CurvePreferenceScorer`
+### 5.8 `CurvePreferenceScorer`
 
 该组件只处理已通过硬门的候选。它从版本化数值特征训练独立的 L2 正则逻辑回归：like/favorite 是正样本，dislike 是负样本，neutral 不参与拟合。训练只使用 NumPy，避免为该轻量学习器引入新的运行时依赖；模型产物冻结特征均值、标准差、系数、截距、训练事件水位和源视频集合。
 
@@ -226,7 +261,7 @@ Boundary snap 是门禁前的窗口规范化，不占用修正次数。Continuit
 - 画像训练和 holdout 必须按源视频隔离，防止相邻 GIF 泄漏；
 - 直接复用 `PreferenceEvaluationService` 的至少 30 条 holdout、训练/holdout 源视频零重叠和 `evaluate_source_grouped()` 报告，并新增曲线模型相对当前基线的 NDCG 与 pairwise 指标。
 
-### 5.7 `ContinuityReviewQueue`
+### 5.9 `ContinuityReviewQueue`
 
 待复核候选在正式 GIF 产生前就必须持久化。该服务保存冻结窗口、源视频身份、代理文件、评估引用、去重组身份和复核状态，不依赖 `candidate_gifs`。
 
@@ -257,7 +292,7 @@ Boundary snap 是门禁前的窗口规范化，不占用修正次数。Continuit
 
 ### 6.2 历史 GIF
 
-- `GIF_ONLY_PASS`：GIF 内部身份、姿态、轮廓、接触和循环检查通过，但外部动作上下文未验证。
+- `GIF_ONLY_PASS`：GIF 内部身份、姿态、幅度、条件式表情、轮廓、接触和循环检查通过，但外部动作上下文未验证。
 - `GIF_ONLY_REVIEW`：GIF 内部证据缺失或冲突。
 - `GIF_ONLY_REJECT`：GIF 内部已确认存在异常。
 
@@ -274,6 +309,8 @@ Boundary snap 是门禁前的窗口规范化，不占用修正次数。Continuit
 - `primary_subject_ambiguous`、`identity_switch`、`tracking_gap`；
 - `pose_coverage_low`、`critical_joint_clipped`、`subject_too_small`；
 - `limb_topology_jump`、`body_ratio_jump`、`joint_motion_jump`；
+- `motion_amplitude_below_observable_floor`、`motion_amplitude_discontinuity`、`amplitude_phase_incomplete`；
+- `facial_expression_temporal_jump`、`facial_expression_semantic_conflict`、`facial_expression_abstained`；
 - `silhouette_jump`、`mask_propagation_conflict`；
 - `contact_transition_unexplained`、`action_phase_incomplete`；
 - `vlm_abstained`、`evidence_family_conflict`；
@@ -289,10 +326,12 @@ Boundary snap 是门禁前的窗口规范化，不占用修正次数。Continuit
 - 有效姿态证据覆盖率：至少 95%；
 - 最大连续证据缺口：0.25 秒；
 - 未解释的肢体拓扑或接触突变：0；
+- 动作幅度：使用相机补偿和躯干尺度归一化的自适应噪声底，不设置跨人物固定最小幅度；低于可观察噪声底时待复核；
 - 非循环动作：必须包含准备或可解释的进入状态，以及恢复或稳定结束状态；
 - 循环动作：至少包含一个完整周期；
+- 人脸表情：无可用人脸为 `NOT_APPLICABLE`；可用人脸存在时，表情证据缺失、拒答或存在未解释突跳均待复核；
 - VLM：不得存在高置信度冲突或拒绝证据，且 `required_for_auto_pass=true` 时 `ABSTAIN` 不能自动通过；
-- 首版必需证据族：镜头/转场、检测与跟踪、姿态、动作阶段、本地 VLM；
+- 首版必需证据族：镜头/转场、检测与跟踪、姿态、动作幅度、接触语义、动作阶段、本地 VLM，以及在存在可用人脸时激活的人脸表情证据；
 - 首版咨询证据族：分割、掩码传播、轮廓和单一几何异常。咨询证据可以触发 `REVIEW_REQUIRED`，但在独立资格评测证明增益前不能单独导致 `HARD_REJECT`。
 
 单个左右侧交换、关节 jerk 或轮廓突跳很可能来自姿态采样和遮挡误差，只能导出 `REVIEW_REQUIRED`。`HARD_REJECT` 只允许由已确认镜头边界，或至少两个相互独立的必需证据族共同确认。
@@ -330,7 +369,7 @@ Quality MoE 现有 `action_completeness_score < 0.50` 的 `action_incomplete` �
 ### 8.2 历史 GIF
 
 1. 批量首版只从 `candidate_gifs` 提取曲线软特征，不运行完整检测+姿态+分割+ReID 连续性链。
-2. GIF-only 连续性仅用于人工点选、收藏/高价值项复核或抽样校准；任务直接解码 GIF，不尝试伪造源视频窗口。
+2. GIF-only 连续性仅用于人工点选、收藏/高价值项复核或抽样校准；任务直接解码 GIF，可以评估 GIF 内动作幅度和可用人脸的表情动态，但不尝试伪造源视频窗口。
 3. 按需任务可以写入 GIF-only 评估并在 UI 显示内部连续性徽标/复核入口，但不能改变业务状态。
 4. 不修改原有候选状态、收藏关系、反馈事件或 GIF 文件。
 
@@ -351,6 +390,8 @@ Quality MoE 现有 `action_completeness_score < 0.50` 的 `action_incomplete` �
 - `evaluation_version`、`config_hash`、`model_bundle_hash`、`prompt_hash`；
 - `decision`、`reason_codes_json`；
 - `identity_status`、`pose_status`、`silhouette_status`、`contact_status`、`action_phase_status`、`vlm_status`；
+- `amplitude_status`、`amplitude_class`、`normalized_amplitude_peak`、`amplitude_phase_complete`；
+- `face_presence_status`、`face_usable_frame_count`、`face_usable_coverage`、`facial_expression_status`；
 - `pose_coverage`、`max_evidence_gap_sec`、`minimum_confidence`；
 - `created_at`、`completed_at`。
 
@@ -423,6 +464,7 @@ continuity_gate:
     - transition
     - subject_tracking
     - pose
+    - motion_amplitude
     - contact_semantics
     - action_phase
     - local_vlm
@@ -430,6 +472,18 @@ continuity_gate:
     - silhouette
     - mask_propagation
     - body_geometry
+  conditional_evidence_families:
+    facial_expression:
+      activation: usable_face_detected
+      min_face_short_side_px: 64
+      min_landmark_confidence: 0.70
+      min_usable_frames: 3
+      min_usable_coverage: 0.60
+      required_when_activated: true
+  motion_amplitude:
+    normalization: torso_scale
+    camera_motion_compensation: true
+    noise_floor: adaptive
   runtime_vlm:
     source: pipeline_vlm_snapshot
     required_for_auto_pass: true
@@ -512,6 +566,8 @@ bundle_manifest.json
 
 - 坐标归一化、轨迹关联、覆盖率和最大缺口计算；
 - 肢体比例、关节运动、轮廓传播和接触关系异常；
+- 动作幅度归一化、相机运动补偿、噪声底、阶段完整性和周期幅度稳定度；
+- 无人脸、不可用人脸、可用人脸，以及表情突跳/语义冲突的条件激活；
 - 合取门禁不能被高软分覆盖；
 - 单一姿态/轮廓异常只能待复核，两个独立必需族才能确认硬拒绝；
 - VLM 拒答、超时、畸形 JSON 和低置信度；
@@ -541,6 +597,8 @@ bundle_manifest.json
 - 平移、缩放、手持抖动、低光和模糊；
 - 人体裁切、无头/身体局部、人物过小和复杂衣物；
 - 单人、共同主角、双人紧密接触和主体集合歧义；
+- 细微、中等、大幅、周期性动作，以及相机运动大但主体相对动作小的反例；
+- 无脸、脸部过小、遮挡脸、可用人脸、快速表情变化和表情分类器拒答；
 - 真实复杂姿态与人工构造的肢体、轮廓跳变；
 - GIF 首尾连续但动作边界不完整的反例。
 
@@ -573,6 +631,8 @@ bundle_manifest.json
 - 输入、自动通过、待复核和确认拒绝数量；
 - 各原因码计数；
 - 跟踪、姿态、分割、本地 VLM 的覆盖率、失败率和耗时；
+- 动作幅度分档、归一化峰值、噪声底、阶段不完整率和幅度异常复核率；
+- 人脸检测率、可用率、条件激活率、表情覆盖率、`ABSTAIN` 和异常复核率；
 - VLM `ABSTAIN`、JSON 解析失败、拒答、超时分别计数；
 - 边界修正尝试与成功数量；
 - duplicate group 的评估数量、替补通过率和组内耗尽率；
@@ -588,9 +648,11 @@ bundle_manifest.json
 
 ### 15.1 里程碑 0：可行性 spike
 
-在生产 schema 和流水线接入前，先选约 50 个真实候选，覆盖单人、共同主角、局部/无头、双人紧密接触、遮挡、快速运动、低光和画面边缘。离线运行候选检测、姿态、跟踪以及可选分割/ReID，报告：
+在生产 schema 和流水线接入前，先选约 50 个真实候选，覆盖单人、共同主角、局部/无头、双人紧密接触、遮挡、细微/中等/大幅动作、快速运动、无脸/可用脸/遮挡脸、低光和画面边缘。离线运行候选检测、姿态、跟踪、动作幅度、条件式表情以及可选分割/ReID，报告：
 
 - 每种场景的检测/姿态覆盖率、最大缺口、跟踪丢失和主角集合歧义分布；
+- 动作幅度分档、噪声底分离度、阶段完整性和相机运动补偿前后差异；
+- 可用人脸激活率、表情证据覆盖率、`ABSTAIN` 和异常复核率；
 - 必需证据可用率、`REVIEW_REQUIRED` 预测比例和不同证据族的边际增益；
 - 候选 wall-clock p50/p95、按视频估算 p95、峰值 RAM/VRAM；
 - 本地 VLM 的 `ABSTAIN`、JSON 失败和语义冲突率；
@@ -600,7 +662,7 @@ bundle_manifest.json
 
 ### 15.2 运行时与打包边界
 
-检测、姿态、跟踪、可选分割/ReID 以版本化的 WSL2/CUDA sidecar 运行；PyInstaller EXE 只包含客户端、协议类型、健康检查和错误呈现，不把当前仓库尚不存在的 Torch/ONNXRuntime 与模型权重直接打进 EXE。模型权重外置、内容寻址，并由 `model_bundle_hash` 和 manifest 校验。sidecar 至少提供 health、capabilities、evaluate、cancel 和版本查询接口。
+检测、姿态、跟踪、动作幅度、条件式表情及可选分割/ReID 以版本化的 WSL2/CUDA sidecar 运行；PyInstaller EXE 只包含客户端、协议类型、健康检查和错误呈现，不把当前仓库尚不存在的 Torch/ONNXRuntime 与模型权重直接打进 EXE。模型权重外置、内容寻址，并由 `model_bundle_hash` 和 manifest 校验。sidecar 至少提供 health、capabilities、evaluate、cancel 和版本查询接口。
 
 当前主 VLM 配置有较长 `keep_alive` 且不会在每次加载前主动释放显存，因此不能假设 Ollama 与视觉 sidecar 可无条件共存。默认 `gpu_policy: exclusive` 的调度顺序是：
 
@@ -639,8 +701,8 @@ bundle_manifest.json
 
 0. 可丢弃的 50 候选可行性 spike、资源实测和 go/no-go 报告；
 1. 领域类型、配置、资格清单、数据表和纯门禁策略；
-2. sidecar 协议、安装/doctor、参考检测/姿态/跟踪后端和合成媒体测试；
-3. 主角集合、身体几何、动作语义和本地 VLM 复核；
+2. sidecar 协议、安装/doctor、参考检测/姿态/跟踪/条件式表情后端和合成媒体测试；
+3. 主角集合、身体几何、动作幅度、表情动态、动作语义和本地 VLM 复核；
 4. dedup group、staged/direct 流水线接入与影子模式；
 5. 持久化人工复核、late-resume、review bundle 和可观测性；
 6. 资格评测工具、阈值冻结、manifest 签发与 canary；
@@ -655,17 +717,18 @@ bundle_manifest.json
 
 1. 新增素材在 enforce 模式下只有 `AUTO_PASS` 才能自动导出；`MANUAL_PASS` 可以恢复导出，但不能绕过 Quality MoE。
 2. 任一必需组件不可用时没有固定窗口或旧 VLM 降级旁路。
-3. 主角集合身份、姿态、接触和动作阶段都有独立、可审计结果；首版轮廓/掩码明确标为咨询证据。
-4. 身体曲线硬门与审美软评分在代码、数据和策略上隔离。
-5. staged 与 direct 路径行为一致。
-6. 所有评估均冻结输入、配置、模型和提示词身份。
-7. 未生成 GIF 的候选也有独立、可恢复的 review item；人工放行后能从 Quality MoE 开始幂等续跑。
-8. 历史批量首版只生成曲线软特征；按需 GIF-only 状态不修改原文件、业务状态或反馈历史，并同时使用 like/favorite/dislike 训练曲线偏好。
-9. GLM-5.3-Flash 不作为生产运行时依赖，Harness 复核是显式人工流程。
-10. 当前模型组合同时通过安全与可用性门禁、且资格 manifest 与当前哈希完全匹配后才能切换到 enforce。
-11. PyInstaller EXE 不捆绑重模型栈，sidecar 与 Ollama 的显存调度、耗时预算和失败路径已经过里程碑 0 实测。
-12. continuity enforce 启用时 Quality MoE 不再重复执行旧 `action_incomplete` 硬拒绝。
-13. 回填和数据库迁移有 dry-run、备份、幂等、恢复和零数据丢失证据。
+3. 主角集合身份、姿态、动作幅度、接触和动作阶段都有独立、可审计结果；首版轮廓/掩码明确标为咨询证据。
+4. 没有可用人脸时明确为不适用；存在可用人脸时必须产生可审计的表情动态结论，缺失或异常只能进入人工复核。
+5. 身体曲线硬门与审美软评分在代码、数据和策略上隔离。
+6. staged 与 direct 路径行为一致。
+7. 所有评估均冻结输入、配置、模型和提示词身份。
+8. 未生成 GIF 的候选也有独立、可恢复的 review item；人工放行后能从 Quality MoE 开始幂等续跑。
+9. 历史批量首版只生成曲线软特征；按需 GIF-only 状态不修改原文件、业务状态或反馈历史，并同时使用 like/favorite/dislike 训练曲线偏好。
+10. GLM-5.3-Flash 不作为生产运行时依赖，Harness 复核是显式人工流程。
+11. 当前模型组合同时通过安全与可用性门禁、且资格 manifest 与当前哈希完全匹配后才能切换到 enforce。
+12. PyInstaller EXE 不捆绑重模型栈，sidecar 与 Ollama 的显存调度、耗时预算和失败路径已经过里程碑 0 实测。
+13. continuity enforce 启用时 Quality MoE 不再重复执行旧 `action_incomplete` 硬拒绝。
+14. 回填和数据库迁移有 dry-run、备份、幂等、恢复和零数据丢失证据。
 
 ## 19. 参考现状
 
