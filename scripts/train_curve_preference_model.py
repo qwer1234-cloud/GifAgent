@@ -48,6 +48,7 @@ from app.services.preference_events import (  # noqa: E402
     SCORING_RATINGS,
     load_latest_scoring_events,
 )
+from app.services.preference_schema import apply_preference_schema  # noqa: E402
 
 FEATURE_VERSION = "curve-v1"
 MODEL_VERSION_PREFIX = "curve-pref-v1"
@@ -402,48 +403,6 @@ def decide_publication(
     return "PUBLISHED", reasons
 
 
-def _ensure_model_columns(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS curve_preference_models (
-            model_version TEXT PRIMARY KEY,
-            feature_version TEXT NOT NULL,
-            extractor_sha256 TEXT NOT NULL,
-            status TEXT NOT NULL CHECK (status IN ('DRAFT', 'PUBLISHED', 'REJECTED', 'SUPERSEDED')),
-            coefficients_json TEXT NOT NULL,
-            intercept REAL NOT NULL,
-            feature_mean_json TEXT NOT NULL,
-            feature_std_json TEXT NOT NULL,
-            feature_names_json TEXT NOT NULL,
-            l2_lambda REAL NOT NULL,
-            training_event_watermark TEXT NOT NULL,
-            training_source_set_sha256 TEXT NOT NULL,
-            holdout_row_count INTEGER NOT NULL,
-            metrics_json TEXT NOT NULL,
-            curve_model_confidence REAL,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            published_at TEXT
-        )
-        """
-    )
-    existing = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(curve_preference_models)").fetchall()
-    }
-    for column in (
-        "holdout_source_set_sha256 TEXT NOT NULL DEFAULT ''",
-        "training_manifest_sha256 TEXT NOT NULL DEFAULT ''",
-        "holdout_manifest_sha256 TEXT NOT NULL DEFAULT ''",
-        "training_manifest_json TEXT NOT NULL DEFAULT '{}'",
-        "holdout_manifest_json TEXT NOT NULL DEFAULT '{}'",
-    ):
-        name = column.split()[0]
-        if name not in existing:
-            conn.execute(
-                "ALTER TABLE curve_preference_models ADD COLUMN " + column
-            )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -552,7 +511,7 @@ def main() -> int:
     print(f"paired curve-vs-baseline delta lcb95: {paired_delta_lcb95:+.4f}")
     print(f"holdout NDCG@20 (curve): {curve_ndcg:.4f}")
 
-    status, gate_reasons = decide_publication(
+    diagnostic_status, gate_reasons = decide_publication(
         holdout_row_count=len(holdout_rows),
         source_overlap=len(overlap),
         train_class_counts=(
@@ -572,7 +531,7 @@ def main() -> int:
         if math.isfinite(paired_delta_lcb95)
         else 0.0
     )
-    confidence = min(data_confidence, margin_factor) if status == "PUBLISHED" else None
+    confidence = min(data_confidence, margin_factor) if diagnostic_status == "PUBLISHED" else None
     print(f"data_confidence={data_confidence:.3f} "
           f"holdout_margin_factor={margin_factor:.3f} "
           f"curve_model_confidence={confidence}")
@@ -583,7 +542,10 @@ def main() -> int:
         print("evaluation only; nothing written")
         return 0
 
-    write_status = status if status in ("PUBLISHED", "REJECTED") else "DRAFT"
+    # Training may only persist DRAFT rows; publication happens exclusively
+    # through scripts/promote_curve_preference_model.py after a verified
+    # QUALIFIED qualification run.
+    write_status = "DRAFT"
     train_manifest, train_manifest_sha = build_manifest(
         "curve-training-manifest-v1", train_rows, train_sources, names, extractor
     )
@@ -629,12 +591,7 @@ def main() -> int:
     }
 
     conn = sqlite3.connect(str(args.db), timeout=30)
-    _ensure_model_columns(conn)
-    if write_status == "PUBLISHED":
-        conn.execute(
-            "UPDATE curve_preference_models SET status = 'SUPERSEDED' "
-            "WHERE status = 'PUBLISHED'",
-        )
+    apply_preference_schema(conn)
     conn.execute(
         """
         INSERT INTO curve_preference_models (
@@ -677,9 +634,7 @@ def main() -> int:
             "holdout_row_count": len(holdout_rows),
             "metrics_json": json.dumps(metrics, allow_nan=False),
             "curve_model_confidence": confidence,
-            "published_at": (
-                datetime.now(UTC).isoformat() if write_status == "PUBLISHED" else None
-            ),
+            "published_at": None,
             "holdout_source_set_sha256": holdout_source_set_sha,
             "training_manifest_sha256": train_manifest_sha,
             "holdout_manifest_sha256": holdout_manifest_sha,

@@ -26,6 +26,49 @@ def _ensure_columns(
 def apply_preference_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS curve_preference_models (
+            model_version TEXT PRIMARY KEY,
+            feature_version TEXT NOT NULL,
+            extractor_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL
+                CHECK(status IN ('DRAFT','PUBLISHED','REJECTED','SUPERSEDED')),
+            coefficients_json TEXT NOT NULL,
+            intercept REAL NOT NULL,
+            feature_mean_json TEXT NOT NULL,
+            feature_std_json TEXT NOT NULL,
+            feature_names_json TEXT NOT NULL,
+            l2_lambda REAL NOT NULL,
+            training_event_watermark TEXT NOT NULL,
+            training_source_set_sha256 TEXT NOT NULL,
+            holdout_source_set_sha256 TEXT NOT NULL DEFAULT '',
+            training_manifest_sha256 TEXT NOT NULL DEFAULT '',
+            holdout_manifest_sha256 TEXT NOT NULL DEFAULT '',
+            training_manifest_json TEXT NOT NULL DEFAULT '{}',
+            holdout_manifest_json TEXT NOT NULL DEFAULT '{}',
+            holdout_row_count INTEGER NOT NULL,
+            metrics_json TEXT NOT NULL,
+            curve_model_confidence REAL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            published_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS curve_preference_qualification_runs (
+            qualification_id TEXT PRIMARY KEY,
+            model_version TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('QUALIFIED','NOT_QUALIFIED')),
+            input_manifest_sha256 TEXT NOT NULL,
+            profile_snapshot_sha256 TEXT NOT NULL,
+            baseline_scores_sha256 TEXT NOT NULL,
+            proposed_scores_sha256 TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            report_path TEXT NOT NULL,
+            report_sha256 TEXT NOT NULL,
+            source_db_snapshot_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            qualified_at TEXT,
+            FOREIGN KEY(model_version) REFERENCES curve_preference_models(model_version)
+        );
+
         CREATE TABLE IF NOT EXISTS candidate_gifs (
             candidate_id TEXT PRIMARY KEY,
             source_run_id TEXT NOT NULL,
@@ -194,6 +237,7 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
         ),
     )
     _migrate_vector_exclusions(conn)
+    _migrate_curve_model_columns(conn)
 
     conn.commit()
 
@@ -367,3 +411,31 @@ def _migrate_vector_exclusions(conn: sqlite3.Connection) -> None:
     except BaseException:
         conn.execute("ROLLBACK TO SAVEPOINT vector_exclusions_migration")
         raise
+
+
+# ── curve model column migration ─────────────────────────────────────────────
+
+
+def _migrate_curve_model_columns(conn: sqlite3.Connection) -> None:
+    """Ensure pre-existing curve model tables gain manifest/holdout columns."""
+
+    if "curve_preference_models" not in {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }:
+        return
+    _ensure_columns(
+        conn,
+        "curve_preference_models",
+        (
+            ("holdout_source_set_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ("training_manifest_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ("holdout_manifest_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ("training_manifest_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("holdout_manifest_json", "TEXT NOT NULL DEFAULT '{}'"),
+            ("curve_model_confidence", "REAL"),
+            ("published_at", "TEXT"),
+        ),
+    )

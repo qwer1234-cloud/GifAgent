@@ -107,3 +107,116 @@ def test_vector_exclusion_schema_migrates_to_model_scoped_pk():
     assert row["embedding_model"] == "nomic-embed-text:latest"
     assert row["attempts"] == 1
     assert row["reason"] == "old-reason"
+
+
+def test_curve_preference_schema_is_created_and_idempotent():
+    from app.services.preference_schema import apply_preference_schema
+
+    conn = sqlite3.connect(":memory:")
+    apply_preference_schema(conn)
+    apply_preference_schema(conn)  # idempotent
+
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }
+    assert "curve_preference_models" in tables
+    assert "curve_preference_qualification_runs" in tables
+
+    run_cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(curve_preference_qualification_runs)")
+    }
+    assert {
+        "qualification_id", "model_version", "status", "input_manifest_sha256",
+        "profile_snapshot_sha256", "baseline_scores_sha256",
+        "proposed_scores_sha256", "metrics_json", "report_path",
+        "report_sha256", "source_db_snapshot_sha256", "created_at",
+        "qualified_at",
+    } <= run_cols
+
+
+def test_curve_model_rows_survive_schema_reapply():
+    from app.services.preference_schema import apply_preference_schema
+
+    conn = sqlite3.connect(":memory:")
+    apply_preference_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO curve_preference_models (
+            model_version, feature_version, extractor_sha256, status,
+            coefficients_json, intercept, feature_mean_json, feature_std_json,
+            feature_names_json, l2_lambda, training_event_watermark,
+            training_source_set_sha256, holdout_row_count, metrics_json
+        ) VALUES (
+            'm-keep', 'curve-v1', 'ex', 'DRAFT', '{}', 0.0, '{}', '{}',
+            '[]', 1.0, 'wm', 'srcsha', 0, '{}'
+        )
+        """
+    )
+    conn.commit()
+
+    apply_preference_schema(conn)
+
+    row = conn.execute(
+        "SELECT model_version, status FROM curve_preference_models"
+    ).fetchone()
+    assert row == ("m-keep", "DRAFT")
+
+
+def test_curve_model_table_migrates_missing_manifest_columns():
+    from app.services.preference_schema import apply_preference_schema
+
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE curve_preference_models (
+            model_version TEXT PRIMARY KEY,
+            feature_version TEXT NOT NULL,
+            extractor_sha256 TEXT NOT NULL,
+            status TEXT NOT NULL,
+            coefficients_json TEXT NOT NULL,
+            intercept REAL NOT NULL,
+            feature_mean_json TEXT NOT NULL,
+            feature_std_json TEXT NOT NULL,
+            feature_names_json TEXT NOT NULL,
+            l2_lambda REAL NOT NULL,
+            training_event_watermark TEXT NOT NULL,
+            training_source_set_sha256 TEXT NOT NULL,
+            holdout_row_count INTEGER NOT NULL,
+            metrics_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO curve_preference_models (
+            model_version, feature_version, extractor_sha256, status,
+            coefficients_json, intercept, feature_mean_json, feature_std_json,
+            feature_names_json, l2_lambda, training_event_watermark,
+            training_source_set_sha256, holdout_row_count, metrics_json
+        ) VALUES (
+            'm-old', 'curve-v1', 'ex', 'DRAFT', '{}', 0.0, '{}', '{}',
+            '[]', 1.0, 'wm', 'srcsha', 0, '{}'
+        )
+        """
+    )
+
+    apply_preference_schema(conn)
+
+    cols = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(curve_preference_models)")
+    }
+    assert {
+        "holdout_source_set_sha256", "training_manifest_sha256",
+        "holdout_manifest_sha256", "training_manifest_json",
+        "holdout_manifest_json", "curve_model_confidence", "published_at",
+    } <= cols
+    row = conn.execute(
+        "SELECT model_version, holdout_source_set_sha256 FROM curve_preference_models"
+    ).fetchone()
+    assert row[0] == "m-old"
+    assert row[1] == ""

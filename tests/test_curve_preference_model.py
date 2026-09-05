@@ -357,6 +357,17 @@ def _manifest_rows() -> list[dict]:
     ]
 
 
+def test_trainer_never_writes_published_status():
+    """The trainer must only persist DRAFT rows; promotion is a separate tool."""
+
+    source = Path("scripts/train_curve_preference_model.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SET status = 'SUPERSEDED'" not in source
+    assert 'write_status = "DRAFT"' in source
+    assert "apply_preference_schema" in source
+
+
 def test_manifest_binds_features_baseline_and_event_identity():
     rows = _manifest_rows()
 
