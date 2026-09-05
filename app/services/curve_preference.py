@@ -38,6 +38,8 @@ class CurvePreferenceModel:
     intercept: float
     training_manifest_sha256: str
     holdout_manifest_sha256: str
+    training_source_set_sha256: str
+    holdout_source_set_sha256: str
     training_manifest: dict[str, object]
     holdout_manifest: dict[str, object]
 
@@ -95,6 +97,7 @@ def load_curve_model(
                    coefficients_json, intercept, feature_mean_json,
                    feature_std_json, feature_names_json,
                    training_manifest_sha256, holdout_manifest_sha256,
+                   training_source_set_sha256, holdout_source_set_sha256,
                    training_manifest_json, holdout_manifest_json
             FROM curve_preference_models
             WHERE model_version = :model_version
@@ -178,6 +181,8 @@ def load_curve_model(
         intercept=intercept,
         training_manifest_sha256=row["training_manifest_sha256"],
         holdout_manifest_sha256=row["holdout_manifest_sha256"],
+        training_source_set_sha256=row["training_source_set_sha256"],
+        holdout_source_set_sha256=row["holdout_source_set_sha256"],
         training_manifest=training_manifest,
         holdout_manifest=holdout_manifest,
     )

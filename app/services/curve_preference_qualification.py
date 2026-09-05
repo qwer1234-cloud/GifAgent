@@ -24,11 +24,15 @@ import sqlite3
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
 from app.services.preference_events import load_latest_scoring_events
+from app.services.preference_profile_snapshot import (
+    build_source_isolated_profile_snapshot,
+)
 from app.services.preference_profile_snapshot import canonical_json_sha256
 from app.services.export_ranking import (
     adult_moe_export_score,
@@ -648,7 +652,7 @@ def build_qualification_inputs(
     *,
     manifest_rows: Sequence[Mapping[str, object]],
     enrich_fn: Callable[[str], str] | None = None,
-    vector_fn: Callable[[str], bool] | None = None,
+    vector_fn: Callable[[sqlite3.Connection, str], bool] | None = None,
 ) -> QualificationInputs:
     """Freeze and validate every holdout manifest row against ``work_conn``.
 
@@ -807,7 +811,7 @@ def build_qualification_inputs(
 
         vector_sha = _vector_blob_sha256(work_conn, candidate_id)
         if vector_sha is None and vector_fn is not None:
-            if not vector_fn(candidate_id):
+            if not vector_fn(work_conn, candidate_id):
                 block(
                     "base_score_coverage_incomplete", candidate_id,
                     "vector generation failed",
@@ -855,3 +859,634 @@ def build_qualification_inputs(
         post_manifest_event_changes=sorted(set(post_manifest_event_changes)),
         per_candidate_costs_ms=per_candidate_costs_ms,
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 6: run orchestration, snapshot safety, and the immutable bundle
+# ---------------------------------------------------------------------------
+
+QUALIFICATION_RUN_SCHEMA_VERSION = "curve-qualification-run-v1"
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _open_read_only(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path), timeout=60)
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
+def snapshot_source_database(db_path: Path, work_db_path: Path) -> str:
+    """Consistent online backup of the read-only source into *work_db_path*.
+
+    Returns the SHA-256 of the resulting snapshot file.
+    """
+
+    source = _open_read_only(db_path)
+    try:
+        target = sqlite3.connect(str(work_db_path))
+        try:
+            source.backup(target)
+        finally:
+            target.close()
+    finally:
+        source.close()
+    check = sqlite3.connect(str(work_db_path))
+    try:
+        row = check.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        check.close()
+    if row is None or row[0] != "ok":
+        raise RuntimeError(f"work snapshot integrity check failed: {row}")
+    return _file_sha256(work_db_path)
+
+
+def _model_row_identity(conn: sqlite3.Connection, model_version: str) -> dict[str, Any]:
+    previous_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            """
+            SELECT model_version, feature_version, extractor_sha256, status,
+                   coefficients_json, intercept, feature_mean_json,
+                   feature_std_json, feature_names_json, l2_lambda,
+                   training_event_watermark, training_source_set_sha256,
+                   holdout_source_set_sha256, training_manifest_sha256,
+                   holdout_manifest_sha256, training_manifest_json,
+                   holdout_manifest_json, holdout_row_count, metrics_json,
+                   curve_model_confidence
+            FROM curve_preference_models WHERE model_version = :model_version
+            """,
+            {"model_version": model_version},
+        ).fetchone()
+    finally:
+        conn.row_factory = previous_factory
+    if row is None:
+        return {}
+    return {key: row[key] for key in row.keys()}
+
+
+def logical_source_identity(conn: sqlite3.Connection, model_version: str) -> str:
+    """Stable logical hash of everything the qualification depends on."""
+
+    previous_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        events = conn.execute(
+            """
+            SELECT COUNT(*) AS n, COALESCE(MAX(created_at), '') AS max_created
+            FROM preference_events WHERE target_type = 'candidate_gif'
+            """
+        ).fetchone()
+        candidates = conn.execute(
+            "SELECT COUNT(*) AS n FROM candidate_gifs"
+        ).fetchone()
+        vectors = conn.execute(
+            "SELECT COUNT(*) AS n FROM candidate_vectors WHERE vector_type = 'clip'"
+        ).fetchone()
+    finally:
+        conn.row_factory = previous_factory
+    payload = {
+        "model_row": _model_row_identity(conn, model_version),
+        "events_count": events["n"],
+        "events_max_created_at": events["max_created"],
+        "candidate_count": candidates["n"],
+        "clip_vector_count": vectors["n"],
+    }
+    return canonical_json_sha256(payload)
+
+
+def verify_model_for_qualification(
+    conn: sqlite3.Connection, model_version: str
+) -> tuple[Any | None, list[str]]:
+    """Load the DRAFT model with full hash validation; return (model, reasons)."""
+
+    from app.services.curve_preference import load_curve_model
+
+    reasons: list[str] = []
+    try:
+        model = load_curve_model(
+            conn, model_version, allowed_statuses=frozenset({"DRAFT"})
+        )
+    except ValueError as exc:
+        message = str(exc)
+        if "status" in message:
+            reasons.append("model_not_draft")
+        else:
+            reasons.append("model_manifest_hash_mismatch")
+        return None, reasons
+
+    # Source-set hashes must match the frozen manifests exactly, using the
+    # trainer's bare-array formula.
+    raw_train_sources = model.training_manifest.get("sources")
+    raw_holdout_sources = model.holdout_manifest.get("sources")
+    train_sources = sorted(
+        str(s)
+        for s in (
+            raw_train_sources if isinstance(raw_train_sources, list) else []
+        )
+    )
+    holdout_sources = sorted(
+        str(s)
+        for s in (
+            raw_holdout_sources if isinstance(raw_holdout_sources, list) else []
+        )
+    )
+    train_set_sha = hashlib.sha256(
+        json.dumps(train_sources, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    holdout_set_sha = hashlib.sha256(
+        json.dumps(holdout_sources, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    if train_set_sha != model.training_source_set_sha256:
+        reasons.append("model_manifest_hash_mismatch")
+    if holdout_set_sha != model.holdout_source_set_sha256:
+        reasons.append("model_manifest_hash_mismatch")
+    if not reasons:
+        return model, []
+    return None, reasons
+
+
+def compute_source_overlap(model: Any) -> int:
+    train = set(model.training_manifest.get("sources") or [])
+    holdout = set(model.holdout_manifest.get("sources") or [])
+    return len(train & holdout)
+
+
+def class_counts_from_manifest_rows(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int]:
+    positive = sum(
+        1 for row in rows if str(row.get("rating")) in POSITIVE_RATINGS
+    )
+    negative = sum(
+        1 for row in rows if str(row.get("rating")) in NEGATIVE_RATINGS
+    )
+    return positive, negative
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> str:
+    text = json.dumps(payload, sort_keys=True, allow_nan=False, indent=1)
+    path.write_text(text, encoding="utf-8")
+    return _file_sha256(path)
+
+
+def _write_jsonl(path: Path, rows: Sequence[Mapping[str, Any]]) -> str:
+    lines = [
+        json.dumps(row, sort_keys=True, allow_nan=False, ensure_ascii=False)
+        for row in rows
+    ]
+    path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+    return _file_sha256(path)
+
+
+def count_required_enrichments(
+    conn: sqlite3.Connection, manifest_rows: Sequence[Mapping[str, Any]]
+) -> int:
+    previous_factory = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        needed = 0
+        for row in manifest_rows:
+            candidate_id = str(row["candidate_id"])
+            gif_row = conn.execute(
+                "SELECT vlm_summary_json FROM candidate_gifs WHERE candidate_id = :cid",
+                {"cid": candidate_id},
+            ).fetchone()
+            if gif_row is None:
+                continue
+            try:
+                stored = json.loads(gif_row["vlm_summary_json"] or "{}")
+            except (TypeError, ValueError):
+                stored = {}
+            if score_evidence_from_summary(stored) is None:
+                needed += 1
+    finally:
+        conn.row_factory = previous_factory
+    return needed
+
+
+def enrichment_needed(work_conn: sqlite3.Connection, candidate_id: str) -> bool:
+    row = work_conn.execute(
+        "SELECT vlm_summary_json FROM candidate_gifs WHERE candidate_id = :cid",
+        {"cid": candidate_id},
+    ).fetchone()
+    if row is None:
+        return False
+    try:
+        stored = json.loads(row["vlm_summary_json"] or "{}")
+    except (TypeError, ValueError):
+        return True
+    return score_evidence_from_summary(stored) is None
+
+
+def _decision_from_inputs(
+    *,
+    model: Any,
+    model_manifest_hashes_ok: bool,
+    inputs: QualificationInputs,
+    two_pass: "TwoPassScores | None",
+    limit: int | None,
+) -> QualificationDecision:
+    holdout_rows = model.holdout_manifest.get("rows") or []
+    decision = decide_curve_qualification(
+        model_status="DRAFT",
+        model_manifest_hashes_ok=model_manifest_hashes_ok,
+        source_overlap=compute_source_overlap(model),
+        holdout_row_count=len(holdout_rows),
+        train_class_counts=class_counts_from_manifest_rows(
+            model.training_manifest.get("rows") or []
+        ),
+        holdout_class_counts=class_counts_from_manifest_rows(holdout_rows),
+        blocking=inputs.blocking,
+        nominal_pair_count=(
+            two_pass.nominal_comparison.pair_count if two_pass else 0
+        ),
+        nominal_pairwise_delta_lcb95=(
+            two_pass.nominal_comparison.pairwise_delta_lcb95
+            if two_pass
+            else float("nan")
+        ),
+        effective_pairwise_delta_lcb95=(
+            two_pass.effective_comparison.pairwise_delta_lcb95
+            if two_pass
+            else float("nan")
+        ),
+        effective_ndcg_delta=(
+            two_pass.effective_comparison.ndcg_at_20_delta
+            if two_pass
+            else float("nan")
+        ),
+        non_finite_count=(
+            two_pass.nominal_comparison.non_finite_count if two_pass else 0
+        ),
+    )
+    if limit is not None:
+        decision = QualificationDecision(
+            status="NOT_QUALIFIED",
+            reasons=decision.reasons + ["diagnostic_limit"],
+        )
+    return decision
+
+
+def execute_qualification_run(
+    *,
+    db_path: Path,
+    model_version: str,
+    work_dir: Path,
+    enrich_fn: Callable[[str], str] | None = None,
+    vector_fn: Callable[[sqlite3.Connection, str], bool] | None = None,
+    dry_run: bool = False,
+    limit: int | None = None,
+    qualification_id: str | None = None,
+    build_config: Any | None = None,
+) -> dict[str, Any]:
+    """Orchestrate one immutable qualification run and return its summary.
+
+    The production database at *db_path* is opened read-only; every write
+    lands in the claimed run directory (work.db, JSON artifacts). A dry run
+    validates and reports without touching disk or services.
+    """
+
+    import uuid
+
+    from app.services.preference_memory import PreferenceMemoryService
+    from app.services.preference_types import ProfileBuildConfig
+    from app.services.reranker import PreferenceReranker
+
+    def now_fn() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    if dry_run:
+        source = _open_read_only(db_path)
+        try:
+            model, reasons = verify_model_for_qualification(source, model_version)
+            holdout_rows = (model.holdout_manifest.get("rows") or []) if model else []
+            summary = {
+                "dry_run": True,
+                "model_version": model_version,
+                "model_ok": model is not None,
+                "model_reasons": reasons,
+                "holdout_rows": len(holdout_rows),
+                "holdout_sources": len(
+                    set(model.holdout_manifest.get("sources") or [])
+                )
+                if model
+                else 0,
+                "required_enrichments": (
+                    count_required_enrichments(source, holdout_rows) if model else 0
+                ),
+                "source_overlap": compute_source_overlap(model) if model else 0,
+            }
+        finally:
+            source.close()
+        return summary
+
+    qualification_id = qualification_id or (
+        "qual-"
+        + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        + "-"
+        + uuid.uuid4().hex[:8]
+    )
+    run_dir = work_dir / qualification_id
+    resuming = (run_dir / "run_state.json").is_file()
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    if resuming:
+        state = json.loads(
+            (run_dir / "run_state.json").read_text(encoding="utf-8")
+        )
+        if state.get("status") == "COMPLETED":
+            raise RuntimeError(
+                f"run {qualification_id} already completed; refuse to overwrite"
+            )
+        probe = _open_read_only(db_path)
+        try:
+            identity = logical_source_identity(probe, model_version)
+        finally:
+            probe.close()
+        if identity != state.get("source_logical_identity"):
+            state["status"] = "ABANDONED"
+            state["abandon_reason"] = "source_identity_changed"
+            (run_dir / "run_state.json").write_text(
+                json.dumps(state, sort_keys=True, indent=1), encoding="utf-8"
+            )
+            raise RuntimeError(
+                "resume refused: source/model logical identity changed"
+            )
+        work_db_path = run_dir / "work.db"
+        source_db_snapshot_sha256 = state.get("source_db_snapshot_sha256", "")
+    else:
+        work_db_path = run_dir / "work.db"
+        source_db_snapshot_sha256 = snapshot_source_database(db_path, work_db_path)
+
+    work_conn = sqlite3.connect(str(work_db_path), timeout=60)
+    work_conn.row_factory = sqlite3.Row
+    try:
+        model, model_reasons = verify_model_for_qualification(
+            work_conn, model_version
+        )
+        if model is None:
+            raise RuntimeError(f"model invalid on snapshot: {model_reasons}")
+        model_manifest_hashes_ok = not model_reasons
+
+        holdout_rows_all = model.holdout_manifest.get("rows") or []
+        manifest_rows = list(holdout_rows_all)
+        if limit is not None:
+            manifest_rows = manifest_rows[:limit]
+
+        probe_source = _open_read_only(db_path)
+        try:
+            source_logical_identity = logical_source_identity(
+                probe_source, model_version
+            )
+        finally:
+            probe_source.close()
+
+        (run_dir / "run_state.json").write_text(
+            json.dumps(
+                {
+                    "kind": QUALIFICATION_RUN_SCHEMA_VERSION,
+                    "qualification_id": qualification_id,
+                    "status": "INCOMPLETE",
+                    "model_version": model_version,
+                    "source_db_snapshot_sha256": source_db_snapshot_sha256,
+                    "source_logical_identity": source_logical_identity,
+                    "input_limit": limit,
+                    "updated_at": now_fn(),
+                },
+                sort_keys=True,
+                indent=1,
+            ),
+            encoding="utf-8",
+        )
+
+        snapshot = build_source_isolated_profile_snapshot(
+            work_conn,
+            excluded_source_videos=set(
+                model.holdout_manifest.get("sources") or []
+            ),
+            config=build_config or ProfileBuildConfig(),
+        )
+
+        inputs = build_qualification_inputs(
+            work_conn,
+            manifest_rows=manifest_rows,
+            enrich_fn=enrich_fn,
+            vector_fn=vector_fn,
+        )
+
+        two_pass: TwoPassScores | None = None
+        if not inputs.blocking and inputs.records:
+            two_pass = run_two_pass_qualification_scores(
+                work_conn=work_conn,
+                model=model,
+                records=inputs.records,
+                profile_version=snapshot.profile_version,
+                reranker=PreferenceReranker(work_conn),
+            )
+        decision = _decision_from_inputs(
+            model=model,
+            model_manifest_hashes_ok=model_manifest_hashes_ok,
+            inputs=inputs,
+            two_pass=two_pass,
+            limit=limit,
+        )
+
+        input_manifest = {
+            "kind": "curve-qualification-input-manifest-v1",
+            "qualification_id": qualification_id,
+            "model_version": model_version,
+            "model_training_manifest_sha256": model.training_manifest_sha256,
+            "model_holdout_manifest_sha256": model.holdout_manifest_sha256,
+            "profile_snapshot_sha256": snapshot.manifest_sha256,
+            "holdout_row_count": len(holdout_rows_all),
+            "evaluated_row_count": len(manifest_rows),
+            "records": inputs.records,
+        }
+        artifacts = {
+            "input_manifest_sha256": _write_json(
+                run_dir / "input_manifest.json", input_manifest
+            ),
+            "profile_snapshot_sha256": _write_json(
+                run_dir / "profile_snapshot.json",
+                {
+                    "profile_version": snapshot.profile_version,
+                    "event_watermark": snapshot.event_watermark,
+                    "excluded_source_videos": list(
+                        snapshot.excluded_source_videos
+                    ),
+                    "config_json": snapshot.config_json,
+                    "manifest": snapshot.manifest,
+                },
+            ),
+        }
+        if inputs.records:
+            evidence_rows = [
+                {
+                    "candidate_id": str(row["candidate_id"]),
+                    "enriched": enrichment_needed(work_conn, str(row["candidate_id"])),
+                    "vlm_evidence": row["vlm_evidence"],
+                    "vlm_evidence_sha256": row["vlm_evidence_sha256"],
+                    "blocking": [
+                        b
+                        for b in inputs.blocking
+                        if b["candidate_id"] == str(row["candidate_id"])
+                    ],
+                }
+                for row in sorted(
+                    inputs.records,
+                    key=lambda r: (
+                        str(r["source_video_sha256"]),
+                        str(r["candidate_id"]),
+                    ),
+                )
+            ]
+            artifacts["evidence_sha256"] = _write_jsonl(
+                run_dir / "evidence.jsonl", evidence_rows
+            )
+
+        metrics: dict[str, Any] = {
+            "schema": "curve-qualification-metrics-v1",
+            "qualification_id": qualification_id,
+            "model_version": model_version,
+            "holdout_row_count": len(holdout_rows_all),
+            "evaluated_row_count": len(manifest_rows),
+            "enrichment_count": inputs.enrichment_count,
+            "cinematic_fallback_count": inputs.cinematic_fallback_count,
+            "post_manifest_event_changes": inputs.post_manifest_event_changes,
+            "source_overlap": compute_source_overlap(model),
+            "baseline_coverage": len(inputs.records),
+            "blocking": inputs.blocking,
+            "nominal": (
+                vars(two_pass.nominal_comparison) if two_pass else None
+            ),
+            "effective": (
+                vars(two_pass.effective_comparison) if two_pass else None
+            ),
+            "effective_confidence": (
+                two_pass.effective_confidence if two_pass else None
+            ),
+            "gate_reasons": decision.reasons,
+            "status": decision.status,
+            "diagnostic_limit": limit,
+        }
+
+        if two_pass:
+            record_lookup = {
+                str(r["candidate_id"]): r for r in inputs.records
+            }
+            baseline_rows = [
+                {
+                    "candidate_id": candidate_id,
+                    "source_video_sha256": str(
+                        record_lookup[candidate_id]["source_video_sha256"]
+                    ),
+                    "rating": str(record_lookup[candidate_id]["rating"]),
+                    "baseline_score": score,
+                }
+                for candidate_id, score in sorted(two_pass.baseline.items())
+            ]
+            nominal_rows = [
+                {
+                    "candidate_id": row.candidate_id,
+                    "source_video_sha256": row.source,
+                    "rating": row.rating,
+                    "nominal_score": row.proposed,
+                }
+                for row in two_pass.score_rows
+            ]
+            effective_rows = [
+                {
+                    "candidate_id": candidate_id,
+                    "effective_score": score,
+                }
+                for candidate_id, score in sorted(two_pass.effective.items())
+            ]
+            artifacts["baseline_scores_sha256"] = _write_jsonl(
+                run_dir / "baseline_scores.jsonl", baseline_rows
+            )
+            artifacts["nominal_scores_sha256"] = _write_jsonl(
+                run_dir / "nominal_scores.jsonl", nominal_rows
+            )
+            artifacts["effective_scores_sha256"] = _write_jsonl(
+                run_dir / "effective_scores.jsonl", effective_rows
+            )
+
+        metrics["artifacts"] = artifacts
+        metrics_path = run_dir / "metrics.json"
+        _write_json(metrics_path, metrics)
+
+        report_lines = [
+            "# Curve Preference Qualification Report",
+            "",
+            f"- qualification_id: `{qualification_id}`",
+            f"- model_version: `{model_version}`",
+            f"- status: **{decision.status}**",
+            f"- gate_reasons: {decision.reasons}",
+            f"- holdout rows: {len(holdout_rows_all)} "
+            f"(evaluated {len(manifest_rows)})",
+            f"- enrichment_count: {inputs.enrichment_count}",
+            f"- cinematic_fallback_count: {inputs.cinematic_fallback_count}",
+            f"- source_overlap: {compute_source_overlap(model)}",
+            "- effective_confidence: "
+            f"{two_pass.effective_confidence if two_pass else None}",
+            "",
+            "## Metrics",
+            "",
+            "```json",
+            json.dumps(
+                {
+                    k: v
+                    for k, v in metrics.items()
+                    if k not in ("artifacts", "blocking")
+                },
+                sort_keys=True,
+                indent=1,
+                allow_nan=False,
+            ),
+            "```",
+        ]
+        (run_dir / "report.md").write_text(
+            "\n".join(report_lines) + "\n", encoding="utf-8"
+        )
+        metrics["report_sha256"] = _file_sha256(run_dir / "report.md")
+        _write_json(metrics_path, metrics)
+
+        probe_source = _open_read_only(db_path)
+        try:
+            final_identity = logical_source_identity(probe_source, model_version)
+        finally:
+            probe_source.close()
+        completed = final_identity == source_logical_identity
+
+        state = {
+            "kind": QUALIFICATION_RUN_SCHEMA_VERSION,
+            "qualification_id": qualification_id,
+            "status": "COMPLETED" if completed else "INCOMPLETE",
+            "model_version": model_version,
+            "source_db_snapshot_sha256": source_db_snapshot_sha256,
+            "source_logical_identity": source_logical_identity,
+            "input_manifest_sha256": artifacts["input_manifest_sha256"],
+            "decision_status": decision.status,
+            "updated_at": now_fn(),
+        }
+        if not completed:
+            state["abandon_reason"] = "source_identity_changed_during_run"
+        (run_dir / "run_state.json").write_text(
+            json.dumps(state, sort_keys=True, indent=1), encoding="utf-8"
+        )
+
+        return {
+            "qualification_id": qualification_id,
+            "run_dir": str(run_dir),
+            "status": decision.status,
+            "reasons": decision.reasons,
+            "metrics": metrics,
+        }
+    finally:
+        work_conn.close()

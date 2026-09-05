@@ -725,7 +725,7 @@ def test_build_inputs_enriches_missing_vlm_into_work_db_only(tmp_path):
 
     calls: list[str] = []
 
-    def fake_vector(candidate_id: str) -> bool:
+    def fake_vector(vector_conn: sqlite3.Connection, candidate_id: str) -> bool:
         calls.append(candidate_id)
         conn.execute(
             """INSERT OR REPLACE INTO candidate_vectors
@@ -778,7 +778,7 @@ def test_build_inputs_blocks_when_vector_unavailable(tmp_path):
         conn, tmp_path, candidate_id="cand-novec", with_vector=False
     )
 
-    def failing_vector(candidate_id: str) -> bool:
+    def failing_vector(vector_conn: sqlite3.Connection, candidate_id: str) -> bool:
         return False
 
     inputs = build_qualification_inputs(
@@ -845,6 +845,8 @@ def test_two_pass_protocol_produces_score_sets_and_confidence(tmp_path):
         intercept=0.0,
         training_manifest_sha256="t",
         holdout_manifest_sha256="h",
+        training_source_set_sha256="t2",
+        holdout_source_set_sha256="h2",
         training_manifest={"rows": [{"candidate_id": "x"}] * 250},
         holdout_manifest={"rows": []},
     )
@@ -892,8 +894,11 @@ def test_two_pass_protocol_produces_score_sets_and_confidence(tmp_path):
 
 from app.services.curve_preference_qualification import (  # noqa: E402
     GroupedScoreRow,
+    _open_read_only,
     decide_curve_qualification,
     evaluate_source_grouped_scores,
+    execute_qualification_run,
+    logical_source_identity,
 )
 
 
@@ -1124,3 +1129,410 @@ def test_decide_non_finite_and_missing_pairs_fail():
     assert "no_within_source_pairs" in no_pairs.reasons
     assert no_pairs.status == "NOT_QUALIFIED"
     assert "non_finite_metric" in non_finite.reasons
+
+
+# ---------------------------------------------------------------------------
+# Task 6: CLI orchestration, snapshot safety, immutable bundles
+# ---------------------------------------------------------------------------
+
+from app.services.curve_preference import CurvePreferenceModel  # noqa: E402
+
+
+def _file_source_db(tmp_path: Path, *, n_holdout: int = 32) -> Path:
+    """Materialize the qualification fixture as a file DB plus a DRAFT model."""
+
+    from scripts.train_curve_preference_model import build_manifest
+
+    memory_conn = build_qualification_db()
+    disk_path = tmp_path / "source.db"
+    disk = sqlite3.connect(str(disk_path))
+    memory_conn.backup(disk)
+    disk.commit()
+
+    gif_dir = tmp_path / "gifs"
+    gif_dir.mkdir(exist_ok=True)
+
+    holdout_rows: list[dict] = []
+    for index in range(n_holdout):
+        candidate_id = f"cand-q-{index:02d}"
+        positive = (index // 2) % 2 == 0
+        rating = "like" if positive else "dislike"
+        features = {"extension_mean": 0.9 if positive else 0.1}
+        gif = gif_dir / f"{candidate_id}.gif"
+        gif.write_bytes(b"GIF89a-q-" + str(index).encode())
+        disk.execute(
+            """INSERT OR REPLACE INTO candidate_gifs
+               (candidate_id, source_run_id, source_run_candidate_id,
+                source_video_sha256, source_video_path, start_sec, end_sec,
+                artifact_path, status, tags_json, scenario_keys_json,
+                vlm_summary_json)
+               VALUES (:cid, 'run-q', :rcid, :source, :svp, 0.0, 5.0,
+                       :artifact, 'candidate', '[]', '[]', :summary)""",
+            {
+                "cid": candidate_id,
+                "rcid": f"rc-{candidate_id}",
+                "source": f"holdout-src-{index % 2}",
+                "svp": f"/v/holdout-{index % 2}.mp4",
+                "artifact": str(gif),
+                "summary": json.dumps(
+                    {"caption": "c", "gif_worthiness": 70 + index,
+                     "sex_act": 40 + index}
+                ),
+            },
+        )
+        disk.execute(
+            """INSERT INTO preference_events
+               (event_id, target_type, target_id, rating, source_video_sha256,
+                scenario_keys_json, created_at, event_kind)
+               VALUES (:event_id, 'candidate_gif', :cid, :rating, :source,
+                       '[]', :created_at, 'feedback')""",
+            {
+                "event_id": f"ev-q-{index:02d}",
+                "cid": candidate_id,
+                "rating": rating,
+                "source": f"holdout-src-{index % 2}",
+                "created_at": _ts(2000 + index * 60),
+            },
+        )
+        disk.execute(
+            """INSERT INTO curve_features (candidate_id, feature_version,
+               availability, features_json, extractor_sha256, artifact_sha256,
+               wall_clock_ms, source_video_sha256, width, height, frame_count)
+               VALUES (:cid, 'curve-v1', 'AVAILABLE', :features, 'ex', :asha,
+                       900.0, :source, 720, 405, 24)""",
+            {
+                "cid": candidate_id,
+                "features": json.dumps(features),
+                "asha": hashlib.sha256(gif.read_bytes()).hexdigest(),
+                "source": f"holdout-src-{index % 2}",
+            },
+        )
+        disk.execute(
+            """INSERT OR REPLACE INTO candidate_vectors
+               (candidate_id, vector_type, embedding_model, embedding_dim,
+                vector_blob, normalized)
+               VALUES (:cid, 'clip', 'nomic-embed-text:latest', 768, :blob, 1)""",
+            {"cid": candidate_id, "blob": _unit_vector(30 + index).tobytes()},
+        )
+        holdout_rows.append(
+            {
+                "candidate_id": candidate_id,
+                "rating": rating,
+                "features": features,
+                "baseline": None,
+                "artifact_sha256": hashlib.sha256(
+                    gif.read_bytes()
+                ).hexdigest(),
+                "event_id": f"ev-q-{index:02d}",
+                "event_created_at": _ts(2000 + index * 60),
+                "source": f"holdout-src-{index % 2}",
+            }
+        )
+
+    train_rows = [
+        {
+            "candidate_id": f"cand-train-like-{i}",
+            "rating": "like",
+            "features": {"extension_mean": 0.5},
+            "baseline": None,
+            "artifact_sha256": f"{i:064x}",
+            "event_id": f"ev-train-like-{i}",
+            "event_created_at": _ts(i * 60),
+            "source": TRAIN_SOURCES[i % 3],
+        }
+        for i in range(24)
+    ] + [
+        {
+            "candidate_id": f"cand-train-dislike-{i}",
+            "rating": "dislike",
+            "features": {"extension_mean": 0.2},
+            "baseline": None,
+            "artifact_sha256": f"{i + 100:064x}",
+            "event_id": f"ev-train-dislike-{i}",
+            "event_created_at": _ts(1000 + i * 60),
+            "source": TRAIN_SOURCES[i % 3],
+        }
+        for i in range(12)
+    ]
+    train_sources = sorted(set(TRAIN_SOURCES))
+    holdout_sources = sorted({row["source"] for row in holdout_rows})
+    train_manifest, train_sha = build_manifest(
+        "curve-training-manifest-v1", train_rows, set(train_sources),
+        ["extension_mean"], "ex",
+    )
+    holdout_manifest, holdout_sha = build_manifest(
+        "curve-holdout-manifest-v1", holdout_rows, set(holdout_sources),
+        ["extension_mean"], "ex",
+    )
+    disk.execute(
+        """
+        INSERT INTO curve_preference_models (
+            model_version, feature_version, extractor_sha256, status,
+            coefficients_json, intercept, feature_mean_json, feature_std_json,
+            feature_names_json, l2_lambda, training_event_watermark,
+            training_source_set_sha256, holdout_source_set_sha256,
+            training_manifest_sha256, holdout_manifest_sha256,
+            training_manifest_json, holdout_manifest_json, holdout_row_count,
+            metrics_json
+        ) VALUES (
+            'm-qual', 'curve-v1', 'ex', 'DRAFT',
+            :coefficients, 0.0, :mean, :std, '["extension_mean"]', 1.0,
+            'wm', :train_sources, :holdout_sources,
+            :train_sha, :holdout_sha, :train_manifest, :holdout_manifest,
+            :holdout_count, '{}'
+        )
+        """,
+        {
+            "coefficients": json.dumps({"extension_mean": 1.0}),
+            "mean": json.dumps({"extension_mean": 0.5}),
+            "std": json.dumps({"extension_mean": 0.2}),
+            "train_sources": hashlib.sha256(
+                json.dumps(train_sources, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "holdout_sources": hashlib.sha256(
+                json.dumps(holdout_sources, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "train_sha": train_sha,
+            "holdout_sha": holdout_sha,
+            "train_manifest": json.dumps(train_manifest, sort_keys=True),
+            "holdout_manifest": json.dumps(holdout_manifest, sort_keys=True),
+            "holdout_count": len(holdout_rows),
+        },
+    )
+    disk.commit()
+    disk.close()
+    return disk_path
+
+
+def _good_enrich(path: str) -> str:
+    return json.dumps(
+        {"caption": "enriched clip", "gif_worthiness": 65, "sex_act": 35}
+    )
+
+
+def test_dry_run_writes_no_rows_and_no_run_dir(tmp_path):
+    db_path = _file_source_db(tmp_path)
+
+    summary = execute_qualification_run(
+        db_path=db_path,
+        model_version="m-qual",
+        work_dir=tmp_path / "runs",
+        dry_run=True,
+    )
+
+    assert summary["dry_run"] is True
+    assert summary["model_ok"] is True
+    assert summary["holdout_rows"] == 32
+    assert summary["required_enrichments"] == 0
+    assert not (tmp_path / "runs").exists()
+    conn = sqlite3.connect(str(db_path))
+    count = conn.execute(
+        "SELECT COUNT(*) FROM curve_preference_qualification_runs"
+    ).fetchone()[0]
+    conn.close()
+    assert count == 0
+
+
+def test_full_run_writes_bundle_and_source_stays_unmutated(tmp_path):
+    db_path = _file_source_db(tmp_path)
+
+    before_identity = logical_source_identity(
+        _open_read_only(db_path), "m-qual"
+    )
+    source_conn = sqlite3.connect(str(db_path))
+    source_conn.row_factory = sqlite3.Row
+    before_total_changes = source_conn.total_changes
+    before_counts = {
+        table: source_conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()[0]
+        for table in ("candidate_gifs", "preference_events", "curve_features")
+    }
+
+    result = execute_qualification_run(
+        db_path=db_path,
+        model_version="m-qual",
+        work_dir=tmp_path / "runs",
+        qualification_id="qual-test-1",
+    )
+
+    after_identity = logical_source_identity(
+        _open_read_only(db_path), "m-qual"
+    )
+    after_counts = {
+        table: source_conn.execute(
+            f"SELECT COUNT(*) FROM {table}"
+        ).fetchone()[0]
+        for table in ("candidate_gifs", "preference_events", "curve_features")
+    }
+    assert source_conn.total_changes == before_total_changes
+    source_conn.close()
+
+    assert before_identity == after_identity
+    assert before_counts == after_counts
+    assert result["status"] == "QUALIFIED"
+    run_dir = Path(result["run_dir"])
+    for name in (
+        "run_state.json", "input_manifest.json", "profile_snapshot.json",
+        "evidence.jsonl", "baseline_scores.jsonl", "nominal_scores.jsonl",
+        "effective_scores.jsonl", "metrics.json", "report.md", "work.db",
+    ):
+        assert (run_dir / name).is_file(), name
+    state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "COMPLETED"
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert metrics["status"] == "QUALIFIED"
+    assert metrics["enrichment_count"] == 0
+    assert metrics["cinematic_fallback_count"] == 32
+
+
+def test_interrupted_run_resumes_without_re_enrichment(tmp_path, monkeypatch):
+    db_path = _file_source_db(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE candidate_gifs SET vlm_summary_json = ''")
+    conn.commit()
+    conn.close()
+
+    calls: list[str] = []
+
+    def counting_enrich(path: str) -> str:
+        calls.append(path)
+        return _good_enrich(path)
+
+    run_dir = tmp_path / "runs" / "qual-resume"
+
+    import app.services.curve_preference_qualification as qual_module
+
+    real_two_pass = qual_module.run_two_pass_qualification_scores
+    calls_to_two_pass = {"n": 0}
+
+    def exploding_two_pass(**kwargs):
+        calls_to_two_pass["n"] += 1
+        raise RuntimeError("simulated crash after enrichment")
+
+    monkeypatch.setattr(
+        qual_module, "run_two_pass_qualification_scores", exploding_two_pass
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        execute_qualification_run(
+            db_path=db_path,
+            model_version="m-qual",
+            work_dir=tmp_path / "runs",
+            enrich_fn=counting_enrich,
+            vector_fn=lambda _conn, _cid: True,
+            qualification_id="qual-resume",
+        )
+    state = json.loads(
+        (run_dir / "run_state.json").read_text(encoding="utf-8")
+    )
+    assert state["status"] == "INCOMPLETE"
+    assert len(calls) == 32  # every candidate enriched exactly once
+
+    monkeypatch.setattr(
+        qual_module, "run_two_pass_qualification_scores", real_two_pass
+    )
+    result = execute_qualification_run(
+        db_path=db_path,
+        model_version="m-qual",
+        work_dir=tmp_path / "runs",
+        enrich_fn=counting_enrich,
+        vector_fn=lambda _conn, _cid: True,
+        qualification_id="qual-resume",
+    )
+
+    # Resume must not re-call the VLM: all 32 summaries persist in work.db.
+    assert result["status"] == "QUALIFIED"
+    assert len(calls) == 32
+    metrics = json.loads(
+        (Path(result["run_dir"]) / "metrics.json").read_text(encoding="utf-8")
+    )
+    assert metrics["enrichment_count"] == 0
+
+
+def test_resume_refused_when_source_identity_changed(tmp_path):
+    db_path = _file_source_db(tmp_path)
+    run_dir = tmp_path / "runs" / "qual-changed"
+    run_dir.mkdir(parents=True)
+    logical_source_identity(_open_read_only(db_path), "m-qual")
+    (run_dir / "run_state.json").write_text(
+        json.dumps(
+            {
+                "qualification_id": "qual-changed",
+                "status": "INCOMPLETE",
+                "model_version": "m-qual",
+                "source_logical_identity": "stale-identity",
+                "source_db_snapshot_sha256": "x",
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="resume refused"):
+        execute_qualification_run(
+            db_path=db_path,
+            model_version="m-qual",
+            work_dir=tmp_path / "runs",
+            qualification_id="qual-changed",
+        )
+
+
+def test_two_complete_runs_reproduce_stable_content_hashes(tmp_path):
+    db_path = _file_source_db(tmp_path)
+
+    first = execute_qualification_run(
+        db_path=db_path, model_version="m-qual",
+        work_dir=tmp_path / "runs-a", qualification_id="q-a",
+    )
+    second = execute_qualification_run(
+        db_path=db_path, model_version="m-qual",
+        work_dir=tmp_path / "runs-b", qualification_id="q-b",
+    )
+
+    first_metrics = json.loads(
+        (Path(first["run_dir"]) / "metrics.json").read_text(encoding="utf-8")
+    )
+    second_metrics = json.loads(
+        (Path(second["run_dir"]) / "metrics.json").read_text(encoding="utf-8")
+    )
+    for key in ("nominal", "effective", "gate_reasons", "status",
+                "enrichment_count", "cinematic_fallback_count"):
+        assert first_metrics[key] == second_metrics[key]
+    first_input = json.loads(
+        (Path(first["run_dir"]) / "input_manifest.json").read_text(encoding="utf-8")
+    )
+    second_input = json.loads(
+        (Path(second["run_dir"]) / "input_manifest.json").read_text(encoding="utf-8")
+    )
+    first_input.pop("qualification_id")
+    second_input.pop("qualification_id")
+    assert first_input == second_input
+
+
+def test_not_qualified_run_preserves_full_bundle(tmp_path):
+    db_path = _file_source_db(tmp_path)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "UPDATE candidate_gifs SET artifact_path = :path "
+        "WHERE candidate_id = 'cand-q-00'",
+        {"path": str(tmp_path / "gone.gif")},
+    )
+    conn.commit()
+    conn.close()
+
+    result = execute_qualification_run(
+        db_path=db_path, model_version="m-qual",
+        work_dir=tmp_path / "runs", qualification_id="q-nq",
+    )
+
+    assert result["status"] == "NOT_QUALIFIED"
+    run_dir = Path(result["run_dir"])
+    for name in (
+        "run_state.json", "input_manifest.json", "profile_snapshot.json",
+        "evidence.jsonl", "metrics.json", "report.md", "work.db",
+    ):
+        assert (run_dir / name).is_file(), name
+    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+    assert any(
+        b["code"] == "artifact_missing" for b in metrics["blocking"]
+    )
