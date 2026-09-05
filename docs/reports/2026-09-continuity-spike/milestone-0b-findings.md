@@ -138,3 +138,41 @@ items before milestone-1 production work:
 
 Per the 0A/0B contract, no report produced here enables production
 `enforce`; the decision on milestone 1 remains with the user.
+
+## 7. Historical curve-feature backfill (executed 2026-09-05)
+
+Script: `scripts/curve_feature_backfill.py` (dry-run → backup → checkpointed
+batches, per spec section 12). Target: `curve_features` table (spec 9.6) in
+`dist/GifAgentUI/data/library.db`; feature version `curve-v1`; features:
+pose_valid_ratio, subject_area_ratio, extension_mean/peak/range,
+torso_speed_p95, motion_smoothness, visibility_ratio, border_clip_ratio,
+verticality_mean.
+
+- Backup before first write:
+  `data/backups/library.before-curve-backfill.20260905_062446.db`,
+  SHA-256 `0ec5cab8413bdb580c4ea088992e51914c2609b0e4da11e4d45f6ef80a2e4d25`.
+- Label semantics: the app logs a `like` event immediately after every
+  `favorite`, so the effective label is *any favorite event → favorite*,
+  otherwise the latest non-undone rating; a plain latest-event rule would
+  have erased all but one favorite.
+- Result: **13,919 rows, 12,445 available (89.4 %)** — effective labeled
+  training/ranking rows: like 7,550 / favorite 1,762 / dislike 1,453 /
+  neutral 1,680.
+- Measured cost: p50 1,043 ms, mean 1,058 ms, p95 1,847 ms per GIF;
+  **4.09 GPU hours total** at 0.95 GIF/s on the RTX 4070 Ti SUPER
+  (DirectML).
+- Failures: 1,463 `pose_coverage_low`, 11 `no_person_detected`; every
+  failure is stored as an `UNAVAILABLE` row with its reason and is
+  retryable by bumping the feature version.
+- Populated strata: `gt_480 × {2–5 s, >5 s}` dominate (12,444 of 12,445
+  available rows); small-resolution strata remain absent from the library
+  (see section 2). GIF metadata duration proved unreliable versus decoded
+  duration, so strata derive from actual decoded frame counts.
+- Safety: `candidate_gifs`, `favorite_gifs`, and `preference_events` were
+  not modified; GIF files were only read; batches of 25 with a checkpoint
+  at `data/curve_backfill_checkpoint.json` make re-rums idempotent.
+
+The `curve-v1` features are now in place for the milestone-8 curve
+preference model (L2 logistic regression over favorite/like positive and
+dislike negative rows with source-grouped holdout), which remains a
+separate, explicitly-gated step.
