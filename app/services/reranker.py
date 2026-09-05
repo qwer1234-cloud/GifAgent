@@ -479,3 +479,62 @@ class PreferenceReranker:
             "inactive_reasons": inactive_reasons or {},
             "preference_profile_version": None,
         }
+
+
+def score_preference_export_candidate(
+    *,
+    reranker: "PreferenceReranker",
+    candidate_vector: np.ndarray,
+    gif_worthiness: float,
+    scenario_keys: list[str],
+    profile_version: str,
+    base_export_score: float,
+    base_score_weight: float,
+    preference_score_weight: float,
+    curve_probability: float | None = None,
+    curve_model_version: str | None = None,
+    curve_model_confidence: float | None = None,
+) -> dict[str, object]:
+    """Mirror the current export blend and optionally add the curve component.
+
+    With ``curve_probability=None`` the result equals the scoring body of
+    ``app.pipeline.ranking._rank_clips_with_preference()`` for the same
+    inputs. When the profile score is unavailable the unmodified
+    ``base_export_score`` is returned together with a stable fallback reason.
+    """
+
+    breakdown = reranker.score(
+        candidate_vector=candidate_vector,
+        base_rag_similarity=float(gif_worthiness or 0.0),
+        scenario_keys=scenario_keys,
+        profile_version=profile_version,
+        enabled=True,
+        curve_probability=curve_probability,
+        curve_model_version=curve_model_version,
+        curve_model_confidence=curve_model_confidence,
+    )
+    profile_score = breakdown.get("profile_score")
+    result: dict[str, object] = {
+        "score_profile_version": breakdown.get("preference_profile_version"),
+        "fallback_reason": None,
+        "active_weights": breakdown.get("active_weights", {}),
+        "inactive_reasons": breakdown.get("inactive_reasons", {}),
+    }
+    if profile_score is None:
+        result["final_score"] = float(base_export_score)
+        result["profile_score"] = None
+        result["fallback_reason"] = "profile_score_unavailable"
+        return result
+    result["profile_score"] = float(profile_score)
+    result["final_score"] = blend_export_scores(
+        float(base_export_score),
+        float(profile_score),
+        float(base_score_weight),
+        float(preference_score_weight),
+    )
+    if "curve_preference_score" in breakdown:
+        result["curve_preference_score"] = float(
+            breakdown["curve_preference_score"]
+        )
+        result["curve_model_version"] = breakdown.get("curve_model_version")
+    return result

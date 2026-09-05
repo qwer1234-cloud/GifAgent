@@ -526,6 +526,99 @@ def test_clip_scenario_keys_include_emotion_and_tags():
     assert "tag:warm" in keys
 
 
+def test_score_preference_export_candidate_matches_manual_blend(
+    reranker_db, random_vector
+):
+    from app.services.export_ranking import adult_moe_export_score
+    from app.services.reranker import (
+        PreferenceReranker,
+        blend_export_scores,
+        score_preference_export_candidate,
+    )
+    from app.services.vector_math import l2_normalize
+
+    conn = reranker_db
+    conn.execute(
+        "INSERT INTO preference_profile_builds ("
+        "profile_version, event_watermark, embedding_model, embedding_dim, "
+        "effective_feedback_count, source_video_count, config_json, status"
+        ") VALUES ('prof-x','wm','nomic-embed-text:latest',768,10,2,'{}','completed')"
+    )
+    liked = l2_normalize(
+        np.random.default_rng(3).normal(0, 1, 768).astype(np.float32)
+    ).astype(np.float32)
+    conn.execute(
+        "INSERT INTO preference_profiles ("
+        "profile_version, scope, scenario_key, like_count, dislike_count, "
+        "neutral_count, confidence, liked_centroid_blob, disliked_centroid_blob, "
+        "tag_weights_json) VALUES ("
+        "'prof-x','global',NULL,10,0,0,0.9,?,NULL,'{}')",
+        (liked.tobytes(),),
+    )
+    conn.commit()
+
+    clip = {"gif_worthiness": 74, "sex_act": 63, "quality_assessment": None}
+    base_payload = adult_moe_export_score(
+        clip, adult_weight=0.80, cinematic_weight=0.20
+    )
+    base_export = float(base_payload["final_score"])
+
+    result = score_preference_export_candidate(
+        reranker=PreferenceReranker(conn),
+        candidate_vector=random_vector,
+        gif_worthiness=74.0,
+        scenario_keys=["emotion:joy"],
+        profile_version="prof-x",
+        base_export_score=base_export,
+        base_score_weight=0.50,
+        preference_score_weight=0.50,
+    )
+
+    manual_breakdown = PreferenceReranker(conn).score(
+        candidate_vector=random_vector,
+        base_rag_similarity=74.0 / 100.0,
+        scenario_keys=["emotion:joy"],
+        profile_version="prof-x",
+        enabled=True,
+    )
+    manual_final = blend_export_scores(
+        base_export,
+        float(manual_breakdown["profile_score"]),
+        0.50,
+        0.50,
+    )
+
+    assert result["fallback_reason"] is None
+    assert result["final_score"] == pytest.approx(manual_final)
+    assert result["profile_score"] == pytest.approx(manual_breakdown["profile_score"])
+    assert 0.0 <= result["final_score"] <= 1.0
+
+
+def test_score_preference_export_candidate_fallback_without_profile_score(
+    reranker_db, random_vector
+):
+    from app.services.reranker import (
+        PreferenceReranker,
+        score_preference_export_candidate,
+    )
+    from app.services.vector_math import l2_normalize
+
+    vec = l2_normalize(np.ones(768, dtype=np.float32)).astype(np.float32)
+    result = score_preference_export_candidate(
+        reranker=PreferenceReranker(reranker_db),
+        candidate_vector=vec,
+        gif_worthiness=60.0,
+        scenario_keys=[],
+        profile_version="missing",
+        base_export_score=0.61,
+        base_score_weight=0.50,
+        preference_score_weight=0.50,
+    )
+
+    assert result["fallback_reason"] == "profile_score_unavailable"
+    assert result["final_score"] == pytest.approx(0.61)
+
+
 # ---------------------------------------------------------------------------
 # Characterization: no-curve output is frozen byte-for-byte
 # ---------------------------------------------------------------------------

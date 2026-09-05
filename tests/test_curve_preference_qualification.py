@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -807,3 +808,319 @@ def test_build_inputs_records_sorted_and_never_touch_source(tmp_path):
     assert inputs.input_manifest_sha256 != build_qualification_inputs(
         conn, manifest_rows=[row_a]
     ).input_manifest_sha256
+
+
+def test_two_pass_protocol_produces_score_sets_and_confidence(tmp_path):
+    from app.services.curve_preference import CurvePreferenceModel
+    from app.services.curve_preference_qualification import (
+        run_two_pass_qualification_scores,
+    )
+    from app.services.reranker import PreferenceReranker
+
+    conn = build_qualification_db()
+    manifest_rows = []
+    for index in range(6):
+        positive = index % 2 == 0
+        rating = "like" if positive else "dislike"
+        features = {"extension_mean": 0.9 if positive else 0.1}
+        row, _gif = _attach_holdout_row(
+            conn, tmp_path,
+            candidate_id=f"cand-2p-{index}",
+            source=HOLDOUT_SOURCES[0] if index < 3 else "holdout-src-2",
+            rating=rating,
+            event_id=f"ev-2p-{index}",
+            gif_content=b"GIF89a-2p-" + str(index).encode(),
+            features=features,
+        )
+        manifest_rows.append(row)
+
+    model = CurvePreferenceModel(
+        model_version="m-2p",
+        feature_version="curve-v1",
+        extractor_sha256="ex",
+        feature_names=("extension_mean",),
+        mean=np.array([0.5]),
+        std=np.array([0.2]),
+        coefficients=np.array([1.0]),
+        intercept=0.0,
+        training_manifest_sha256="t",
+        holdout_manifest_sha256="h",
+        training_manifest={"rows": [{"candidate_id": "x"}] * 250},
+        holdout_manifest={"rows": []},
+    )
+    conn.execute(
+        "INSERT INTO preference_profile_builds ("
+        "profile_version, event_watermark, embedding_model, embedding_dim, "
+        "effective_feedback_count, source_video_count, config_json, status"
+        ") VALUES ('prof-2p','wm','nomic-embed-text:latest',768,10,2,'{}','completed')"
+    )
+    liked = _unit_vector(3)
+    conn.execute(
+        "INSERT INTO preference_profiles ("
+        "profile_version, scope, scenario_key, like_count, dislike_count, "
+        "neutral_count, confidence, liked_centroid_blob, disliked_centroid_blob, "
+        "tag_weights_json) VALUES ("
+        "'prof-2p','global',NULL,10,0,0,0.9,?,NULL,'{}')",
+        (liked.tobytes(),),
+    )
+    conn.commit()
+
+    inputs = build_qualification_inputs(conn, manifest_rows=manifest_rows)
+    assert inputs.blocking == []
+    two_pass = run_two_pass_qualification_scores(
+        work_conn=conn,
+        model=model,
+        records=inputs.records,
+        profile_version="prof-2p",
+        reranker=PreferenceReranker(conn),
+    )
+
+    assert set(two_pass.baseline) == {f"cand-2p-{i}" for i in range(6)}
+    assert set(two_pass.nominal) == set(two_pass.baseline)
+    assert set(two_pass.effective) == set(two_pass.baseline)
+    assert 0.0 <= two_pass.effective_confidence <= 1.0
+    assert two_pass.nominal_comparison.pair_count == 4
+    # The curve feature is perfectly label-aligned so the nominal variant
+    # must beat chance within source groups.
+    assert two_pass.nominal_comparison.proposed_pairwise_accuracy > 0.5
+    assert all(math.isfinite(v) for v in two_pass.effective.values())
+
+
+# ---------------------------------------------------------------------------
+# Task 5: paired source-grouped metrics, two-pass confidence, gates
+# ---------------------------------------------------------------------------
+
+from app.services.curve_preference_qualification import (  # noqa: E402
+    GroupedScoreRow,
+    decide_curve_qualification,
+    evaluate_source_grouped_scores,
+)
+
+
+def _grouped_rows(
+    *,
+    sources: list[str],
+    ratings: list[str],
+    baseline: list[float],
+    proposed: list[float],
+) -> list[GroupedScoreRow]:
+    return [
+        GroupedScoreRow(
+            candidate_id=f"cand-{index}",
+            source=source,
+            rating=rating,
+            baseline=base,
+            proposed=proposed,
+        )
+        for index, (source, rating, base, proposed) in enumerate(
+            zip(sources, ratings, baseline, proposed)
+        )
+    ]
+
+
+def test_grouped_metrics_perfect_curve_over_bad_baseline_qualifies():
+    rows = _grouped_rows(
+        sources=["s1", "s1", "s2", "s2"],
+        ratings=["like", "dislike", "like", "dislike"],
+        baseline=[0.0, 1.0, 0.0, 1.0],
+        proposed=[1.0, 0.0, 1.0, 0.0],
+    )
+
+    comparison = evaluate_source_grouped_scores(
+        rows, baseline_field="baseline", proposed_field="proposed",
+        bootstrap_seed=20260905, bootstrap_reps=200,
+    )
+
+    assert comparison.baseline_pairwise_accuracy == 0.0
+    assert comparison.proposed_pairwise_accuracy == 1.0
+    assert comparison.pairwise_delta == 1.0
+    assert comparison.pairwise_delta_lcb95 == 1.0
+    assert comparison.tie_rate == 0.0
+    assert comparison.pair_count == 2
+    assert comparison.source_pair_groups == 2
+    assert comparison.non_finite_count == 0
+    assert comparison.ndcg_at_20_delta > 0
+
+def test_grouped_metrics_bad_curve_fails():
+    rows = _grouped_rows(
+        sources=["s1", "s1", "s2", "s2"],
+        ratings=["like", "dislike", "like", "dislike"],
+        baseline=[1.0, 0.0, 1.0, 0.0],
+        proposed=[0.0, 1.0, 0.0, 1.0],
+    )
+
+    comparison = evaluate_source_grouped_scores(
+        rows, baseline_field="baseline", proposed_field="proposed",
+        bootstrap_seed=20260905, bootstrap_reps=200,
+    )
+
+    assert comparison.proposed_pairwise_accuracy == 0.0
+    assert comparison.pairwise_delta_lcb95 < 0
+
+
+def test_grouped_metrics_ties_reported_separately_and_never_win():
+    rows = _grouped_rows(
+        sources=["s1", "s1"],
+        ratings=["like", "dislike"],
+        baseline=[0.5, 0.5],
+        proposed=[0.5, 0.5],
+    )
+
+    comparison = evaluate_source_grouped_scores(
+        rows, baseline_field="baseline", proposed_field="proposed",
+        bootstrap_seed=20260905, bootstrap_reps=50,
+    )
+
+    assert comparison.tie_rate == 1.0
+    assert comparison.proposed_pairwise_accuracy == 0.0
+    assert comparison.pair_count == 1
+
+
+def test_grouped_metrics_ordering_invariant_and_non_finite_counted():
+    rows = _grouped_rows(
+        sources=["s1", "s1", "s2"],
+        ratings=["like", "dislike", "like"],
+        baseline=[0.2, 0.8, float("nan")],
+        proposed=[0.8, 0.2, 0.5],
+    )
+    shuffled = list(reversed(rows))
+
+    first = evaluate_source_grouped_scores(
+        rows, baseline_field="baseline", proposed_field="proposed",
+        bootstrap_seed=7, bootstrap_reps=100,
+    )
+    second = evaluate_source_grouped_scores(
+        shuffled, baseline_field="baseline", proposed_field="proposed",
+        bootstrap_seed=7, bootstrap_reps=100,
+    )
+
+    assert first.pairwise_delta == second.pairwise_delta
+    assert first.pairwise_delta_lcb95 == second.pairwise_delta_lcb95
+    assert first.non_finite_count == 1
+    assert first.comparable_row_count == 2
+
+
+def _decide_inputs(**overrides) -> dict:
+    base = dict(
+        model_status="DRAFT",
+        model_manifest_hashes_ok=True,
+        source_overlap=0,
+        holdout_row_count=2510,
+        train_class_counts=(7154, 1093),
+        holdout_class_counts=(2149, 361),
+        blocking=[],
+        nominal_pair_count=12938,
+        nominal_pairwise_delta_lcb95=0.05,
+        effective_pairwise_delta_lcb95=0.03,
+        effective_ndcg_delta=0.001,
+        non_finite_count=0,
+    )
+    base.update(overrides)
+    return base
+
+
+def test_decide_qualifies_good_curve():
+    decision = decide_curve_qualification(**_decide_inputs())
+
+    assert decision.status == "QUALIFIED"
+    assert decision.reasons == []
+
+
+def test_decide_fails_bad_curve_against_good_baseline():
+    decision = decide_curve_qualification(
+        **_decide_inputs(
+            nominal_pairwise_delta_lcb95=-0.1,
+            effective_pairwise_delta_lcb95=-0.1,
+            effective_ndcg_delta=-0.01,
+        )
+    )
+
+    assert decision.status == "NOT_QUALIFIED"
+    assert "nominal_pairwise_lcb_not_positive" in decision.reasons
+    assert "effective_pairwise_lcb_not_positive" in decision.reasons
+    assert "effective_ndcg_regression" in decision.reasons
+
+
+def test_decide_source_overlap_blocks_even_with_excellent_delta():
+    decision = decide_curve_qualification(**_decide_inputs(source_overlap=3))
+
+    assert decision.status == "NOT_QUALIFIED"
+    assert "source_overlap" in decision.reasons
+    assert "nominal_pairwise_lcb_not_positive" not in decision.reasons
+
+
+def test_decide_high_point_estimate_with_lcb_at_or_below_zero_fails():
+    at_zero = decide_curve_qualification(
+        **_decide_inputs(nominal_pairwise_delta_lcb95=0.0,
+                         effective_pairwise_delta_lcb95=0.0)
+    )
+    below = decide_curve_qualification(
+        **_decide_inputs(nominal_pairwise_delta_lcb95=-0.02,
+                         effective_pairwise_delta_lcb95=-0.02)
+    )
+
+    assert at_zero.status == "NOT_QUALIFIED"
+    assert "nominal_pairwise_lcb_not_positive" in at_zero.reasons
+    assert below.status == "NOT_QUALIFIED"
+
+
+def test_decide_nominal_pass_effective_fail():
+    decision = decide_curve_qualification(
+        **_decide_inputs(
+            nominal_pairwise_delta_lcb95=0.05,
+            effective_pairwise_delta_lcb95=-0.01,
+        )
+    )
+
+    assert decision.status == "NOT_QUALIFIED"
+    assert "nominal_pairwise_lcb_not_positive" not in decision.reasons
+    assert "effective_pairwise_lcb_not_positive" in decision.reasons
+
+
+def test_decide_effective_pairwise_pass_with_ndcg_regression_fails():
+    decision = decide_curve_qualification(
+        **_decide_inputs(effective_ndcg_delta=-0.005)
+    )
+
+    assert decision.status == "NOT_QUALIFIED"
+    assert "effective_ndcg_regression" in decision.reasons
+
+
+def test_decide_collects_all_precondition_failures():
+    decision = decide_curve_qualification(
+        **_decide_inputs(
+            model_status="PUBLISHED",
+            model_manifest_hashes_ok=False,
+            source_overlap=2,
+            holdout_row_count=10,
+            train_class_counts=(0, 100),
+            holdout_class_counts=(0, 10),
+            blocking=[
+                {"code": "artifact_missing", "candidate_id": "c1", "detail": ""},
+                {"code": "artifact_hash_mismatch", "candidate_id": "c2", "detail": ""},
+                {"code": "candidate_identity_mismatch", "candidate_id": "c3", "detail": ""},
+                {"code": "effective_event_changed", "candidate_id": "c4", "detail": ""},
+                {"code": "base_score_coverage_incomplete", "candidate_id": "c5", "detail": ""},
+            ],
+        )
+    )
+
+    assert decision.status == "NOT_QUALIFIED"
+    for code in (
+        "model_not_draft", "model_manifest_hash_mismatch", "source_overlap",
+        "holdout_too_small", "missing_class", "artifact_missing",
+        "artifact_hash_mismatch", "candidate_identity_mismatch",
+        "effective_event_changed", "base_score_coverage_incomplete",
+    ):
+        assert code in decision.reasons, code
+    # Outcome metrics are not even evaluated.
+    assert "nominal_pairwise_lcb_not_positive" not in decision.reasons
+
+
+def test_decide_non_finite_and_missing_pairs_fail():
+    no_pairs = decide_curve_qualification(**_decide_inputs(nominal_pair_count=0))
+    non_finite = decide_curve_qualification(**_decide_inputs(non_finite_count=2))
+
+    assert "no_within_source_pairs" in no_pairs.reasons
+    assert no_pairs.status == "NOT_QUALIFIED"
+    assert "non_finite_metric" in non_finite.reasons
