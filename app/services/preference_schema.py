@@ -26,6 +26,23 @@ def _ensure_columns(
 def apply_preference_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS curve_features (
+            candidate_id TEXT NOT NULL,
+            feature_version TEXT NOT NULL,
+            availability TEXT NOT NULL CHECK (availability IN ('AVAILABLE', 'UNAVAILABLE')),
+            features_json TEXT,
+            missing_reason TEXT,
+            extractor_sha256 TEXT NOT NULL,
+            artifact_sha256 TEXT NOT NULL,
+            wall_clock_ms REAL,
+            source_video_sha256 TEXT,
+            width INTEGER,
+            height INTEGER,
+            frame_count INTEGER,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            PRIMARY KEY (candidate_id, feature_version)
+        );
+
         CREATE TABLE IF NOT EXISTS curve_preference_models (
             model_version TEXT PRIMARY KEY,
             feature_version TEXT NOT NULL,

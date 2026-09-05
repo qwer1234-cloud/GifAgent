@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -467,3 +468,342 @@ def test_snapshot_records_event_watermark_and_exclusions_in_manifest():
             allow_nan=False,
         ).encode("utf-8")
     ).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Task 4: enrichment parsing, evidence freezing, and input validation
+# ---------------------------------------------------------------------------
+
+from app.services.curve_preference_qualification import (  # noqa: E402
+    EnrichmentError,
+    QualificationInputs,
+    build_qualification_inputs,
+    parse_enrichment_response,
+    score_evidence_from_summary,
+)
+
+VALID_VLM_JSON = json.dumps(
+    {
+        "caption": "a test clip",
+        "emotional_core": "joy",
+        "tags": ["Tag A", "tag a", "tag-b"],
+        "scene_type": "Bedroom Closeup",
+        "sex_act": 120,
+        "gif_worthiness": -5,
+        "reason": "fine",
+    }
+)
+
+
+def test_parse_enrichment_response_accepts_plain_json():
+    summary = parse_enrichment_response(
+        VALID_VLM_JSON, model="test-model", enriched_at="2026-09-05T00:00:00+00:00"
+    )
+
+    assert summary["caption"] == "a test clip"
+    assert summary["emotional_core"] == "joy"
+    assert summary["tags"] == ["tag a", "tag-b"]
+    assert summary["scene_type"] == "bedroom_closeup"
+    assert summary["sex_act"] == 100
+    assert summary["gif_worthiness"] == 0
+    assert summary["enriched_by"] == "test-model"
+    assert summary["enriched_at"] == "2026-09-05T00:00:00+00:00"
+
+
+def test_parse_enrichment_response_accepts_fenced_json():
+    fenced = "```json\n" + VALID_VLM_JSON + "\n```"
+
+    summary = parse_enrichment_response(
+        fenced, model="m", enriched_at="t"
+    )
+
+    assert summary["caption"] == "a test clip"
+
+
+def test_parse_enrichment_response_rejects_refusal_missing_caption_and_invalid():
+    for raw in (
+        "I cannot help with that request.",
+        json.dumps({"emotional_core": "joy"}),
+        "not a json object at all",
+    ):
+        with pytest.raises(EnrichmentError):
+            parse_enrichment_response(raw, model="m", enriched_at="t")
+
+
+def test_score_evidence_from_summary_requires_both_fields():
+    assert score_evidence_from_summary({"gif_worthiness": 74, "sex_act": 63}) == {
+        "gif_worthiness": 74,
+        "sex_act": 63,
+    }
+    assert score_evidence_from_summary({"gif_worthiness": 74}) is None
+    assert score_evidence_from_summary({}) is None
+
+
+def _write_gif(tmp_path: Path, name: str, content: bytes) -> Path:
+    gif = tmp_path / name
+    gif.write_bytes(content)
+    return gif
+
+
+def _attach_holdout_row(
+    conn: sqlite3.Connection,
+    tmp_path: Path,
+    *,
+    candidate_id: str = "cand-hold-0",
+    source: str = HOLDOUT_SOURCES[0],
+    rating: str = "like",
+    event_id: str = "ev-hold-0",
+    gif_content: bytes = b"GIF89a-payload-0",
+    features: dict | None = None,
+    baseline: float | None = None,
+    with_vlm: bool = True,
+    with_vector: bool = True,
+) -> tuple[dict, Path]:
+    """Create one fully consistent holdout row plus its manifest entry."""
+
+    gif = _write_gif(tmp_path, f"{candidate_id}.gif", gif_content)
+    features = features or {"extension_mean": 0.5}
+    _insert_candidate(
+        conn, candidate_id=candidate_id, source=source, tags=["tag-a"],
+        scenario_keys=["emotion:joy"],
+    )
+    conn.execute(
+        "UPDATE candidate_gifs SET artifact_path = :path WHERE candidate_id = :cid",
+        {"path": str(gif), "cid": candidate_id},
+    )
+    _insert_event(
+        conn, event_id=event_id, target_id=candidate_id, rating=rating,
+        source=source, scenario_keys=["emotion:joy"], created_at=_ts(600),
+    )
+    conn.execute(
+        """INSERT INTO curve_features (candidate_id, feature_version, availability,
+           features_json, extractor_sha256, artifact_sha256, wall_clock_ms,
+           source_video_sha256, width, height, frame_count)
+           VALUES (:cid, 'curve-v1', 'AVAILABLE', :features, 'ex', :asha, 900.0,
+                   :source, 720, 405, 24)""",
+        {
+            "cid": candidate_id,
+            "features": json.dumps(features),
+            "asha": hashlib.sha256(gif_content).hexdigest(),
+            "source": source,
+        },
+    )
+    if with_vlm:
+        conn.execute(
+            "UPDATE candidate_gifs SET vlm_summary_json = :summary WHERE candidate_id = :cid",
+            {
+                "summary": json.dumps(
+                    {"caption": "c", "gif_worthiness": 74, "sex_act": 63}
+                ),
+                "cid": candidate_id,
+            },
+        )
+    if with_vector:
+        _insert_vector(conn, candidate_id=candidate_id, seed=7)
+
+    manifest_row = {
+        "candidate_id": candidate_id,
+        "rating": rating,
+        "features": features,
+        "baseline": baseline,
+        "artifact_sha256": hashlib.sha256(gif_content).hexdigest(),
+        "event_id": event_id,
+        "event_created_at": _ts(600),
+        "source": source,
+    }
+    return manifest_row, gif
+
+
+def test_build_inputs_happy_path_binds_every_field(tmp_path):
+    conn = build_qualification_db()
+    manifest_row, _gif = _attach_holdout_row(conn, tmp_path)
+
+    inputs = build_qualification_inputs(conn, manifest_rows=[manifest_row])
+
+    assert inputs.blocking == []
+    assert len(inputs.records) == 1
+    record = inputs.records[0]
+    assert record["candidate_id"] == "cand-hold-0"
+    assert record["rating"] == "like"
+    assert record["event_id"] == "ev-hold-0"
+    assert record["artifact_sha256"] == manifest_row["artifact_sha256"]
+    assert record["curve_features"] == {"extension_mean": 0.5}
+    assert record["curve_features_sha256"] == hashlib.sha256(
+        json.dumps({"extension_mean": 0.5}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert record["vlm_evidence"] == {"gif_worthiness": 74, "sex_act": 63}
+    assert record["vlm_evidence_sha256"]
+    expected_base = 0.80 * (0.40 * 0.74 + 0.60 * 0.63) + 0.20 * 0.5
+    assert record["base_export_score"] == pytest.approx(expected_base)
+    assert record["candidate_vector_sha256"]
+    assert record["profile_fallback_reason"] is None
+    assert inputs.cinematic_fallback_count == 1
+    assert inputs.enrichment_count == 0
+    # Deterministic manifest hash over sorted records.
+    assert inputs.input_manifest_sha256 == build_qualification_inputs(
+        conn, manifest_rows=[manifest_row]
+    ).input_manifest_sha256
+
+
+def test_build_inputs_blocks_on_missing_and_hash_mismatched_artifact(tmp_path):
+    conn = build_qualification_db()
+    row_ok, gif = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-ok", event_id="ev-hold-ok"
+    )
+    row_missing, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-gone", gif_content=b"GIF89a-gone",
+        event_id="ev-hold-gone",
+    )
+    (tmp_path / "cand-gone.gif").unlink()
+    row_mismatch, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-mismatch", gif_content=b"GIF89a-mismatch",
+        event_id="ev-hold-mismatch",
+    )
+    row_mismatch = dict(row_mismatch, artifact_sha256="f" * 64)
+
+    inputs = build_qualification_inputs(
+        conn, manifest_rows=[row_ok, row_missing, row_mismatch]
+    )
+
+    codes = {b["code"] for b in inputs.blocking}
+    assert codes == {"artifact_missing", "artifact_hash_mismatch"}
+    assert {r["candidate_id"] for r in inputs.records} == {"cand-ok"}
+
+
+def test_build_inputs_reports_identity_and_feature_mismatch(tmp_path):
+    conn = build_qualification_db()
+    row_ok, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-ok", event_id="ev-hold-ok"
+    )
+    row_source, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-src", source=HOLDOUT_SOURCES[0],
+        event_id="ev-hold-src",
+    )
+    row_source = dict(row_source, source="different-source")
+    row_features, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-feat", features={"extension_mean": 0.9},
+        event_id="ev-hold-feat",
+    )
+    row_features = dict(row_features, features={"extension_mean": 0.1})
+
+    inputs = build_qualification_inputs(
+        conn, manifest_rows=[row_ok, row_source, row_features]
+    )
+
+    codes = {b["code"] for b in inputs.blocking}
+    assert codes == {"candidate_identity_mismatch"}
+
+
+def test_build_inputs_blocks_when_effective_event_changed(tmp_path):
+    conn = build_qualification_db()
+    manifest_row, _ = _attach_holdout_row(conn, tmp_path, candidate_id="cand-ev")
+    _insert_event(
+        conn, event_id="ev-correction", target_id="cand-ev", rating="dislike",
+        source=HOLDOUT_SOURCES[0], scenario_keys=["emotion:joy"],
+        created_at=_ts(900), event_kind="correction", supersedes="ev-hold-0",
+    )
+
+    inputs = build_qualification_inputs(conn, manifest_rows=[manifest_row])
+
+    codes = {b["code"] for b in inputs.blocking}
+    assert codes == {"effective_event_changed"}
+    assert inputs.post_manifest_event_changes == ["cand-ev"]
+
+
+def test_build_inputs_enriches_missing_vlm_into_work_db_only(tmp_path):
+    conn = build_qualification_db()
+    manifest_row, gif = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-novlm", with_vlm=False, with_vector=False
+    )
+
+    def fake_enrich(path: str) -> str:
+        assert path == str(gif)
+        return json.dumps(
+            {"caption": "enriched", "gif_worthiness": 55, "sex_act": 30}
+        )
+
+    calls: list[str] = []
+
+    def fake_vector(candidate_id: str) -> bool:
+        calls.append(candidate_id)
+        conn.execute(
+            """INSERT OR REPLACE INTO candidate_vectors
+               (candidate_id, vector_type, embedding_model, embedding_dim,
+                vector_blob, normalized)
+               VALUES (?, 'clip', 'nomic-embed-text:latest', 768, ?, 1)""",
+            (candidate_id, _unit_vector(11).tobytes()),
+        )
+        conn.commit()
+        return True
+
+    before_changes = conn.total_changes
+    inputs = build_qualification_inputs(
+        conn, manifest_rows=[manifest_row], enrich_fn=fake_enrich,
+        vector_fn=fake_vector,
+    )
+    assert conn.total_changes > before_changes  # work.db was written
+
+    assert inputs.blocking == []
+    assert inputs.enrichment_count == 1
+    assert inputs.records[0]["vlm_evidence"] == {"gif_worthiness": 55, "sex_act": 30}
+    assert calls == ["cand-novlm"]
+    stored = conn.execute(
+        "SELECT vlm_summary_json FROM candidate_gifs WHERE candidate_id='cand-novlm'"
+    ).fetchone()[0]
+    assert json.loads(stored)["gif_worthiness"] == 55
+
+
+def test_build_inputs_blocks_when_enrichment_fails(tmp_path):
+    conn = build_qualification_db()
+    manifest_row, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-badvlm", with_vlm=False
+    )
+
+    def failing_enrich(path: str) -> str:
+        raise RuntimeError("vlm unavailable")
+
+    inputs = build_qualification_inputs(
+        conn, manifest_rows=[manifest_row], enrich_fn=failing_enrich,
+    )
+
+    codes = {b["code"] for b in inputs.blocking}
+    assert codes == {"base_score_coverage_incomplete"}
+    assert inputs.records == []
+
+
+def test_build_inputs_blocks_when_vector_unavailable(tmp_path):
+    conn = build_qualification_db()
+    manifest_row, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-novec", with_vector=False
+    )
+
+    def failing_vector(candidate_id: str) -> bool:
+        return False
+
+    inputs = build_qualification_inputs(
+        conn, manifest_rows=[manifest_row],
+        vector_fn=failing_vector,
+    )
+
+    codes = {b["code"] for b in inputs.blocking}
+    assert codes == {"base_score_coverage_incomplete"}
+
+
+def test_build_inputs_records_sorted_and_never_touch_source(tmp_path):
+    conn = build_qualification_db()
+    row_b, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-b", gif_content=b"GIF89a-b",
+        event_id="ev-hold-b",
+    )
+    row_a, _ = _attach_holdout_row(
+        conn, tmp_path, candidate_id="cand-a", gif_content=b"GIF89a-a",
+        event_id="ev-hold-a",
+    )
+
+    inputs = build_qualification_inputs(conn, manifest_rows=[row_b, row_a])
+
+    ids = [r["candidate_id"] for r in inputs.records]
+    assert ids == sorted(ids)
+    assert inputs.input_manifest_sha256 != build_qualification_inputs(
+        conn, manifest_rows=[row_a]
+    ).input_manifest_sha256
