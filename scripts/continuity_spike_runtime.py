@@ -8,10 +8,15 @@ never touch live services, and telemetry failures never fail a source batch.
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import time
+import urllib.parse
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal, Protocol
+
+import httpx
 
 TelemetryMode = Literal["off", "ollama", "gpu", "all"]
 TELEMETRY_MODES: tuple[str, ...] = ("off", "ollama", "gpu", "all")
@@ -48,6 +53,74 @@ class CompletedProbe(Protocol):
 
 HttpGet = Callable[[str, float], SupportsJson]
 SubprocessRunner = Callable[..., CompletedProbe]
+
+
+def http_get_with_timeout(url: str, timeout_s: float) -> SupportsJson:
+    """Fetch the operator-configured http(s) telemetry endpoint, read-only.
+
+    This local CLI only ever talks to the operator's own Ollama on loopback
+    or a private network. The scheme is restricted, redirects are disabled,
+    and every resolved address is checked against an explicit boundary so a
+    mistyped endpoint can never reach link-local metadata, reserved, or
+    public addresses.
+    """
+
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise TelemetryError(
+            "ollama_unavailable",
+            f"endpoint must be an http(s) URL, got {url!r}",
+        )
+    if parsed.query or parsed.fragment:
+        raise TelemetryError(
+            "ollama_unavailable",
+            f"endpoint must not carry a query or fragment: {url!r}",
+        )
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise TelemetryError(
+            "ollama_unavailable", f"endpoint has an invalid port: {url!r}"
+        ) from exc
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, port, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError) as exc:
+        raise TelemetryError(
+            "ollama_unavailable",
+            f"cannot resolve endpoint host {parsed.hostname!r}: {exc}",
+        ) from exc
+    if not infos:
+        raise TelemetryError(
+            "ollama_unavailable",
+            f"endpoint host {parsed.hostname!r} resolved to no addresses",
+        )
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if (
+            address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+            or address.is_unspecified
+            or not (address.is_loopback or address.is_private)
+        ):
+            raise TelemetryError(
+                "ollama_unavailable",
+                f"endpoint host {parsed.hostname!r} resolves to "
+                f"{address}; only loopback or private-network Ollama "
+                "endpoints are permitted",
+            )
+    try:
+        response = httpx.get(url, timeout=timeout_s, follow_redirects=False)
+    except TelemetryError:
+        raise
+    except Exception as exc:
+        raise TelemetryError("ollama_unavailable", str(exc)) from exc
+    if response.status_code >= 400:
+        raise TelemetryError(
+            "ollama_unavailable",
+            f"endpoint returned HTTP {response.status_code}",
+        )
+    return response
 
 
 def query_ollama_ps(base_url: str, *, get: HttpGet) -> list[dict[str, object]]:

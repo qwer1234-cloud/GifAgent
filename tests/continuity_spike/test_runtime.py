@@ -15,9 +15,12 @@ import pytest
 from scripts.continuity_spike_runtime import (
     TelemetryError,
     capture_runtime_snapshot,
+    http_get_with_timeout,
     query_nvidia_smi,
     query_ollama_ps,
 )
+
+import scripts.continuity_spike_runtime as runtime_module
 
 _RUNTIME_MODULE = (
     Path(__file__).parents[2] / "scripts" / "continuity_spike_runtime.py"
@@ -25,8 +28,9 @@ _RUNTIME_MODULE = (
 
 
 class FakeResponse:
-    def __init__(self, payload: object) -> None:
+    def __init__(self, payload: object, status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
 
     def json(self) -> object:
         return self._payload
@@ -247,3 +251,60 @@ def test_runtime_module_contains_no_lifecycle_commands():
         "/api/embed",
     ):
         assert fragment not in source
+
+
+def _resolve_to(address: str):
+    def fake_getaddrinfo(host, port, type=None):
+        return [(2, 1, 6, "", (address, port or 0))]
+
+    return fake_getaddrinfo
+
+
+def test_http_get_with_timeout_rejects_non_http_scheme():
+    with pytest.raises(TelemetryError) as excinfo:
+        http_get_with_timeout("file:///etc/passwd", 5.0)
+    assert excinfo.value.code == "ollama_unavailable"
+
+
+def test_http_get_with_timeout_blocks_metadata_and_public_addresses(monkeypatch):
+    monkeypatch.setattr(
+        runtime_module.socket, "getaddrinfo", _resolve_to("169.254.169.254")
+    )
+
+    def forbidden_get(*args: object, **kwargs: object) -> object:
+        raise AssertionError("request reached the network")
+
+    monkeypatch.setattr(runtime_module.httpx, "get", forbidden_get)
+
+    with pytest.raises(TelemetryError):
+        http_get_with_timeout("http://metadata.internal/api/ps", 5.0)
+
+    monkeypatch.setattr(
+        runtime_module.socket, "getaddrinfo", _resolve_to("8.8.8.8")
+    )
+    with pytest.raises(TelemetryError):
+        http_get_with_timeout("http://example.com/api/ps", 5.0)
+
+
+def test_http_get_with_timeout_allows_loopback_without_redirects(monkeypatch):
+    monkeypatch.setattr(
+        runtime_module.socket, "getaddrinfo", _resolve_to("127.0.0.1")
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_get(url: str, **kwargs: object) -> FakeResponse:
+        calls.append({"url": url, **kwargs})
+        return FakeResponse({"models": []})
+
+    monkeypatch.setattr(runtime_module.httpx, "get", fake_get)
+
+    response = http_get_with_timeout("http://127.0.0.1:11434/api/ps", 5.0)
+
+    assert response.json() == {"models": []}
+    assert calls == [
+        {
+            "url": "http://127.0.0.1:11434/api/ps",
+            "timeout": 5.0,
+            "follow_redirects": False,
+        }
+    ]
