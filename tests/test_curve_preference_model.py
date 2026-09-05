@@ -11,6 +11,7 @@ import pytest
 
 from scripts.train_curve_preference_model import (
     MIN_HOLDOUT_JUDGMENTS,
+    build_manifest,
     decide_publication,
     load_rows,
     paired_bootstrap_delta_lcb95,
@@ -18,7 +19,11 @@ from scripts.train_curve_preference_model import (
     within_source_pair_stats,
     pair_accuracy,
 )
-from scripts.continuity_spike_backend_real import source_media_dims
+from scripts.continuity_spike_backend_real import (
+    _Person,
+    source_media_dims,
+)
+from scripts.curve_feature_backfill import count_torso_border_clipped
 
 FEATURES = {
     "extension_mean": 0.5,
@@ -295,6 +300,118 @@ def test_decide_publication_rejects_when_model_loses_to_baseline():
 
     assert status == "REJECTED"
     assert any("paired_delta_lcb95" in r for r in reasons)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"source_overlap": 1},
+        {"holdout_row_count": MIN_HOLDOUT_JUDGMENTS - 1},
+        {"train_class_counts": (100, 0)},
+        {"holdout_class_counts": (30, 0)},
+    ],
+)
+def test_decide_publication_precondition_failures_block_publishing(overrides):
+    base = dict(
+        holdout_row_count=MIN_HOLDOUT_JUDGMENTS + 10,
+        source_overlap=0,
+        train_class_counts=(100, 10),
+        holdout_class_counts=(30, 10),
+        baseline_universe_rows=40,
+        baseline_pair_count=25,
+        paired_delta_lcb95=0.08,
+    )
+    base.update(overrides)
+
+    status, reasons = decide_publication(**base)
+
+    assert status != "PUBLISHED"
+    assert status == "DRAFT"
+    assert reasons
+
+
+def _manifest_rows() -> list[dict]:
+    return [
+        {
+            "candidate_id": "cand-a",
+            "features": {"extension_mean": 0.5},
+            "rating": "like",
+            "baseline": 0.42,
+            "artifact_sha256": "sha-a",
+            "event_id": "event-a",
+            "event_created_at": "2026-09-05T00:00:00",
+            "source": "src-1",
+            "extractor": "extractor-1",
+        },
+        {
+            "candidate_id": "cand-b",
+            "features": {"extension_mean": 0.8},
+            "rating": "dislike",
+            "baseline": None,
+            "artifact_sha256": "sha-b",
+            "event_id": "event-b",
+            "event_created_at": "2026-09-05T01:00:00",
+            "source": "src-1",
+            "extractor": "extractor-1",
+        },
+    ]
+
+
+def test_manifest_binds_features_baseline_and_event_identity():
+    rows = _manifest_rows()
+
+    manifest, sha = build_manifest(
+        "curve-training-manifest-v1", rows, {"src-1"}, ["extension_mean"], "extractor-1"
+    )
+
+    row_a = manifest["rows"][0]
+    assert row_a["artifact_sha256"] == "sha-a"
+    assert row_a["event_id"] == "event-a"
+    assert row_a["baseline"] == 0.42
+    assert row_a["features"] == {"extension_mean": 0.5}
+    assert sha
+
+    mutated = json.loads(json.dumps(manifest))
+    mutated["rows"][0]["features"]["extension_mean"] = 0.9
+    _, mutated_sha = build_manifest(
+        "curve-training-manifest-v1", mutated["rows"], {"src-1"}, ["extension_mean"], "extractor-1"
+    )
+    assert mutated_sha != sha
+
+    rebaselined = json.loads(json.dumps(manifest))
+    rebaselined["rows"][0]["baseline"] = 0.99
+    _, rebaselined_sha = build_manifest(
+        "curve-training-manifest-v1", rebaselined["rows"], {"src-1"}, ["extension_mean"], "extractor-1"
+    )
+    assert rebaselined_sha != sha
+
+    relabeled = json.loads(json.dumps(manifest))
+    relabeled["rows"][0]["event_id"] = "event-a2"
+    _, relabeled_sha = build_manifest(
+        "curve-training-manifest-v1", relabeled["rows"], {"src-1"}, ["extension_mean"], "extractor-1"
+    )
+    assert relabeled_sha != sha
+
+
+def test_torso_border_clip_uses_analysis_frame_coordinates():
+    def person_with_shoulder_at(x: float, y: float) -> _Person:
+        keypoints = np.zeros((17, 3), dtype=np.float64)
+        keypoints[:, 2] = 0.9
+        keypoints[5] = (x, y, 0.9)
+        keypoints[6] = (x - 20, y, 0.9)
+        keypoints[11] = (x, y + 30, 0.9)
+        keypoints[12] = (x - 20, y + 30, 0.9)
+        return _Person(box=(x - 40, y - 40, 120, 160), score=0.9, keypoints=keypoints)
+
+    person = person_with_shoulder_at(800.0, 100.0)
+
+    # 960 px analysis frame: x=800 is interior, not clipped.
+    assert count_torso_border_clipped([person], 960, 540) == 0
+    # 720 px source frame coordinates would wrongly report clipping.
+    assert count_torso_border_clipped([person], 720, 405) == 1
+    # A joint genuinely at the analysis border is clipped.
+    border_person = person_with_shoulder_at(959.0, 100.0)
+    assert count_torso_border_clipped([border_person], 960, 540) == 1
 
 
 def test_paired_bootstrap_separates_good_and_bad_models():

@@ -174,6 +174,30 @@ def _gather_rows(db_path: Path, drives: _DeadDriveCache) -> tuple[list[dict], di
     return entries, skip_reasons
 
 
+def count_torso_border_clipped(
+    people: list,
+    width: int,
+    height: int,
+) -> int:
+    """Count people with any confident torso joint at the frame border.
+
+    Keypoints live in the analysis-frame coordinate system, so ``width`` and
+    ``height`` must be the analysis dimensions, never the source media
+    dimensions.
+    """
+
+    clipped = 0
+    for person in people:
+        for index in _SHOULDERS + _HIPS:
+            x, y, conf = person.keypoint(index)
+            if conf >= KEYPOINT_SCORE_MIN and (
+                x <= 2 or y <= 2 or x >= width - 2 or y >= height - 2
+            ):
+                clipped += 1
+                break
+    return clipped
+
+
 def _extract_features(
     backend: RealSpikeBackend,
     artifact: Path,
@@ -214,7 +238,6 @@ def _extract_features(
     visibilities: list[float] = []
     centers: list[tuple[float, float]] = []
     verticalities: list[float] = []
-    clipped = 0
     for person in valid_people:
         sx = (person.keypoint(_SHOULDERS[0])[0] + person.keypoint(_SHOULDERS[1])[0]) / 2
         sy = (person.keypoint(_SHOULDERS[0])[1] + person.keypoint(_SHOULDERS[1])[1]) / 2
@@ -241,13 +264,7 @@ def _extract_features(
                 if person.keypoint(index)[2] >= KEYPOINT_SCORE_MIN
             ) / KEYPOINTS
         )
-        for index in _SHOULDERS + _HIPS:
-            x, y, conf = person.keypoint(index)
-            if conf >= KEYPOINT_SCORE_MIN and (
-                x <= 2 or y <= 2 or x >= width - 2 or y >= height - 2
-            ):
-                clipped += 1
-                break
+    clipped = count_torso_border_clipped(valid_people, analysis_width, analysis_height)
 
     if len(torso_scales) < MIN_VALID_FRAMES:
         return None, "pose_coverage_low", width, height, len(frames)

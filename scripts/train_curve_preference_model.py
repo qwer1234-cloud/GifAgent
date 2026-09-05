@@ -119,7 +119,6 @@ def load_rows(db_path: Path) -> tuple[list[dict], str, dict[str, int]]:
     skipped = {
         "no_effective_scoring_event": 0,
         "duplicate_artifact": 0,
-        "no_baseline_ignored_for_labels": 0,
     }
     parsed: list[dict] = []
     seen_artifacts: set[str] = set()
@@ -137,8 +136,6 @@ def load_rows(db_path: Path) -> tuple[list[dict], str, dict[str, int]]:
             continue
         seen_artifacts.add(row["artifact_sha256"])
         baseline = row["baseline_score"]
-        if baseline is None:
-            skipped["no_baseline_ignored_for_labels"] += 1
         parsed.append(
             {
                 "candidate_id": row["candidate_id"],
@@ -147,6 +144,9 @@ def load_rows(db_path: Path) -> tuple[list[dict], str, dict[str, int]]:
                 "rating": rating,
                 "baseline": float(baseline) if baseline is not None else None,
                 "extractor": row["extractor_sha256"],
+                "artifact_sha256": row["artifact_sha256"],
+                "event_id": str(event["event_id"]),
+                "event_created_at": str(event["created_at"]),
             }
         )
     return parsed, watermark or "", skipped
@@ -320,6 +320,13 @@ def build_manifest(
     feature_names: list[str],
     extractor: str,
 ) -> tuple[dict, str]:
+    """Freeze the population binding features, labels, and event identity.
+
+    Every row carries its feature vector, effective label, production
+    baseline score, artifact hash, and the effective scoring-event identity,
+    so the hash changes whenever any training input changes.
+    """
+
     manifest = {
         "kind": kind,
         "feature_version": FEATURE_VERSION,
@@ -333,7 +340,11 @@ def build_manifest(
             {
                 "candidate_id": row["candidate_id"],
                 "rating": row["rating"],
-                "artifact_sha256": _artifact_of(row),
+                "features": row["features"],
+                "baseline": row["baseline"],
+                "artifact_sha256": row["artifact_sha256"],
+                "event_id": row["event_id"],
+                "event_created_at": row["event_created_at"],
                 "source": row["source"],
             }
             for row in sorted(rows, key=lambda r: r["candidate_id"])
@@ -341,10 +352,6 @@ def build_manifest(
     }
     canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
     return manifest, _sha256_bytes(canonical.encode("utf-8"))
-
-
-def _artifact_of(row: dict) -> str:
-    return row.get("artifact_sha256", "")
 
 
 def decide_publication(
@@ -360,8 +367,11 @@ def decide_publication(
     """Return (status, gate_reasons): PUBLISHED / REJECTED / DRAFT.
 
     DRAFT means "cannot be evaluated yet" (for example the production
-    baseline does not cover the labeled population); REJECTED means the
-    comparison ran and the model lost.
+    baseline does not cover the labeled population, or any precondition
+    such as source overlap or a missing class failed); REJECTED means the
+    comparison ran on a valid population and the model lost. **Every
+    precondition failure blocks publication** — the function must never
+    return ``PUBLISHED`` while ``reasons`` is non-empty.
     """
 
     reasons: list[str] = []
@@ -379,12 +389,16 @@ def decide_publication(
             f"{baseline_universe_rows}_rows_{baseline_pair_count}_pairs"
         )
         return "DRAFT", reasons
-    if math.isfinite(paired_delta_lcb95) and paired_delta_lcb95 <= 0:
-        reasons.append(f"paired_delta_lcb95={paired_delta_lcb95:.4f} <= 0")
-        return "REJECTED", reasons
+    if reasons:
+        # Any precondition failure invalidates the comparison; the model
+        # stays pending evaluation even when the delta looks good.
+        return "DRAFT", reasons
     if not math.isfinite(paired_delta_lcb95):
         reasons.append("paired_delta_lcb95=nan")
         return "DRAFT", reasons
+    if paired_delta_lcb95 <= 0:
+        reasons.append(f"paired_delta_lcb95={paired_delta_lcb95:.4f} <= 0")
+        return "REJECTED", reasons
     return "PUBLISHED", reasons
 
 

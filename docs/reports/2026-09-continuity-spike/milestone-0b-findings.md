@@ -252,3 +252,32 @@ source-dims helper live in `tests/test_curve_preference_model.py`.
 Publication remains blocked until production-scored holdout rows with
 feedback exist; the gate then compares the curve model against the
 deployed baseline with the paired bootstrap above.
+
+## 10. Second review revision (2026-09-05): three remaining findings fixed
+
+1. **[P1] Precondition failures still returned PUBLISHED.** Fixed:
+   `decide_publication` now returns `DRAFT` whenever any precondition
+   (source overlap, holdout count, missing class) fails, even when the
+   paired baseline delta looks good; only a fully clean gate can return
+   `PUBLISHED`. Combination tests cover every path.
+2. **[P2] Manifests were not bound to actual training data.** Fixed:
+   `load_rows` now carries each row's artifact SHA-256 and effective
+   scoring-event identity (event id + created_at), and both manifests embed
+   the feature vector, baseline score, artifact hash, and event identity
+   per row. The stored `training_manifest_sha256` verifies against the
+   stored JSON; the manifest hash changes when any feature, label, or
+   baseline changes.
+3. **[P2] Border-clip check used source-frame coordinates.** Fixed: the
+   backfill's clip counter is factored into
+   `count_torso_border_clipped(people, analysis_width, analysis_height)`
+   and is called with analysis-frame dimensions; keypoints never compare
+   against source media bounds. Feature values previously stored are
+   unaffected (they were computed while width/height were still analysis
+   dimensions); only future re-extractions were at risk and are now safe.
+
+Retrained again as `curve-pref-v1-20260905120400` (status `DRAFT`,
+confidence NULL): manifest rows bind 8,247 training / 2,510 holdout rows
+with features, baselines, artifact hashes, and event identities; the stored
+manifest hash re-verifies against the stored JSON; stale confidence values
+on withdrawn rows were nulled. Regression: 170 tests pass
+(16 in `tests/test_curve_preference_model.py`).
