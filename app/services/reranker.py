@@ -7,6 +7,7 @@ candidate scores by measuring cosine similarity to liked/disliked centroids.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from typing import Any
 
@@ -28,6 +29,11 @@ _NOMINAL_POSITIVE_WEIGHTS: dict[str, float] = {
 _NOMINAL_NEGATIVE_WEIGHTS: dict[str, float] = {
     "global_dislike": 0.20,
 }
+
+# Curve-aware nominal positive weights: when a valid curve score is present
+# base_rag donates 0.10 to the curve component (spec 2026-09-04 §5.8).
+_CURVE_BASE_RAG_WEIGHT: float = 0.45
+_CURVE_NOMINAL_WEIGHT: float = 0.10
 
 TAG_PRIOR_WEIGHT = 0.05
 
@@ -126,6 +132,9 @@ class PreferenceReranker:
         scenario_keys: list[str],
         profile_version: str | None,
         enabled: bool,
+        curve_probability: float | None = None,
+        curve_model_version: str | None = None,
+        curve_model_confidence: float | None = None,
     ) -> RerankerScoreBreakdown:
         """Compute the final score for a candidate.
 
@@ -148,13 +157,27 @@ class PreferenceReranker:
             ``preference_profile_current`` table.
         enabled:
             When ``False`` the reranker is a no-op.
+        curve_probability:
+            Optional sigmoid probability from the curve preference model.
+            All three curve inputs must be supplied together; partial or
+            invalid inputs deactivate the curve component with an explicit
+            reason. When ``None`` (curve unavailable) the candidate keeps the
+            current no-curve weight set — never a neutral 0.5 score.
+        curve_model_version:
+            Model version for auditability; required with a probability.
+        curve_model_confidence:
+            Effective confidence in [0, 1]; the curve nominal weight is
+            ``0.10 * confidence``. Zero confidence removes ranking influence.
 
         Returns
         -------
         ScoreBreakdown
             Dict with fields: ``base_rag_similarity``, ``profile_score``,
             ``raw_score``, ``final_score``, ``active_weights``,
-            ``inactive_reasons``, ``preference_profile_version``.
+            ``inactive_reasons``, ``preference_profile_version``. When the
+            curve component is active the dict additionally carries
+            ``curve_preference_score``, ``curve_preference_weight``, and
+            ``curve_model_version``.
         """
         # ---- Fast path: feature disabled -----------------------------------
         if not enabled:
@@ -191,6 +214,49 @@ class PreferenceReranker:
 
         active_weights: dict[str, float] = {}
         inactive_reasons: dict[str, str] = {}
+
+        # ---- Curve component (opt-in; inactive unless all inputs valid) ----
+        curve_weight = 0.0
+        curve_active = False
+        curve_inputs_supplied = (
+            curve_probability is not None
+            or curve_model_version is not None
+            or curve_model_confidence is not None
+        )
+        if curve_inputs_supplied:
+            if (
+                curve_probability is None
+                or curve_model_version is None
+                or curve_model_confidence is None
+            ):
+                inactive_reasons["curve_preference"] = "partial curve inputs"
+            elif (
+                not math.isfinite(curve_probability)
+                or not 0.0 <= curve_probability <= 1.0
+            ):
+                inactive_reasons["curve_preference"] = (
+                    "curve probability out of range"
+                )
+            elif (
+                not math.isfinite(curve_model_confidence)
+                or not 0.0 <= curve_model_confidence <= 1.0
+            ):
+                inactive_reasons["curve_preference"] = (
+                    "curve confidence out of range"
+                )
+            elif not curve_model_version:
+                inactive_reasons["curve_preference"] = (
+                    "missing curve model version"
+                )
+            else:
+                curve_weight = _CURVE_NOMINAL_WEIGHT * curve_model_confidence
+                if curve_weight > 0.0:
+                    curve_active = True
+                else:
+                    inactive_reasons["curve_preference"] = (
+                        "curve confidence is zero; curve weight inactive"
+                    )
+
         global_confidence = float(global_row["confidence"] or 0.0)
         try:
             tag_weights = json.loads(global_row["tag_weights_json"] or "{}")
@@ -200,7 +266,10 @@ class PreferenceReranker:
             tag_weights = {}
 
         # ---- Base RAG similarity (always available) ------------------------
-        active_weights["base_rag"] = _NOMINAL_POSITIVE_WEIGHTS["base_rag"]
+        active_weights["base_rag"] = (
+            _CURVE_BASE_RAG_WEIGHT if curve_active
+            else _NOMINAL_POSITIVE_WEIGHTS["base_rag"]
+        )
 
         # ---- Global like similarity ----------------------------------------
         global_like_sim: float = 0.0
@@ -274,15 +343,22 @@ class PreferenceReranker:
         else:
             inactive_reasons["scenario_like"] = "no scenario keys provided"
 
+        # ---- Curve like weight (after availability checks) -----------------
+        if curve_active:
+            active_weights["curve_preference"] = curve_weight
+
         # ---- Renormalize positive weights ----------------------------------
+        positive_keys = set(_NOMINAL_POSITIVE_WEIGHTS)
+        if curve_active:
+            positive_keys.add("curve_preference")
         positive_sum = sum(
             w
             for k, w in active_weights.items()
-            if k in _NOMINAL_POSITIVE_WEIGHTS
+            if k in positive_keys
         )
         if positive_sum > 0:
             for k in list(active_weights.keys()):
-                if k in _NOMINAL_POSITIVE_WEIGHTS:
+                if k in positive_keys:
                     active_weights[k] = active_weights[k] / positive_sum
 
         # ---- Compute raw score ---------------------------------------------
@@ -293,6 +369,11 @@ class PreferenceReranker:
             raw_score += active_weights["global_like"] * global_like_sim
         if "scenario_like" in active_weights:
             raw_score += active_weights["scenario_like"] * scenario_like_sim
+        if "curve_preference" in active_weights:
+            raw_score += (
+                active_weights["curve_preference"]
+                * float(curve_probability)
+            )
         if "global_dislike" in active_weights:
             raw_score -= active_weights["global_dislike"] * global_dislike_sim
 
@@ -317,6 +398,10 @@ class PreferenceReranker:
             preference_components.append(
                 (_NOMINAL_NEGATIVE_WEIGHTS["global_dislike"], (1.0 - global_dislike_sim) / 2.0)
             )
+        if curve_active:
+            # The curve component enters profile_score with its effective
+            # (confidence-scaled) weight, never a neutral 0.5 placeholder.
+            preference_components.append((curve_weight, float(curve_probability)))
         if preference_components:
             preference_weight_total = sum(weight for weight, _ in preference_components)
             profile_score = float(
@@ -363,6 +448,15 @@ class PreferenceReranker:
             "active_weights": active_weights,
             "inactive_reasons": inactive_reasons,
             "preference_profile_version": profile_version,
+            **(
+                {
+                    "curve_preference_score": float(curve_probability),
+                    "curve_preference_weight": float(curve_weight),
+                    "curve_model_version": curve_model_version,
+                }
+                if curve_active
+                else {}
+            ),
         }
 
     # ------------------------------------------------------------------

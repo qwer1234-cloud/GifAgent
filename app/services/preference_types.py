@@ -32,6 +32,9 @@ class RerankerScoreBreakdown(TypedDict, total=False):
     active_weights: dict[str, float]
     inactive_reasons: dict[str, str]
     preference_profile_version: str | None
+    curve_preference_score: float
+    curve_preference_weight: float
+    curve_model_version: str
 
 RATING_TO_STATUS: dict[str, CandidateStatus] = {
     "like": "liked",

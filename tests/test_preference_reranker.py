@@ -524,3 +524,186 @@ def test_clip_scenario_keys_include_emotion_and_tags():
     assert keys[0] == "emotion:joy"
     assert "tag:closeup" in keys
     assert "tag:warm" in keys
+
+
+# ---------------------------------------------------------------------------
+# Characterization: no-curve output is frozen byte-for-byte
+# ---------------------------------------------------------------------------
+
+
+def _characterization_db(
+    *,
+    liked: np.ndarray,
+    disliked: np.ndarray,
+    scenario: np.ndarray | None,
+    current: bool,
+) -> sqlite3.Connection:
+    from app.services.preference_schema import apply_preference_schema
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+    conn.execute(
+        "INSERT INTO preference_profile_builds ("
+        "profile_version, event_watermark, embedding_model, embedding_dim, "
+        "effective_feedback_count, source_video_count, config_json, status"
+        ") VALUES ('prof-1','wm','nomic-embed-text:latest',768,15,3,'{}','completed')"
+    )
+    conn.execute(
+        "INSERT INTO preference_profiles ("
+        "profile_version, scope, scenario_key, like_count, dislike_count, "
+        "neutral_count, confidence, liked_centroid_blob, disliked_centroid_blob, "
+        "tag_weights_json) VALUES ("
+        "'prof-1','global',NULL,10,5,0,0.8,?,?, '{}')",
+        (
+            liked.tobytes() if liked is not None else None,
+            disliked.tobytes() if disliked is not None else None,
+        ),
+    )
+    if scenario is not None:
+        conn.execute(
+            "INSERT INTO preference_profiles ("
+            "profile_version, scope, scenario_key, like_count, dislike_count, "
+            "neutral_count, confidence, liked_centroid_blob, "
+            "disliked_centroid_blob, tag_weights_json) VALUES ("
+            "'prof-1','scenario','emotion:joy',4,0,0,0.75,?,NULL,'{}')",
+            (scenario.tobytes(),),
+        )
+    if current:
+        conn.execute(
+            "INSERT INTO preference_profile_current (slot, profile_version) "
+            "VALUES ('current','prof-1')"
+        )
+    conn.commit()
+    return conn
+
+
+@pytest.fixture
+def characterization_vectors():
+    from app.services.vector_math import l2_normalize
+
+    rng = np.random.default_rng(42)
+    vec = rng.normal(0, 1, 768).astype(np.float32)
+    vec = l2_normalize(vec).astype(np.float32)
+    liked = l2_normalize(rng.normal(0, 1, 768).astype(np.float32)).astype(np.float32)
+    disliked = l2_normalize(
+        rng.normal(0, 1, 768).astype(np.float32)
+    ).astype(np.float32)
+    scenario = l2_normalize(
+        rng.normal(0, 1, 768).astype(np.float32)
+    ).astype(np.float32)
+    return {"vec": vec, "liked": liked, "disliked": disliked, "scenario": scenario}
+
+
+def test_characterization_disabled_returns_baseline(characterization_vectors):
+    from app.services.reranker import PreferenceReranker
+
+    vectors = characterization_vectors
+    conn = _characterization_db(
+        liked=vectors["liked"], disliked=vectors["disliked"],
+        scenario=vectors["scenario"], current=True,
+    )
+    result = PreferenceReranker(conn).score(
+        candidate_vector=vectors["vec"], base_rag_similarity=0.7,
+        scenario_keys=["emotion:joy"], profile_version=None, enabled=False,
+    )
+    assert result == {
+        "active_weights": {},
+        "base_rag_similarity": 0.7,
+        "final_score": 0.7,
+        "inactive_reasons": {},
+        "preference_profile_version": None,
+        "profile_score": None,
+        "raw_score": 0.7,
+    }
+
+
+def test_characterization_no_current_profile_returns_baseline(characterization_vectors):
+    from app.services.reranker import PreferenceReranker
+
+    vectors = characterization_vectors
+    conn = _characterization_db(
+        liked=vectors["liked"], disliked=vectors["disliked"],
+        scenario=None, current=False,
+    )
+    result = PreferenceReranker(conn).score(
+        candidate_vector=vectors["vec"], base_rag_similarity=0.7,
+        scenario_keys=[], profile_version=None, enabled=True,
+    )
+    assert result == {
+        "active_weights": {},
+        "base_rag_similarity": 0.7,
+        "final_score": 0.7,
+        "inactive_reasons": {
+            "profile": "no published profile in preference_profile_current"
+        },
+        "preference_profile_version": None,
+        "profile_score": None,
+        "raw_score": 0.7,
+    }
+
+
+def test_characterization_global_like_only(characterization_vectors):
+    from app.services.reranker import PreferenceReranker
+
+    vectors = characterization_vectors
+    conn = _characterization_db(
+        liked=vectors["liked"], disliked=None, scenario=None, current=True,
+    )
+    result = PreferenceReranker(conn).score(
+        candidate_vector=vectors["vec"], base_rag_similarity=0.7,
+        scenario_keys=[], profile_version=None, enabled=True,
+    )
+    assert result["active_weights"] == {
+        "base_rag": 0.7333333333333334,
+        "global_like": 0.26666666666666666,
+    }
+    assert result["inactive_reasons"] == {
+        "global_dislike": "no disliked centroid available",
+        "scenario_like": "no scenario keys provided",
+    }
+    assert result["profile_score"] == 0.49085296131670475
+    assert result["final_score"] == 0.5084549127022425
+    assert result["raw_score"] == 0.5084549127022425
+    assert result["positive_similarity"] == -0.0182940773665905
+    assert result["negative_similarity"] is None
+    assert result["preference_profile_version"] == "prof-1"
+    assert result["base_rag_similarity"] == 0.7
+    assert set(result) == {
+        "active_weights", "base_rag_similarity", "final_score",
+        "inactive_reasons", "positive_similarity", "negative_similarity",
+        "preference_profile_version", "profile_score", "raw_score",
+    }
+
+
+def test_characterization_like_dislike_scenario_full_weights(
+    characterization_vectors,
+):
+    from app.services.reranker import PreferenceReranker
+
+    vectors = characterization_vectors
+    conn = _characterization_db(
+        liked=vectors["liked"], disliked=vectors["disliked"],
+        scenario=vectors["scenario"], current=True,
+    )
+    result = PreferenceReranker(conn).score(
+        candidate_vector=vectors["vec"], base_rag_similarity=0.7,
+        scenario_keys=["emotion:joy"], profile_version=None, enabled=True,
+    )
+    assert result["active_weights"] == {
+        "base_rag": 0.6376811594202899,
+        "global_dislike": 0.16000000000000003,
+        "global_like": 0.2318840579710145,
+        "scenario_like": 0.13043478260869562,
+    }
+    assert result["inactive_reasons"] == {}
+    assert result["profile_score"] == 0.48736239519591135
+    assert result["final_score"] == 0.4330876193055208
+    assert result["raw_score"] == 0.4330876193055208
+    assert result["positive_similarity"] == -0.03205481683835387
+    assert result["negative_similarity"] == 0.011715995147824287
+    assert set(result) == {
+        "active_weights", "base_rag_similarity", "final_score",
+        "inactive_reasons", "positive_similarity", "negative_similarity",
+        "preference_profile_version", "profile_score", "raw_score",
+    }
