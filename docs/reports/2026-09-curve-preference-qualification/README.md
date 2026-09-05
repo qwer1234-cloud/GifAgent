@@ -102,16 +102,74 @@ replay has been executed and independently verified.
 
 ## 4. Final go/no-go conclusion
 
-`PENDING` — the full production replay has not been executed yet. This
-section will be updated with the actual run numbers (coverage, fallbacks,
-pairwise delta LCB95 for nominal and effective variants, NDCG delta,
-effective confidence) and one of:
+**`BLOCKED_EVIDENCE_INCOMPLETE`** (2026-09-05, preflight + rehearsal stage;
+the full 2,510-row replay has not executed).
 
-- `GO_FOR_EXPLICIT_PROMOTION` — with the exact promotion command for the
-  user to run;
-- `NO_GO_RETRAIN_OR_REDESIGN` — with stable reason codes and the smallest
-  next experiment;
-- `BLOCKED_EVIDENCE_INCOMPLETE` — with the blocking candidate IDs/reasons.
+### Preflight evidence
 
-Even a `GO` stops short of promotion: the promote command is executed by the
-user, on demand, after reviewing the frozen report.
+- HEAD at execution: `851337f1`; worktree carries unrelated uncommitted
+  user changes (not staged by any qualification commit).
+- Production DB `dist/GifAgentUI/data/library.db`: `PRAGMA integrity_check`
+  = ok; three curve model rows, all `DRAFT`; GUI process running (WAL mode,
+  concurrent reads safe).
+- Dry run (`--dry-run`): `holdout_rows=2510`, `holdout_sources=117`,
+  `source_overlap=0`, `model_ok=true`, `required_enrichments=124` — matches
+  the plan's frozen population exactly.
+- Local Ollama (WSL) is serving on `*:11434` with **no models resident**;
+  the VLM (`huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0`) loads on
+  demand and was verified reachable from the host at the discovered WSL
+  address.
+
+### Blocker (found by the 30-candidate rehearsal)
+
+The 30-candidate rehearsal aborted before scoring: the **source-isolated
+profile build gate** reports
+`candidate_vector_count=9446 < effective_feedback_count=10530`.
+
+Measurement of the gap (read-only, on the rehearsal snapshot):
+
+- 10,530 effective training targets (latest scoring event per candidate,
+  holdout sources excluded);
+- 1,084 of them have **no clip vector** (`nomic-embed-text:latest/768`);
+- all 1,084 also lack a usable VLM summary, so vector generation requires
+  VLM enrichment first (GIF artifacts themselves are all present on disk).
+
+The plan's Task 4 scoped enrichment to the 124 holdout rows only; the
+train-side gap is a data reality the plan did not anticipate, and the
+profile gate correctly refuses to build a profile whose training events are
+not fully vector-covered. Fail-closed semantics worked as designed: the run
+aborted, left `run_state.json` as INCOMPLETE, and no production table was
+mutated.
+
+### What this blocks
+
+- baseline scoring requires the isolated profile, so no pairwise/NDCG
+  metrics exist yet;
+- the VLM JSON parse rate and per-row latency are therefore also unmeasured.
+
+### Remediation (smallest next experiment)
+
+1. In a fresh work snapshot, run the existing production enrichment path
+   (`scripts/enrich_library_candidates.py` semantics) over the 1,084
+   train-side candidates that lack VLM summaries, then
+   `upsert_candidate_vector` for all of them (≈ 1,084 VLM calls, estimated
+   4–10 GPU-hours on the local RTX 4070 Ti SUPER, plus ≈ 1,100 text
+   embeddings), and the 124 holdout-row enrichments required by Task 4
+   regardless.
+2. Re-run the qualification CLI (rehearsal → full replay). All curve-side
+   gates are unchanged and ready; the population gates should then pass
+   (holdout 2,510 ≥ 30, classes present, zero source overlap).
+
+### Verification already recorded
+
+- Focused suites: 115 tests pass across `test_curve_preference_model.py`,
+  `test_curve_preference_scoring.py`,
+  `test_curve_preference_qualification.py`,
+  `test_curve_preference_promotion.py`, `test_preference_reranker.py`.
+- mypy: clean on `app/services/curve_preference.py` and
+  `app/services/curve_preference_qualification.py`.
+- Bundle determinism, resume-without-re-enrichment, refusal paths, and
+  source non-mutation are covered by the Task 6/7 tests above.
+
+The model remains DRAFT; no production reranking or config change has been
+made.
