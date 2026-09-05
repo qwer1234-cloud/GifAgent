@@ -176,3 +176,36 @@ The `curve-v1` features are now in place for the milestone-8 curve
 preference model (L2 logistic regression over favorite/like positive and
 dislike negative rows with source-grouped holdout), which remains a
 separate, explicitly-gated step.
+
+## 8. Curve preference model training and publication (milestone 8 step)
+
+Script: `scripts/train_curve_preference_model.py` (NumPy-only L2 logistic
+regression, damped Newton/IRLS, λ=1.0; deterministic seeds).
+
+- Population: 10,757 usable labeled rows (9 duplicate artifacts and 1,679
+  neutral rows excluded from the fit); 584 source-video groups split
+  hash-deterministically 80/20 → 467 train / 117 holdout sources with
+  **zero overlap**.
+- Holdout: 2,512 rows (2,152 positive, 360 negative), 12,976 within-source
+  positive/negative pairs across 47 groups with both classes.
+- **Result: within-source pairwise accuracy 0.6721 versus 0.5 chance;
+  delta +0.1721; source-grouped bootstrap 95 % lower bound of the delta
+  +0.1178 > 0.** NDCG@20 0.9618. All publish gates pass
+  (holdout ≥ 30, zero source overlap, delta LCB > 0);
+  `data_confidence = 1.0`, `holdout_margin_factor = 1.0`,
+  **`curve_model_confidence = 1.0`**.
+- Published as `curve-pref-v1-20260905111952` (status `PUBLISHED`) in
+  `curve_preference_models`, frozen with per-feature mean/std, coefficients,
+  intercept, λ, training event watermark
+  (`2026-09-05T06:24:24.981032+00:00`), and the training source-set hash.
+- Honest limitation: production `final_score` exists on 3,100 candidate
+  rows that have **zero overlap** with the labeled population, so the
+  spec's curve-vs-production-baseline pairwise/NDCG comparison degenerates
+  to curve-vs-chance for this round; the comparison against the deployed
+  baseline is deferred until scored production rows accumulate feedback
+  (the metric code path already supports it when baseline rows exist).
+- The `curve_preference` reranker weight (0.10 with `base_rag` 0.55 → 0.45)
+  remains dormant in ranking until the production pipeline integration
+  (flagged by `preference_memory.enabled` conventions) explicitly consumes
+  the published model; this step trained, gated, and published the model
+  artifact only.
