@@ -171,7 +171,8 @@ class RealSpikeBackend:
         total = len(window_frames)
         if total < 4:
             raise DecodeFailure(f"only {total} window frames decoded")
-        height, width = window_frames[0].shape[:2]
+        analysis_height, analysis_width = window_frames[0].shape[:2]
+        source_dims = source_media_dims(candidate.source_path)
 
         persons = [self._detect_persons(frame) for frame in window_frames]
         context_persons = [self._detect_persons(frame) for frame in context_frames]
@@ -184,8 +185,8 @@ class RealSpikeBackend:
         max_gap = _max_gap_s(valid_flags, SAMPLE_FPS)
         tracking_loss = _tracking_loss_runs(valid_flags)
         subjects = _subject_set_stats(persons)
-        area_ratio = _subject_area_ratio(persons, width, height)
-        torso_clipped = _torso_border_clipped(persons, width, height)
+        area_ratio = _subject_area_ratio(persons, analysis_width, analysis_height)
+        torso_clipped = _torso_border_clipped(persons, analysis_width, analysis_height)
 
         face_start = time.perf_counter_ns()
         face_stats = self._face_stats(window_frames, persons)
@@ -238,8 +239,8 @@ class RealSpikeBackend:
             facial_expression_status=face_stats["expression_status"],
             curve_feature_status="NOT_RUN",
             curve_feature_missing_reason=None,
-            source_media_width_px=width,
-            source_media_height_px=height,
+            source_media_width_px=(source_dims[0] if source_dims else analysis_width),
+            source_media_height_px=(source_dims[1] if source_dims else analysis_height),
             primary_subject_area_ratio=area_ratio,
             face_decode_width_px=ANALYSIS_WIDTH,
             face_evidence_wall_clock_ms=face_ms,
@@ -262,7 +263,8 @@ class RealSpikeBackend:
         frames = self._extract_gif_frames(candidate.source_path)
         if len(frames) < 3:
             raise DecodeFailure(f"only {len(frames)} GIF frames decoded")
-        height, width = frames[0].shape[:2]
+        analysis_height, analysis_width = frames[0].shape[:2]
+        source_dims = source_media_dims(candidate.source_path)
 
         curve_start = time.perf_counter_ns()
         persons = [self._detect_persons(frame) for frame in frames]
@@ -272,7 +274,7 @@ class RealSpikeBackend:
             for frame_persons in persons
             if _pose_valid(frame_persons[0] if frame_persons else None)
         )
-        area_ratio = _subject_area_ratio(persons, width, height)
+        area_ratio = _subject_area_ratio(persons, analysis_width, analysis_height)
         spread = _pose_extension(persons)
         curve_ms = (time.perf_counter_ns() - curve_start) / 1_000_000
 
@@ -317,8 +319,8 @@ class RealSpikeBackend:
             facial_expression_status=face_stats["expression_status"],
             curve_feature_status="AVAILABLE" if curve_available else "UNAVAILABLE",
             curve_feature_missing_reason=None if curve_available else "pose_coverage_low",
-            source_media_width_px=width,
-            source_media_height_px=height,
+            source_media_width_px=(source_dims[0] if source_dims else analysis_width),
+            source_media_height_px=(source_dims[1] if source_dims else analysis_height),
             primary_subject_area_ratio=area_ratio,
             face_decode_width_px=ANALYSIS_WIDTH,
             face_evidence_wall_clock_ms=None,
@@ -646,6 +648,32 @@ class RealSpikeBackend:
         if reasons:
             return "REVIEW_REQUIRED", reasons
         return "AUTO_PASS", []
+
+
+def source_media_dims(path: Path) -> tuple[int, int] | None:
+    """True media dimensions read from the file itself.
+
+    Analysis frames are rescaled, so result fields must never use decoded
+    frame sizes; subject-area ratios stay on analysis frames because the
+    scale is aspect-preserving and therefore ratio-invariant.
+    """
+
+    if path.suffix.lower() == ".gif":
+        from PIL import Image
+
+        try:
+            with Image.open(path) as image:
+                width, height = image.size
+        except Exception:
+            return None
+        return (int(width), int(height)) if width > 0 and height > 0 else None
+    capture = cv2.VideoCapture(str(path))
+    try:
+        width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    finally:
+        capture.release()
+    return (width, height) if width > 0 and height > 0 else None
 
 
 def create_backend() -> RealSpikeBackend:

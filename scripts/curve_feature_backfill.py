@@ -43,6 +43,7 @@ from scripts.continuity_spike_backend_real import (  # noqa: E402
     POSE_MODEL,
     RealSpikeBackend,
     _pose_valid,
+    source_media_dims,
 )
 
 FEATURE_VERSION = "curve-v1"
@@ -181,8 +182,21 @@ def _extract_features(
 
     frames = backend._extract_gif_frames(artifact)
     if len(frames) < MIN_VALID_FRAMES:
-        return None, "pose_coverage_low", 0, 0, len(frames)
-    height, width = frames[0].shape[:2]
+        source_dims = source_media_dims(artifact)
+        if source_dims:
+            width, height = source_dims
+        else:
+            analysis_height, analysis_width = frames[0].shape[:2]
+            width, height = int(analysis_width), int(analysis_height)
+        return None, "pose_coverage_low", width, height, len(frames)
+    analysis_height, analysis_width = frames[0].shape[:2]
+    # Result dims must describe the source media, not the rescaled
+    # analysis frames; area ratios below are computed on analysis frames
+    # and are aspect-preserving scale-invariant.
+    source_dims = source_media_dims(artifact)
+    width, height = source_dims if source_dims else (
+        int(analysis_width), int(analysis_height)
+    )
 
     persons = [backend._detect_persons(frame) for frame in frames]
     valid_people = [
@@ -251,7 +265,7 @@ def _extract_features(
     else:
         smoothness = 0.0
 
-    ratios = [p.area / max(width * height, 1.0) for p in valid_people]
+    ratios = [p.area / max(analysis_width * analysis_height, 1.0) for p in valid_people]
     features = {
         "pose_valid_ratio": round(len(valid_people) / len(frames), 6),
         "subject_area_ratio": round(float(np.median(ratios)), 6),
@@ -322,6 +336,60 @@ def _feature_row(
     }
 
 
+def repair_dims(db_path: Path, drives: _DeadDriveCache) -> int:
+    """Rewrite width/height metadata of stored rows from the source files.
+
+    Earlier runs recorded rescaled analysis-frame dimensions; the feature
+    values are unaffected (area ratios are scale-invariant), only the
+    recorded media dimensions are corrected. Returns the number of repaired
+    rows.
+    """
+
+    conn = _open_read_only(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT cf.candidate_id, cg.artifact_path, cf.width, cf.height "
+        "FROM curve_features cf "
+        "JOIN candidate_gifs cg ON cg.candidate_id = cf.candidate_id "
+        "WHERE cf.feature_version = :feature_version",
+        {"feature_version": FEATURE_VERSION},
+    ).fetchall()
+    conn.close()
+
+    writer = sqlite3.connect(str(db_path), timeout=30)
+    repaired = 0
+    try:
+        for row in rows:
+            artifact = row["artifact_path"]
+            if not artifact or not drives.alive(artifact):
+                continue
+            if not os.path.exists(artifact):
+                continue
+            dims = source_media_dims(Path(artifact))
+            if dims is None:
+                continue
+            if dims != (row["width"], row["height"]):
+                writer.execute(
+                    "UPDATE curve_features SET width = :width, height = :height "
+                    "WHERE candidate_id = :candidate_id "
+                    "AND feature_version = :feature_version",
+                    {
+                        "width": dims[0],
+                        "height": dims[1],
+                        "candidate_id": row["candidate_id"],
+                        "feature_version": FEATURE_VERSION,
+                    },
+                )
+                repaired += 1
+                if repaired % 500 == 0:
+                    writer.commit()
+                    print(f"  repaired {repaired} rows so far", flush=True)
+        writer.commit()
+    finally:
+        writer.close()
+    return repaired
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -333,9 +401,17 @@ def main() -> int:
         "--checkpoint", type=Path, default=REPO / "data" / "curve_backfill_checkpoint.json"
     )
     parser.add_argument("--fresh", action="store_true", help="ignore prior checkpoint progress")
+    parser.add_argument(
+        "--repair-dims", action="store_true",
+        help="rewrite stored width/height metadata from the source files and exit",
+    )
     args = parser.parse_args()
 
     drives = _DeadDriveCache()
+    if args.repair_dims:
+        repaired = repair_dims(args.db, drives)
+        print(f"repaired {repaired} rows' media dimensions")
+        return 0
     entries, skip_reasons = _gather_rows(args.db, drives)
     rating_counts: dict[str, int] = {}
     for entry in entries:

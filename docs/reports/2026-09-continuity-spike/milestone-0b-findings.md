@@ -209,3 +209,46 @@ regression, damped Newton/IRLS, λ=1.0; deterministic seeds).
   (flagged by `preference_memory.enabled` conventions) explicitly consumes
   the published model; this step trained, gated, and published the model
   artifact only.
+
+## 9. Review revision (2026-09-05): milestone 8 not accepted as published
+
+Review rejected the first publication on four findings; all four are fixed
+and the model is stored as `DRAFT` (pending evaluation), not `PUBLISHED`.
+
+1. **[P1] Gate replaced by "better than chance".** Fixed: publication now
+   requires a **paired** source-grouped bootstrap of the curve-minus-baseline
+   pairwise delta on the same holdout rows; when the production baseline
+   does not cover the labeled population (currently 0 of 2,510 holdout
+   rows), the model is stored as `DRAFT` with reason
+   `baseline_coverage_insufficient` and `curve_model_confidence=NULL`.
+   Versus-chance numbers are diagnostics only and never gate publication.
+2. **[P1] Label parsing overrode later feedback and ignored corrections.**
+   Fixed: labels now come from the application's canonical
+   `load_latest_scoring_events` (events excluded when undone **or**
+   superseded by a correction; latest effective event wins; targets whose
+   latest effective event is not like/dislike/favorite are excluded). The
+   permanent-favorite rule is gone; 1,682 rows are now correctly excluded.
+   The model was retrained under the corrected labels.
+3. **[P2] No frozen train/holdout manifests.** Fixed: the model row now
+   stores separate training and holdout manifests (sources, candidate ids,
+   labels, artifact hashes, feature names, seeds) as JSON with individual
+   SHA-256 hashes; `training_source_set_sha256` is computed over the 467
+   training sources only, with a separate `holdout_source_set_sha256`.
+4. **[P2] Analysis-frame size recorded as source media size.** Fixed: the
+   backend and the backfill now read true media dimensions from the file
+   (PIL for GIFs, capture metadata for videos) via `source_media_dims`;
+   area-ratio features are unchanged (aspect-preserving scale-invariant).
+   All 13,919 stored rows had their width/height metadata repaired
+   (analysis 960 px → source, e.g. 720×405).
+
+Retrained evaluation under the fixed labels and gate (model
+`curve-pref-v1-20260905114426`, status `DRAFT`): train 8,247 rows
+(467 sources), holdout 2,510 rows (117 sources, zero overlap),
+within-source pairwise accuracy 0.6734 (diagnostic vs chance, LCB +0.1188),
+paired baseline comparison unavailable → DRAFT. Coverage tests for the
+label semantics, gate decisions, split determinism, paired bootstrap, and
+source-dims helper live in `tests/test_curve_preference_model.py`.
+
+Publication remains blocked until production-scored holdout rows with
+feedback exist; the gate then compares the curve model against the
+deployed baseline with the paired bootstrap above.
