@@ -518,6 +518,34 @@ def test_runtime_json_contains_measured_source_batch_timing(tmp_path):
     assert timings[0]["source_key"] == result.source_hashes[0]
 
 
+def test_runtime_json_persists_telemetry_snapshots(tmp_path):
+    manifest_path, output_dir, _source = write_synthetic_manifest(tmp_path)
+
+    result = cli_run(
+        [
+            "--manifest",
+            str(manifest_path),
+            "--output-dir",
+            str(output_dir),
+            "--telemetry",
+            "off",
+        ]
+    )
+
+    runtime = json.loads(
+        (result.run_dir / "runtime.json").read_text(encoding="utf-8")
+    )
+    snapshots = [
+        entry for entry in runtime["entries"] if entry["kind"] == "telemetry"
+    ]
+    assert [snapshot["phase"] for snapshot in snapshots] == [
+        "before_source",
+        "after_source",
+    ]
+    assert all(snapshot["requested_mode"] == "off" for snapshot in snapshots)
+    assert all(snapshot["gpu"] is None for snapshot in snapshots)
+
+
 def test_artifacts_contain_no_nan_or_infinity(tmp_path):
     manifest_path, output_dir, _source = write_synthetic_manifest(tmp_path)
 

@@ -419,22 +419,26 @@ def run(argv: Sequence[str] | None = None) -> CliRunResult:
     telemetry_mode: TelemetryMode = parsed.telemetry
 
     for _key, group in _group_by_source(manifest.candidates):
-        capture_runtime_snapshot(
-            phase="before_source",
-            source_key=group[0].source_sha256,
-            telemetry_mode=telemetry_mode,
-            ollama_base_url=parsed.ollama_base_url,
-            get=http_get_with_timeout,
-            run=subprocess.run,
+        runtime_entries.append(
+            capture_runtime_snapshot(
+                phase="before_source",
+                source_key=group[0].source_sha256,
+                telemetry_mode=telemetry_mode,
+                ollama_base_url=parsed.ollama_base_url,
+                get=http_get_with_timeout,
+                run=subprocess.run,
+            )
         )
         group_results = _evaluate_source_group(group, backend, runtime_entries)
-        capture_runtime_snapshot(
-            phase="after_source",
-            source_key=group[0].source_sha256,
-            telemetry_mode=telemetry_mode,
-            ollama_base_url=parsed.ollama_base_url,
-            get=http_get_with_timeout,
-            run=subprocess.run,
+        runtime_entries.append(
+            capture_runtime_snapshot(
+                phase="after_source",
+                source_key=group[0].source_sha256,
+                telemetry_mode=telemetry_mode,
+                ollama_base_url=parsed.ollama_base_url,
+                get=http_get_with_timeout,
+                run=subprocess.run,
+            )
         )
         for candidate, result in zip(group, group_results):
             _atomic_json(
