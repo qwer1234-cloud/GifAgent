@@ -336,6 +336,48 @@ def test_direct_report_only_never_applies_recommended_repair_to_ffmpeg(
     assert exported["repair_applied"] is False
 
 
+def test_direct_rank_dedup_preserves_snap_dedup_identity_quality_rank_order(
+    tmp_path, monkeypatch,
+):
+    events: list[str] = []
+
+    def track(name, function):
+        def wrapped(*args, **kwargs):
+            events.append(name)
+            return function(*args, **kwargs)
+        return wrapped
+
+    for name in (
+        "_apply_boundary_snaps",
+        "embedding_dedup_clips",
+        "temporal_dedup_clips",
+        "_assign_candidate_identities",
+        "_evaluate_quality_pipeline_candidates",
+        "_rank_pipeline_clips",
+    ):
+        monkeypatch.setattr(
+            rank_dedup_stage,
+            name,
+            track(name, getattr(rank_dedup_stage, name)),
+        )
+
+    _run_direct_pipeline_fixture(
+        tmp_path,
+        monkeypatch,
+        cfg_overrides={"temporal_dedup_enabled": True},
+    )
+
+    expected = [
+        "_apply_boundary_snaps",
+        "embedding_dedup_clips",
+        "temporal_dedup_clips",
+        "_assign_candidate_identities",
+        "_evaluate_quality_pipeline_candidates",
+        "_rank_pipeline_clips",
+    ]
+    assert [name for name in events if name in expected] == expected
+
+
 def test_hard_gated_quality_sentinel_does_not_abort_export(tmp_path):
     assessment = {
         "provenance": {"source_file_sha256": "not_checked"},
