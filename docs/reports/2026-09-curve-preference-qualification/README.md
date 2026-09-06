@@ -147,18 +147,49 @@ mutated.
   metrics exist yet;
 - the VLM JSON parse rate and per-row latency are therefore also unmeasured.
 
-### Remediation (smallest next experiment)
+### Second blocker (found during evidence backfill, 2026-09-06)
 
-1. In a fresh work snapshot, run the existing production enrichment path
-   (`scripts/enrich_library_candidates.py` semantics) over the 1,084
-   train-side candidates that lack VLM summaries, then
-   `upsert_candidate_vector` for all of them (≈ 1,084 VLM calls, estimated
-   4–10 GPU-hours on the local RTX 4070 Ti SUPER, plus ≈ 1,100 text
-   embeddings), and the 124 holdout-row enrichments required by Task 4
-   regardless.
-2. Re-run the qualification CLI (rehearsal → full replay). All curve-side
-   gates are unchanged and ready; the population gates should then pass
-   (holdout 2,510 ≥ 30, classes present, zero source overlap).
+The evidence backfill (`scripts/backfill_qualification_evidence.py`) began
+inside the work snapshot and confirmed the gap composition, then surfaced a
+**structural blocker**:
+
+- 10,536 effective training targets; 9,446 have clip vectors;
+- 1,090 vector-missing targets have their GIF on disk and are being
+  enriched (30 completed before an infrastructure restart; the run resumes
+  from its checkpoint);
+- **696 vector-missing targets have no GIF artifact on disk**
+  (`cand_fs_*` folder-import rows whose exports were deleted). Their clip
+  vectors can never be generated, so the profile gate
+  `candidate_vector_count >= effective_feedback_count` is structurally
+  un-passable: max achievable coverage is 9,840 < 10,536.
+
+Additionally, the production database is **actively changing** (the GUI is
+in use: +90 events / +131 candidates within minutes during the backfill),
+which invalidates snapshots taken while the GUI is busy and makes long runs
+racy against the final source-identity check.
+
+### Unblocking requires a production-data decision
+
+Per the spec (§12: only explicit human actions may change historical
+business state), one of the following must be chosen by the user:
+
+1. **Undo the 696 missing-artifact feedback events** (via the GUI review
+   flow or an explicit, reviewed SQL correction). After the undo plus the
+   1,090-row backfill, effective targets and vector coverage both equal
+   9,840 and the gate can pass. Recommended: this removes genuinely
+   unusable training rows (their GIFs no longer exist).
+2. **Re-export or restore those 696 GIFs** from their source videos (the
+   candidates keep their source paths; re-running the export flow can
+   regenerate artifacts), then backfill.
+3. **Revise the plan/spec** to let the snapshot builder exclude
+   missing-artifact targets from the profile-gate population (documented,
+   hashed exclusion list) — a spec change requiring explicit approval.
+
+The 30 completed backfill rows and the full checkpoint live in
+`data/curve_preference_qualification/qual-backfill-01/` and resume safely.
+
+The model remains DRAFT; no production reranking or config change has been
+made.
 
 ### Verification already recorded
 
