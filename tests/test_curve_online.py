@@ -1,12 +1,63 @@
 """Tests for curve online routing, shadow/active scoring, and config binding."""
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from app.services.curve_online import (
     curve_route,
+    load_curve_runtime_snapshot,
     score_curve_candidate,
 )
+from app.services.preference_schema import apply_preference_schema
+
+
+class _CurveAwareReranker:
+    """Profile authority whose profile_score responds to curve confidence.
+
+    Mirrors how the real reranker's curve component raises the preference
+    signal: profile_score = base + confidence-scaled curve contribution.
+    """
+
+    def __init__(self, base_profile: float = 0.5) -> None:
+        self.base_profile = base_profile
+        self.calls: list[dict] = []
+
+    def score(self, **kwargs):
+        self.calls.append(kwargs)
+        confidence = kwargs.get("curve_model_confidence")
+        if confidence is None:
+            profile = self.base_profile
+        else:
+            profile = min(1.0, self.base_profile + 0.2 * confidence)
+        return {
+            "profile_score": profile,
+            "preference_profile_version": "profile_test",
+        }
+
+
+def _snapshot(**overrides) -> dict:
+    snapshot = {
+        "profile_version": "profile_test",
+        "reranker": _CurveAwareReranker(),
+        "base_score_weight": 0.5,
+        "preference_score_weight": 0.5,
+        "model_version": "curve-pref-test",
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
+def _candidate(**overrides) -> dict:
+    candidate = {
+        "base_score": 0.60,
+        "gif_worthiness": 0.60,
+        "candidate_vector": [1.0, 0.0],
+        "scenario_keys": ["tag:test"],
+    }
+    candidate.update(overrides)
+    return candidate
 
 
 def test_unqualified_curve_never_changes_output():
@@ -30,77 +81,67 @@ def test_curve_route_modes():
 
 
 def test_score_curve_candidate_baseline_fallback():
-    candidate = {
-        "candidate_id": "c1",
-        "gif_worthiness": 0.70,
-        "base_score": 0.70,
-    }
-    snapshot = {
-        "mode": "off",
-        "qualified": False,
-        "confidence": 0.0,
-    }
-    res = score_curve_candidate(None, snapshot, candidate)
+    reranker = _CurveAwareReranker()
+    snapshot = _snapshot(mode="off", qualified=False, confidence=0.0, reranker=reranker)
+    res = score_curve_candidate(
+        None, snapshot, _candidate(base_score=0.70, gif_worthiness=0.70)
+    )
     assert res["route"] == "BASELINE"
-    assert res["final_score"] == 0.70
+    # No curve evidence: nominal/effective stay empty and the production
+    # score is the shared-scorer baseline (0.5*0.70 + 0.5*0.5 = 0.60).
+    assert res["baseline_score"] == pytest.approx(0.5 * 0.70 + 0.5 * 0.50)
+    assert res["final_score"] == res["baseline_score"]
     assert res["nominal_shadow_score"] is None
     assert res["effective_shadow_score"] is None
+    assert "curve_evidence_unavailable" in res["inactive_reasons"]
 
 
-def test_score_curve_candidate_shadow_mode_does_not_alter_final_score():
-    candidate = {
-        "candidate_id": "c2",
-        "base_score": 0.60,
-        "curve_probability": 0.90,
-    }
-    snapshot = {
-        "mode": "shadow",
-        "qualified": False,  # DRAFT or unqualified
-        "confidence": 0.0,
-        "nominal_weight": 0.10,
-    }
-    res = score_curve_candidate(None, snapshot, candidate)
+def test_score_curve_candidate_shadow_never_alters_final_score():
+    """Shadow keeps the production final score at the no-curve baseline while
+    still recording nominal/effective diagnostics on the same scale."""
+    reranker = _CurveAwareReranker()
+    snapshot = _snapshot(mode="shadow", qualified=False, confidence=0.0, reranker=reranker)
+    res = score_curve_candidate(
+        None, snapshot, _candidate(curve_probability=0.90)
+    )
     assert res["route"] == "SHADOW"
-    # In shadow mode, production final score MUST remain exactly 0.60!
-    assert res["final_score"] == 0.60
-    # Shadow scores computed for diagnostic purposes:
-    # nominal = 0.9 * 0.6 + 0.1 * 0.9 = 0.54 + 0.09 = 0.63
-    assert pytest.approx(res["nominal_shadow_score"], 1e-4) == 0.63
-    # effective with 0 confidence = 0.60
-    assert pytest.approx(res["effective_shadow_score"], 1e-4) == 0.60
+    assert res["final_score"] == res["baseline_score"]
+    # nominal (confidence 1.0) pulls the preference signal up: 0.5 -> 0.7
+    assert res["nominal_score"] == pytest.approx(0.5 * 0.60 + 0.5 * 0.70)
+    # effective at confidence 0.0 equals the baseline
+    assert res["effective_score"] == res["baseline_score"]
+    # all three routes went through the one shared scorer
+    assert len(reranker.calls) == 3
 
 
-def test_score_curve_candidate_active_mode_updates_final_score():
-    candidate = {
-        "candidate_id": "c3",
-        "base_score": 0.60,
-        "curve_probability": 0.90,
-    }
-    snapshot = {
-        "mode": "active",
-        "qualified": True,
-        "confidence": 0.80,
-        "compatible": True,
-        "quality_pass": True,
-        "nominal_weight": 0.10,
-    }
-    res = score_curve_candidate(None, snapshot, candidate)
+def test_score_curve_candidate_active_updates_final_score():
+    reranker = _CurveAwareReranker()
+    snapshot = _snapshot(
+        mode="active", qualified=True, confidence=0.8,
+        compatible=True, deployment_available=True, reranker=reranker,
+    )
+    res = score_curve_candidate(
+        None, snapshot, _candidate(curve_probability=0.90)
+    )
     assert res["route"] == "ACTIVE"
-    # effective weight = 0.10 * 0.80 = 0.08
-    # final_score = 0.92 * 0.60 + 0.08 * 0.90 = 0.552 + 0.072 = 0.624
-    assert pytest.approx(res["final_score"], 1e-4) == 0.624
+    # effective profile: 0.5 + 0.2*0.8 = 0.66 -> blend(0.6, 0.66) = 0.63
+    assert res["effective_score"] == pytest.approx(0.5 * 0.60 + 0.5 * 0.66)
+    assert res["final_score"] == res["effective_score"]
+    assert res["production_score"] == res["effective_score"]
 
 
-def test_validate_deployment():
-    from app.services.curve_online import validate_deployment
-
-    assert "model_not_published" in validate_deployment("DRAFT", True, True)
-    assert "model_not_qualified" in validate_deployment("PUBLISHED", False, True)
-    assert "config_mismatch" in validate_deployment("PUBLISHED", True, False)
-    assert validate_deployment("PUBLISHED", True, True) == []
-
-
-# ── Task 0 regression (R4): one shared production scorer ────────────────────
+def test_active_without_deployment_degrades_to_baseline():
+    reranker = _CurveAwareReranker()
+    snapshot = _snapshot(
+        mode="active", qualified=True, confidence=1.0,
+        compatible=True, deployment_available=False, reranker=reranker,
+    )
+    res = score_curve_candidate(
+        None, snapshot, _candidate(curve_probability=0.90)
+    )
+    assert res["route"] == "BASELINE"
+    assert res["final_score"] == res["baseline_score"]
+    assert "deployment_unavailable" in res["inactive_reasons"]
 
 
 def test_curve_online_uses_shared_export_scorer(monkeypatch):
@@ -132,3 +173,130 @@ def test_curve_online_uses_shared_export_scorer(monkeypatch):
     assert calls
     assert result["final_score"] == pytest.approx(81.25)
 
+
+def test_online_baseline_matches_replay_within_tolerance():
+    """Task 4 Step 5: the online baseline/nominal/effective numbers are the
+    qualification-replay numbers (same shared scorer, same inputs)."""
+    from app.services.reranker import score_preference_export_candidate
+
+    reranker = _CurveAwareReranker()
+    snapshot = _snapshot(
+        mode="shadow", qualified=False, confidence=0.6, reranker=reranker
+    )
+    candidate = _candidate(curve_probability=0.73)
+    online = score_curve_candidate(None, snapshot, candidate)
+
+    def replay(confidence, probability):
+        return float(
+            score_preference_export_candidate(
+                reranker=reranker,
+                candidate_vector=candidate["candidate_vector"],
+                gif_worthiness=candidate["gif_worthiness"],
+                scenario_keys=candidate["scenario_keys"],
+                profile_version=snapshot["profile_version"],
+                base_export_score=candidate["base_score"],
+                base_score_weight=snapshot["base_score_weight"],
+                preference_score_weight=snapshot["preference_score_weight"],
+                curve_probability=probability,
+                curve_model_version=snapshot["model_version"],
+                curve_model_confidence=confidence,
+            )["final_score"]
+        )
+
+    assert online["baseline_score"] == pytest.approx(replay(None, None), abs=1e-12)
+    assert online["nominal_score"] == pytest.approx(replay(1.0, 0.73), abs=1e-12)
+    assert online["effective_score"] == pytest.approx(replay(0.6, 0.73), abs=1e-12)
+
+
+def test_load_curve_runtime_snapshot_without_deployment():
+    conn = sqlite3.connect(":memory:")
+    apply_preference_schema(conn)
+    conn.execute(
+        "INSERT INTO preference_profile_current (slot, profile_version) "
+        "VALUES ('current', 'profile_v1')"
+    )
+    conn.commit()
+
+    config = {
+        "curve_preference_enabled": True,
+        "curve_preference_mode": "active",
+        "base_score_weight": 0.7,
+        "preference_score_weight": 0.3,
+    }
+    snapshot = load_curve_runtime_snapshot(conn, config)
+    assert snapshot.mode == "active"
+    assert snapshot.profile_version == "profile_v1"
+    assert snapshot.deployment_available is False
+    assert snapshot.qualified is False
+    assert "deployment_unavailable" in snapshot.inactive_reasons
+
+    # Disabled/off config resolves a no-op snapshot without DB reads.
+    off = load_curve_runtime_snapshot(
+        conn, {"curve_preference_enabled": False, "curve_preference_mode": "active"}
+    )
+    assert off.mode == "off"
+
+
+def test_load_curve_runtime_snapshot_binds_deployment_identity():
+    conn = sqlite3.connect(":memory:")
+    apply_preference_schema(conn)
+    conn.execute(
+        "INSERT INTO preference_profile_current (slot, profile_version) "
+        "VALUES ('current', 'profile_v1')"
+    )
+    conn.execute(
+        """
+        INSERT INTO curve_preference_models (
+            model_version, feature_version, extractor_sha256, status,
+            coefficients_json, intercept, feature_mean_json, feature_std_json,
+            feature_names_json, l2_lambda, training_event_watermark,
+            training_source_set_sha256, holdout_row_count, metrics_json,
+            curve_model_confidence
+        ) VALUES ('mv-1', 'curve-source-v1', ?, 'PUBLISHED',
+            '{}', 0.0, '{}', '{}', '[]', 1.0, 'wm', 'ts', 50, '{}', 0.8)
+        """,
+        ("e" * 64,),
+    )
+    conn.execute(
+        """
+        INSERT INTO curve_preference_qualification_runs (
+            qualification_id, model_version, status, input_manifest_sha256,
+            profile_snapshot_sha256, baseline_scores_sha256, proposed_scores_sha256,
+            metrics_json, report_path, report_sha256, source_db_snapshot_sha256,
+            created_at
+        ) VALUES ('q-1', 'mv-1', 'QUALIFIED', 'in', 'prof', 'b', 'p', '{}',
+            'r', 'rs', 'db', '2026-09-09T00:00:00Z')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO curve_model_deployments (
+            model_version, qualification_id, config_hash, extractor_sha256,
+            is_active, approved_by, approved_at
+        ) VALUES ('mv-1', 'q-1', ?, ?, 1, 'op', '2026-09-09T00:00:00Z')
+        """,
+        ("not-the-algorithm-hash", "e" * 64),
+    )
+    conn.commit()
+
+    config = {
+        "curve_preference_enabled": True,
+        "curve_preference_mode": "active",
+    }
+    snapshot = load_curve_runtime_snapshot(conn, config)
+    assert snapshot.model_version == "mv-1"
+    assert snapshot.deployment_revision == 1
+    assert snapshot.confidence == 0.8
+    # The deployment config hash does not match the frozen algorithm config:
+    # fail closed, no ACTIVE route.
+    assert snapshot.compatible is False
+    assert "algorithm_config_mismatch" in snapshot.inactive_reasons
+
+
+def test_validate_deployment():
+    from app.services.curve_online import validate_deployment
+
+    assert "model_not_published" in validate_deployment("DRAFT", True, True)
+    assert "model_not_qualified" in validate_deployment("PUBLISHED", False, True)
+    assert "config_mismatch" in validate_deployment("PUBLISHED", True, False)
+    assert validate_deployment("PUBLISHED", True, True) == []

@@ -489,8 +489,8 @@ VALID_VLM_JSON = json.dumps(
         "emotional_core": "joy",
         "tags": ["Tag A", "tag a", "tag-b"],
         "scene_type": "Bedroom Closeup",
-        "sex_act": 120,
-        "gif_worthiness": -5,
+        "sex_act": 80,
+        "gif_worthiness": 65,
         "reason": "fine",
     }
 )
@@ -505,8 +505,8 @@ def test_parse_enrichment_response_accepts_plain_json():
     assert summary["emotional_core"] == "joy"
     assert summary["tags"] == ["tag a", "tag-b"]
     assert summary["scene_type"] == "bedroom_closeup"
-    assert summary["sex_act"] == 100
-    assert summary["gif_worthiness"] == 0
+    assert summary["sex_act"] == 80
+    assert summary["gif_worthiness"] == 65
     assert summary["enriched_by"] == "test-model"
     assert summary["enriched_at"] == "2026-09-05T00:00:00+00:00"
 
@@ -521,11 +521,32 @@ def test_parse_enrichment_response_accepts_fenced_json():
     assert summary["caption"] == "a test clip"
 
 
+def test_parse_score_semantics_and_rejections():
+    from app.services.curve_preference_qualification import _parse_score
+
+    # Integer vs float 1.0 semantics
+    assert _parse_score(1, "test") == 1
+    assert _parse_score(1.0, "test") == 100
+    assert _parse_score(0, "test") == 0
+    assert _parse_score(0.0, "test") == 0
+    assert _parse_score(85, "test") == 85
+    assert _parse_score(0.85, "test") == 85
+    assert _parse_score(100, "test") == 100
+
+    # Strict rejection of invalid inputs
+    for invalid in ("60", "1", 120, -5, 1.1, 101, True, False, None, float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(EnrichmentError):
+            _parse_score(invalid, "test")
+
+
 def test_parse_enrichment_response_rejects_refusal_missing_caption_and_invalid():
     for raw in (
         "I cannot help with that request.",
         json.dumps({"emotional_core": "joy"}),
         "not a json object at all",
+        json.dumps({"caption": "c", "gif_worthiness": 120, "sex_act": 50}),
+        json.dumps({"caption": "c", "gif_worthiness": -5, "sex_act": 50}),
+        json.dumps({"caption": "c", "gif_worthiness": "80", "sex_act": 50}),
     ):
         with pytest.raises(EnrichmentError):
             parse_enrichment_response(raw, model="m", enriched_at="t")
@@ -538,6 +559,7 @@ def test_score_evidence_from_summary_requires_both_fields():
     }
     assert score_evidence_from_summary({"gif_worthiness": 74}) is None
     assert score_evidence_from_summary({}) is None
+    assert score_evidence_from_summary({"gif_worthiness": 120, "sex_act": 50}) is None
 
 
 def _write_gif(tmp_path: Path, name: str, content: bytes) -> Path:
@@ -1175,8 +1197,8 @@ def _file_source_db(tmp_path: Path, *, n_holdout: int = 32) -> Path:
                 "svp": f"/v/holdout-{index % 2}.mp4",
                 "artifact": str(gif),
                 "summary": json.dumps(
-                    {"caption": "c", "gif_worthiness": 70 + index,
-                     "sex_act": 40 + index}
+                    {"caption": "c", "gif_worthiness": 50 + (index % 40),
+                     "sex_act": 30 + (index % 40)}
                 ),
             },
         )
@@ -1536,3 +1558,244 @@ def test_not_qualified_run_preserves_full_bundle(tmp_path):
     assert any(
         b["code"] == "artifact_missing" for b in metrics["blocking"]
     )
+
+
+def test_ndcg_at_20_with_more_than_20_candidates_is_bounded_by_one():
+    from app.services.curve_preference_qualification import (
+        GroupedScoreRow,
+        _ndcg_at_20_for_field,
+    )
+
+    # 40 candidates in a single source video
+    rows = [
+        GroupedScoreRow(
+            candidate_id=f"c-{i}",
+            source="src-large",
+            rating="like" if i % 2 == 0 else "dislike",
+            baseline=float(i),
+            proposed=float(i * 2),
+        )
+        for i in range(40)
+    ]
+    ndcg_val = _ndcg_at_20_for_field(rows, "proposed")
+    assert math.isfinite(ndcg_val)
+    assert 0.0 <= ndcg_val <= 1.0
+
+
+def test_qualification_binds_target_ranking_config(tmp_path):
+    config_file = tmp_path / "models.yaml"
+    config_file.write_text(
+        """preference_memory:
+  base_score_weight: 0.70
+  preference_score_weight: 0.30
+""",
+        encoding="utf-8",
+    )
+
+    db_path = _file_source_db(tmp_path)
+    result = execute_qualification_run(
+        db_path=db_path,
+        model_version="m-qual",
+        work_dir=tmp_path / "runs",
+        config_path=config_file,
+        qualification_id="q-cfg-bind",
+    )
+    assert result["status"] == "QUALIFIED"
+    metrics = result["metrics"]
+    target_cfg = metrics.get("target_ranking_config") or {}
+    assert target_cfg.get("base_score_weight") == 0.70
+    assert target_cfg.get("preference_score_weight") == 0.30
+    assert target_cfg.get("config_sha256") is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 4 (2026-09-11 remediation): online vs qualification replay parity
+# ---------------------------------------------------------------------------
+
+
+def test_two_pass_replay_matches_online_curve_scoring(tmp_path):
+    """Task 4 Step 5: for the same 100 frozen records the online
+    baseline/nominal/effective numbers equal the qualification replay
+    within 1e-12 -- one shared scorer, one scale."""
+    import numpy as np
+    from types import SimpleNamespace
+
+    from app.services.curve_online import score_curve_candidate
+    from app.services.curve_preference import (
+        CurvePreferenceModel,
+        curve_probability,
+    )
+    from app.services.reranker import (
+        PreferenceReranker,
+        clip_scenario_keys,
+        preference_embedding_text,
+    )
+    from app.services.curve_preference_qualification import (
+        BASE_SCORE_WEIGHT,
+        PREFERENCE_SCORE_WEIGHT,
+        run_two_pass_qualification_scores,
+        score_evidence_from_summary,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+
+    # Profile signal: likes and dislikes across a few sources.
+    for i in range(30):
+        cid = f"profile-c-{i:02d}"
+        _insert_candidate(
+            conn, candidate_id=cid, source=f"profile-src-{i % 3}",
+            tags=["tag-a"], scenario_keys=[],
+        )
+        _insert_event(
+            conn, event_id=f"profile-ev-{i:02d}", target_id=cid,
+            rating="like" if i % 2 == 0 else "dislike",
+            source=f"profile-src-{i % 3}", scenario_keys=[],
+            created_at=_ts(i),
+        )
+        _insert_vector(conn, candidate_id=cid, seed=400 + i)
+
+    snapshot = _snapshot(conn)
+    profile_version = snapshot.profile_version
+
+    # 100 replay candidates with stored summaries, tags, and vectors.
+    records = []
+    for i in range(100):
+        cid = f"replay-c-{i:03d}"
+        summary = {
+            "caption": f"replay clip {i}",
+            "emotional_core": "joy" if i % 2 else "calm",
+            "gif_worthiness": 50 + (i % 30),
+            "sex_act": 20 + (i % 20),
+        }
+        tags = [f"tag-{i % 5}"]
+        conn.execute(
+            """INSERT OR REPLACE INTO candidate_gifs
+               (candidate_id, source_run_id, source_run_candidate_id,
+                source_video_sha256, source_video_path, start_sec, end_sec,
+                artifact_path, status, tags_json, scenario_keys_json,
+                vlm_summary_json)
+               VALUES (:cid, 'run-replay', :rcid, :source, :svp, 0.0, 5.0,
+                       NULL, 'candidate', :tags, '[]', :summary)""",
+            {
+                "cid": cid,
+                "rcid": f"rc-{cid}",
+                "source": f"replay-src-{i % 4}",
+                "svp": f"/v/replay-{i % 4}.mp4",
+                "tags": json.dumps(tags),
+                "summary": json.dumps(summary),
+            },
+        )
+        blob = _unit_vector(700 + i).tobytes()
+        conn.execute(
+            """INSERT OR REPLACE INTO candidate_vectors
+               (candidate_id, vector_type, embedding_model, embedding_dim,
+                vector_blob, normalized)
+               VALUES (:cid, 'clip', 'nomic-embed-text:latest', 768, :blob, 1)""",
+            {"cid": cid, "blob": blob},
+        )
+        records.append(
+            {
+                "candidate_id": cid,
+                "rating": "like" if i % 2 == 0 else "dislike",
+                "source_video_sha256": f"replay-src-{i % 4}",
+                "base_export_score": 0.40 + (i % 40) / 100.0,
+                "curve_features": {"extension_mean": 0.9 if i % 2 else 0.1},
+            }
+        )
+    conn.commit()
+
+    feature_names = ("extension_mean",)
+    model = CurvePreferenceModel(
+        model_version="replay-model",
+        feature_version="curve-v1",
+        extractor_sha256="ex",
+        feature_names=feature_names,
+        mean=np.array([0.5]),
+        std=np.array([0.2]),
+        coefficients=np.array([1.0]),
+        intercept=0.0,
+        training_manifest_sha256="t" * 64,
+        holdout_manifest_sha256="h" * 64,
+        training_source_set_sha256="ts" * 32,
+        holdout_source_set_sha256="hs" * 32,
+        training_manifest={"rows": [{} for _ in range(100)], "sources": []},
+        holdout_manifest={"rows": [], "sources": []},
+    )
+
+    def deterministic_embed(text: str) -> list[float]:
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        vec = np.frombuffer(digest * 24, dtype=np.uint8)[:768].astype(np.float32)
+        return (vec / 255.0).tolist()
+
+    two_pass = run_two_pass_qualification_scores(
+        work_conn=conn,
+        model=model,
+        records=records,
+        profile_version=profile_version,
+        reranker=PreferenceReranker(conn),
+        base_score_weight=BASE_SCORE_WEIGHT,
+        preference_score_weight=PREFERENCE_SCORE_WEIGHT,
+        embed_fn=deterministic_embed,
+    )
+
+    online_snapshot = SimpleNamespace(
+        mode="shadow",
+        qualified=False,
+        confidence=two_pass.effective_confidence,
+        profile_version=profile_version,
+        model_version=model.model_version,
+        base_score_weight=BASE_SCORE_WEIGHT,
+        preference_score_weight=PREFERENCE_SCORE_WEIGHT,
+        deployment_available=True,
+        compatible=True,
+        quality_pass=True,
+        reranker=PreferenceReranker(conn),
+        inactive_reasons=(),
+    )
+
+    max_diff = 0.0
+    for record in records:
+        cid = str(record["candidate_id"])
+        cand_row = conn.execute(
+            "SELECT vlm_summary_json, tags_json FROM candidate_gifs "
+            "WHERE candidate_id = :cid",
+            {"cid": cid},
+        ).fetchone()
+        summary = json.loads(cand_row["vlm_summary_json"])
+        tags = json.loads(cand_row["tags_json"] or "[]")
+        emb_text = preference_embedding_text(
+            caption=str(summary.get("caption") or ""),
+            emotion=str(summary.get("emotional_core") or ""),
+            scene_type=str(summary.get("scene_type") or ""),
+        )
+        vector = np.array(deterministic_embed(emb_text), dtype=np.float32)
+        worthiness = float(score_evidence_from_summary(summary)["gif_worthiness"])
+        scenario_keys = clip_scenario_keys(
+            {
+                "emotional_core": summary.get("emotional_core"),
+                "scene_type": summary.get("scene_type"),
+                "tags": tags,
+            }
+        )
+        probability = curve_probability(model, dict(record["curve_features"]))
+
+        online = score_curve_candidate(
+            conn,
+            online_snapshot,
+            {
+                "base_score": float(record["base_export_score"]),
+                "gif_worthiness": worthiness,
+                "candidate_vector": vector,
+                "scenario_keys": scenario_keys,
+                "curve_probability": probability,
+            },
+        )
+        max_diff = max(
+            max_diff,
+            abs(online["baseline_score"] - two_pass.baseline[cid]),
+            abs(online["nominal_score"] - two_pass.nominal[cid]),
+            abs(online["effective_score"] - two_pass.effective[cid]),
+        )
+    assert max_diff <= 1e-12
