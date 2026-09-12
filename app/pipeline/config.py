@@ -200,6 +200,9 @@ def extract_config(config_data: dict) -> dict:
     config["continuity_gate_mode"] = str(cont_gate.get("mode", "shadow") or "shadow")
     config["curve_preference_enabled"] = bool(curve_pref.get("enabled", False))
     config["curve_preference_mode"] = str(curve_pref.get("mode", "shadow") or "shadow")
+    config["curve_shadow_model_version"] = str(
+        curve_pref.get("curve_shadow_model_version", "") or ""
+    )
 
     config["action_config_hash"] = computed_action_hash
     if config["max_refine_frames"] < 0:

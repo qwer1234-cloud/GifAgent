@@ -58,13 +58,22 @@ def load_latest_scoring_events(
 def _best_effort_enqueue_learning(conn: sqlite3.Connection) -> None:
     """Best-effort learning enqueue AFTER the authoritative feedback commit.
 
-    A queueing failure never rolls back user feedback; it only logs a
-    structured warning. No training or VLM work happens on the API thread.
+    Gated by the frozen ``curve_learning.enabled`` config: when disabled the
+    enqueue is skipped entirely (default-off contract). A queueing failure
+    never rolls back user feedback; it only logs a structured warning. No
+    training or VLM work happens on the API thread.
     """
     try:
-        from app.services.learning_jobs import maybe_enqueue_learning
+        from app.services.learning_jobs import (
+            learning_policy_from_config,
+            maybe_enqueue_learning,
+        )
 
-        result = maybe_enqueue_learning(conn, None)
+        enabled, policy = learning_policy_from_config()
+        if not enabled:
+            logger.debug("learning enqueue skipped: curve_learning disabled")
+            return
+        result = maybe_enqueue_learning(conn, policy or None)
         if result.status == "INELIGIBLE":
             logger.debug(
                 "learning enqueue ineligible: %s", ",".join(result.reasons)

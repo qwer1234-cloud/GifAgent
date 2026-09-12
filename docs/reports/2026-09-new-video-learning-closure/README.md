@@ -7,6 +7,7 @@
 
 - 基线:HEAD `d08049a2` + 2026-09-11 工作树(含用户未提交改动)
 - 完成日期:2026-09-12
+- **第二轮整改(2026-09-12)**:评审驳回 `A/C CODE_ACCEPTED` 后,修复全部 7 项 P1 与 2 项 P2(见 §9),并补充真实的"入库→反馈→无需人工预置特征→DRAFT"端到端测试。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`(复核项已全部闭合,等待重新评审)**。
 
 ## 1. 提交列表
 
@@ -86,6 +87,23 @@ mypy:`python -m mypy app/services` → **Success: no issues found in 63 source f
   2. `tests/token_sprint/test_snapshot_fts_rebuild.py::TestRebuildContract::test_rebuild_without_clear_skips_when_state_complete` —— FTS 重建跳过契约(scanned=5 != 0),与曲线闭环无关。
 - **打包冒烟**:`build_exe.spec` 已加入 excludes(onnxruntime/torch/cv2/continuity spike)与新模块 hiddenimports,但未执行完整 PyInstaller 打包验证(需要 PyInstaller 构建环境);运行时契约由 `CurveSourceRuntime` 的 `inference_runtime_unavailable` 结构化降级路径覆盖(`test_missing_worker_executable_never_crashes`)。
 - **Mimosa 完整安全审计**:多次提交时扫描器报 `scanner_enobufs`(缓冲不足),按兼容策略继续;**不应据此宣称项目安全**,建议尽快重跑完整审计。
+
+## 9. 第二轮整改:评审 P1/P2 修复(2026-09-12)
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| P1-1 | 原视频特征未进入 `curve_features` 训练账本;e2e 手工预置掩盖断链 | `library_ingest._record_source_features`:publication link 成功的同一 `BEGIN IMMEDIATE` 事务内,从不可变 capture payload 读取 AVAILABLE 特征并以 candidate_id/feature_version/extractor/证据哈希入账;e2e 重写为真实链(capture→ingest→反馈→DRAFT),不再预置任何特征行 |
+| P1-2 | capture 在排序前冻结了 `gif_worthiness` 伪 baseline | rank_dedup 重排:共享 scorer 先对全部 post-dedup 候选算出精确三路分数,再 capture(写入 `curve_baseline_score`/`curve_nominal_score`/`curve_effective_score`/route/画像版本),最后截断 |
+| P1-3 | DRAFT 影子模型版本未进入评分快照;配置未透传 | `ranking._curve_video_context` 将加载成功的模型版本用 `dataclasses.replace` 冻结进 snapshot;`extract_config` 透传 `curve_shadow_model_version`;新增"无部署+DRAFT shadow"真实排序断言 |
+| P1-4 | 部署资格未约束画像漂移 | 部署 revision 冻结 `profile_version`+`profile_snapshot_sha256`(schema 迁移);`load_curve_runtime_snapshot` 发现当前画像缺失或不一致即 `profile_version_mismatch` → 兼容失败 → 回退 BASELINE;激活时 runtime_config 的 profile 版本若提供则必须匹配 bundle |
+| P1-5 | attempts 全局累加耗尽 QUALIFY 重试;ADVANCE 后租约阻塞 | 重试预算改为逐阶段(`stage_attempts` 记录于 stage package);ADVANCE 原子释放租约回 PENDING,轮询 worker 立即领取下一阶段;新增逐阶段预算与 RETRY_WAIT 不可提前领取测试 |
+| P1-6 | extractor 身份未绑定模型包/实现;worker 未核验源哈希 | `compute_extractor_identity` 绑定 特征契约+模型包哈希+worker 代码哈希+姿态后端;客户端期望身份进入 request/每窗口 input_hash,响应回显不一致即 UNAVAILABLE;worker 推理前流式校验源文件 SHA-256、验证 input_hash 与 extractor;新增模型/代码变更改变身份的测试 |
+| P2-7 | `curve_learning.enabled=false` 未阻止排队 | `learning_policy_from_config()` 读取冻结配置,disabled(默认)完全跳过 enqueue;`promotion_policy` 恒为 manual;新增门禁测试 |
+| P2-8 | 多 publication 时 `LIMIT 1` 随机选择记录 | 查询带稳定排序;多于一条即 `ambiguous_publication` fail closed 排除出训练快照 |
+| P2-9 | 混合 extractor 仍能生成 DRAFT | 混合身份时全部样本排除(extractor_identity_mixed),manifest extractor 为空 → `validate_training_manifest` 拒绝 `extractor_sha256_missing` → 训练 NEEDS_ATTENTION |
+
+第二轮验证:17 个测试文件 `234 passed`;`mypy app/services` 零错误(63 文件);真实模型 smoke 与完整协议握手(客户端期望身份 ↔ worker 自算身份)复验通过。
+`git diff --check` 现仅余基线文件 `tests/test_candidates_api.py:896` 的 EOF 空行;本轮新增文件的空行问题已修复。
 
 ## 8. 安全配置默认值(任一检查点失败时保持)
 

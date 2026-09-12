@@ -37,9 +37,11 @@ from app.services.curve_source_features import (  # noqa: E402
     CURVE_SOURCE_FEATURE_NAMES,
     CURVE_SOURCE_FEATURE_VERSION,
     CURVE_SOURCE_RUNTIME_PROTOCOL_VERSION,
-    DEFAULT_SOURCE_EXTRACTOR_SHA256,
+    POSE_BACKEND_ID,
     SOURCE_DECODE_PROFILE_V1,
+    CurveWindow,
     validate_window_feature_values,
+    window_input_hash,
 )
 from app.services.curve_source_runtime import (  # noqa: E402
     LEASE_FILE_NAME,  # noqa: F401  (protocol parity constant)
@@ -290,6 +292,26 @@ def _unavailable_entry(window: dict[str, Any], reasons: list[str], t0: float) ->
     }
 
 
+def _streaming_sha256(path: Path) -> str:
+    """Content hash of the source file, verified before any inference."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _worker_extractor_identity(model_hash: str | None) -> str:
+    """This worker's own extractor identity: model package + this script's
+    code + the pose backend. Must match the client's expectation exactly."""
+    from app.services.curve_source_features import compute_extractor_identity
+
+    code_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return compute_extractor_identity(
+        model_hash or "", code_sha, POSE_BACKEND_ID
+    )
+
+
 def process_request(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Process one valid protocol request; returns (results, video_metadata)."""
     t0 = time.perf_counter()
@@ -304,14 +326,40 @@ def process_request(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict
     max_width = int(profile.get("max_width", 320))
 
     model_hash = model_package_sha256(Path(str(request.get("model_dir") or "")))
+    extractor_identity = _worker_extractor_identity(model_hash)
     metadata: dict[str, Any] = {
         "source_media_width_px": None,
         "source_media_height_px": None,
         "model_package_sha256": model_hash,
+        "extractor_sha256": extractor_identity,
     }
     if not source_path.is_file():
         return (
             [_unavailable_entry(w, ["source_file_unreadable"], t0) for w in windows],
+            metadata,
+        )
+
+    # The claimed source identity must match the bytes on disk: a stale or
+    # wrong source_sha256 is a hard UNAVAILABLE, never silently scored.
+    actual_sha = _streaming_sha256(source_path)
+    if source_sha256 and actual_sha != source_sha256:
+        return (
+            [
+                _unavailable_entry(w, ["source_sha256_mismatch"], t0)
+                for w in windows
+            ],
+            metadata,
+        )
+
+    # The client's expected extractor identity must match this worker's
+    # (model package + implementation + backend) or nothing gets scored.
+    requested_extractor = str(request.get("extractor_sha256") or "")
+    if requested_extractor and requested_extractor != extractor_identity:
+        return (
+            [
+                _unavailable_entry(w, ["extractor_identity_mismatch"], t0)
+                for w in windows
+            ],
             metadata,
         )
 
@@ -348,6 +396,24 @@ def process_request(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict
 
         for window in segment:
             window_t0 = time.perf_counter()
+            # Verify the per-window input hash (it binds source identity,
+            # window, feature version, decode profile, and extractor
+            # identity): a mismatch is structured UNAVAILABLE, never scored.
+            expected_input_hash = window_input_hash(
+                source_sha256,
+                CurveWindow(
+                    preexport_key=str(window["preexport_key"]),
+                    start_us=int(window["start_us"]),
+                    end_us=int(window["end_us"]),
+                ),
+                decode_profile=profile,
+                extractor_sha256=extractor_identity,
+            )
+            if str(window.get("input_hash") or "") != expected_input_hash:
+                results_by_key[window["preexport_key"]] = _unavailable_entry(
+                    window, ["input_hash_mismatch"], t0
+                )
+                continue
             start_s = window["start_us"] / 1e6
             end_s = window["end_us"] / 1e6
             window_frames = [
@@ -427,14 +493,12 @@ def run_worker(request_path: Path, response_path: Path) -> int:
         "request_sha256": recomputed,
         "model_package_sha256": metadata.get("model_package_sha256"),
         "feature_version": CURVE_SOURCE_FEATURE_VERSION,
-        "extractor_sha256": DEFAULT_SOURCE_EXTRACTOR_SHA256,
+        "extractor_sha256": metadata.get("extractor_sha256"),
         "source_media_width_px": metadata.get("source_media_width_px"),
         "source_media_height_px": metadata.get("source_media_height_px"),
         "results": results,
     }
     write_response(response_path, response)
-    if not echo_ok:
-        return 0
     _ = claimed
     return 0
 

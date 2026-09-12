@@ -371,4 +371,3 @@ def test_pipeline_extract_config_integration():
     assert flat["candidate_capture_enabled"] is True
     assert flat["candidate_capture_version"] == "capture-v1"
     assert "candidate_capture_config_hash" in flat
-

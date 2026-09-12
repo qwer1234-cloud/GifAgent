@@ -73,6 +73,38 @@ DEFAULT_SOURCE_EXTRACTOR_SHA256 = hashlib.sha256(
     ).encode("utf-8")
 ).hexdigest()
 
+# The pose backend whose detections feed the aggregation (pinned by the
+# worker in the spike environment).
+POSE_BACKEND_ID = "real-yolov8pose-yunet-v1"
+
+
+def compute_extractor_identity(
+    model_package_sha256: str,
+    worker_code_sha256: str,
+    backend_id: str = POSE_BACKEND_ID,
+) -> str:
+    """Content-addressed extractor identity.
+
+    Binds the feature CONTRACT (version, names, decode profile) to the actual
+    ONNX model package, the worker/aggregation code, and the pose backend, so
+    a model or algorithm change can never silently reuse a previous feature
+    domain.
+    """
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "version": CURVE_SOURCE_FEATURE_VERSION,
+                "feature_names": CURVE_SOURCE_FEATURE_NAMES,
+                "decode_profile": SOURCE_DECODE_PROFILE_V1,
+                "model_package_sha256": model_package_sha256,
+                "worker_code_sha256": worker_code_sha256,
+                "pose_backend_id": backend_id,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
 
 def validate_feature_compatibility(
     model_meta: Mapping[str, Any],

@@ -98,6 +98,31 @@ def learning_eligibility(
     return reasons
 
 
+def learning_policy_from_config() -> tuple[bool, dict[str, Any]]:
+    """Read the frozen ``curve_learning`` config section.
+
+    Returns ``(enabled, policy)``. ``enabled`` defaults to False: learning
+    queueing is OFF unless the frozen config explicitly enables it.
+    """
+    try:
+        from app.config import get
+
+        section = get("curve_learning", None)
+    except Exception:
+        section = None
+    if isinstance(section, dict):
+        policy = {
+            key: value
+            for key, value in section.items()
+            if key != "enabled" and key != "promotion_policy"
+        }
+        enabled = bool(section.get("enabled", False))
+    else:
+        enabled = False
+        policy = {}
+    return enabled, policy
+
+
 def _effective_event_watermark(conn: sqlite3.Connection) -> tuple[str, dict[str, int]]:
     """Hash the current effective scoring-event set and count classes."""
     from app.services.preference_events import load_latest_scoring_events
@@ -432,15 +457,46 @@ def execute_learning_stage(
     A stage only advances when its artifact exists, its hash matches, and the
     completion was recorded. Hash drift stops the job as NEEDS_ATTENTION.
     """
-    stage = job.stage
     work_dir = Path(services.get("work_dir") or "data/learning_runs")
     policy = dict(DEFAULT_LEARNING_POLICY)
     if services.get("policy"):
         policy.update(services["policy"])
-
     package = _load_stage_package(conn, job.job_id)
     if package is None:
         package = {"stages": {}}
+    return _execute_stage_with_budget(conn, job, services, policy, work_dir, package)
+
+
+def _stage_retry(
+    conn: sqlite3.Connection,
+    job: LearningJob,
+    package: dict[str, Any],
+    work_dir: Path,
+    policy: Mapping[str, Any],
+    error_code: str,
+) -> LearningStageResult:
+    """Consume one attempt of THIS stage's retry budget.
+
+    Budgets are per stage: a successful SNAPSHOT or TRAIN never eats into the
+    QUALIFY retry allowance.
+    """
+    stage_attempts = int((package.get("stage_attempts") or {}).get(job.stage, 0)) + 1
+    package.setdefault("stage_attempts", {})[job.stage] = stage_attempts
+    _save_stage_package(conn, job.job_id, package, work_dir)
+    if stage_attempts >= int(policy["max_attempts"]):
+        return LearningStageResult("NEEDS_ATTENTION", None, None, None, error_code)
+    return LearningStageResult("RETRY", None, None, None, error_code)
+
+
+def _execute_stage_with_budget(
+    conn: sqlite3.Connection,
+    job: LearningJob,
+    services: Mapping[str, Any],
+    policy: dict[str, Any],
+    work_dir: Path,
+    package: dict[str, Any],
+) -> LearningStageResult:
+    stage = job.stage
 
     # Recovery: every previously completed stage artifact must still verify.
     for done_stage, artifact in sorted(package.get("stages", {}).items()):
@@ -469,8 +525,8 @@ def execute_learning_stage(
                 conn, policy, work_dir / job.job_id
             )
         except Exception:
-            return LearningStageResult(
-                "RETRY", None, None, None, "snapshot_build_failed"
+            return _stage_retry(
+                conn, job, package, work_dir, policy, "snapshot_build_failed"
             )
         artifact = {
             "path": str(Path(snapshot.snapshot_dir, "manifest.json").resolve()),
@@ -505,7 +561,9 @@ def execute_learning_stage(
                 Path(snapshot_dir), work_dir / job.job_id, "curve-source-v1"
             )
         except Exception:
-            return LearningStageResult("RETRY", None, None, None, "train_failed")
+            return _stage_retry(
+                conn, job, package, work_dir, policy, "train_failed"
+            )
         if result.get("status") != "DRAFT":
             return LearningStageResult(
                 "NEEDS_ATTENTION", None, None, None,
@@ -514,7 +572,9 @@ def execute_learning_stage(
         try:
             services["register_draft"](conn, result)
         except Exception:
-            return LearningStageResult("RETRY", None, None, None, "register_failed")
+            return _stage_retry(
+                conn, job, package, work_dir, policy, "register_failed"
+            )
         artifact = {
             "path": str(result["model_path"]),
             "sha256": str(result["model_sha256"]),
@@ -550,13 +610,8 @@ def execute_learning_stage(
                 work_dir=work_dir / job.job_id / "qualification",
             )
         except Exception:
-            attempts = conn.execute(
-                "SELECT attempts FROM learning_jobs WHERE job_id = ?", (job.job_id,)
-            ).fetchone()[0]
-            if attempts < int(policy["max_attempts"]):
-                return LearningStageResult("RETRY", None, None, None, "qualify_failed")
-            return LearningStageResult(
-                "NEEDS_ATTENTION", None, None, None, "qualify_failed"
+            return _stage_retry(
+                conn, job, package, work_dir, policy, "qualify_failed"
             )
         package["qualification"] = {
             "qualification_id": summary.get("qualification_id"),
@@ -589,14 +644,18 @@ def _apply_stage_result(
     now_epoch: float,
 ) -> dict[str, Any]:
     if result.outcome == "ADVANCE" and result.next_stage:
+        # Advance the stage AND release the lease in one statement: the next
+        # poll (this worker or another) claims the job immediately instead of
+        # waiting out the full lease on a job that is not executing anything.
         updated = conn.execute(
-            "UPDATE learning_jobs SET stage = ?, updated_at = ? "
+            "UPDATE learning_jobs SET stage = ?, status = 'PENDING', "
+            "owner = NULL, lease_expires_epoch = NULL, updated_at = ? "
             "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
             (result.next_stage, _now_iso(), job.job_id, job.owner),
         ).rowcount
-        status = "RUNNING" if updated == 1 else "NEEDS_ATTENTION"
-        error = None if updated == 1 else "lease_lost"
-        return {"status": status, "stage": result.next_stage, "error_code": error}
+        if updated != 1:
+            return {"status": "NEEDS_ATTENTION", "stage": job.stage, "error_code": "lease_lost"}
+        return {"status": "ADVANCED", "stage": result.next_stage, "error_code": None}
 
     if result.outcome == "COMPLETE":
         conn.execute(
@@ -607,20 +666,11 @@ def _apply_stage_result(
         return {"status": "SUCCEEDED", "stage": "COMPLETE", "error_code": None}
 
     if result.outcome == "RETRY":
+        # The per-stage attempt budget is enforced by execute_learning_stage;
+        # reaching here means retries remain for THIS stage.
         attempts = conn.execute(
             "SELECT attempts FROM learning_jobs WHERE job_id = ?", (job.job_id,)
         ).fetchone()[0]
-        if attempts >= int(DEFAULT_LEARNING_POLICY["max_attempts"]):
-            conn.execute(
-                "UPDATE learning_jobs SET status = 'NEEDS_ATTENTION', error_code = ?, "
-                "updated_at = ? WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-                (result.error_code, _now_iso(), job.job_id, job.owner),
-            )
-            return {
-                "status": "NEEDS_ATTENTION",
-                "stage": job.stage,
-                "error_code": result.error_code,
-            }
         delay = _retry_delay(attempts)
         conn.execute(
             "UPDATE learning_jobs SET status = 'RETRY_WAIT', next_retry_epoch = ?, "

@@ -340,3 +340,53 @@ def test_draft_is_not_deployable(tmp_path):
     )
     assert result.status == "REFUSED"
     conn.close()
+
+
+def test_profile_drift_degrades_active_to_baseline(tmp_path):
+    """P1 remediation: after deployment, publishing a NEW profile must
+    degrade ACTIVE to BASELINE until re-qualification; restoring the
+    qualified profile identity restores ACTIVE."""
+    conn, run_dir, model_version = _promoted_fixture(tmp_path)
+    config = _runtime_config(conn, run_dir, model_version)
+
+    bundle_profile_version = json.loads(
+        (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+    )["profile_version"]
+
+    result = activate_deployment(
+        conn,
+        qualification_dir=run_dir,
+        expected_revision=0,
+        operator="admin",
+        runtime_config=config,
+    )
+    assert result.status == "ACTIVATED"
+
+    def snapshot_for(profile_version):
+        if profile_version is not None:
+            conn.execute("DELETE FROM preference_profile_current")
+            conn.execute(
+                "INSERT INTO preference_profile_current (slot, profile_version) "
+                "VALUES ('current', ?)",
+                (profile_version,),
+            )
+            conn.commit()
+        return load_curve_runtime_snapshot(
+            conn,
+            {"curve_preference_enabled": True, "curve_preference_mode": "active"},
+        )
+
+    # No current profile at all: drift -> BASELINE.
+    none_snapshot = snapshot_for(None)
+    assert "profile_version_mismatch" in none_snapshot.inactive_reasons
+
+    # A newer published profile: drift -> BASELINE.
+    newer = snapshot_for("profile-v2-after-qualification")
+    assert "profile_version_mismatch" in newer.inactive_reasons
+    assert newer.compatible is False
+
+    # The qualified profile identity: ACTIVE again.
+    qualified = snapshot_for(bundle_profile_version)
+    assert "profile_version_mismatch" not in qualified.inactive_reasons
+    assert qualified.model_version == model_version
+    conn.close()

@@ -173,10 +173,14 @@ def ingest_published_clips(
                     needs_repair += 1
                 else:
                     try:
-                        # The actual candidate ID and the GIF byte hash are
-                        # bound in one explicit transaction.
+                        # The actual candidate ID, the GIF byte hash, AND the
+                        # curve-source feature ledger entry are bound in one
+                        # explicit transaction: once a GIF is linked, its
+                        # source features are trainable without any manual
+                        # backfill step.
                         conn.execute("BEGIN IMMEDIATE")
                         link_publication(conn, record_id, cand_id, gif_sha)
+                        _record_source_features(conn, record_id, cand_id, gif_sha)
                         conn.commit()
                     except Exception as link_exc:
                         conn.rollback()
@@ -261,3 +265,56 @@ def ingest_succeeded_gifs_into_library(
             conn.close()
     except Exception as exc:
         print(f"  Library ingest skipped ({exc})")
+
+
+def _record_source_features(
+    conn: Any,
+    record_id: str,
+    candidate_id: str,
+    gif_sha256: str,
+) -> None:
+    """Write the capture's AVAILABLE curve-source features into the
+    ``curve_features`` training ledger (same transaction as the publication
+    link). UNAVAILABLE features are never entered as fake rows.
+
+    The evidence hash binds the ledger row to the immutable capture payload:
+    the features written here are exactly the bytes the capture froze.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    row = conn.execute(
+        "SELECT payload_path, payload_sha256, source_video_sha256 "
+        "FROM candidate_analysis_records WHERE record_id = ?",
+        (record_id,),
+    ).fetchone()
+    if row is None:
+        return
+    payload_path, payload_sha256, source_sha = row[0], row[1], row[2]
+    payload = _json.loads(_Path(payload_path).read_text(encoding="utf-8"))
+    feature = payload.get("source_feature") or {}
+    if feature.get("status") != "AVAILABLE":
+        return
+    features = feature.get("features") or {}
+    if not features or not feature.get("extractor_sha256"):
+        return
+    timestamps = feature.get("actual_timestamps") or []
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO curve_features (
+            candidate_id, feature_version, availability, features_json,
+            missing_reason, extractor_sha256, artifact_sha256, wall_clock_ms,
+            source_video_sha256, frame_count
+        ) VALUES (?, ?, 'AVAILABLE', ?, NULL, ?, ?, ?, ?, ?)
+        """,
+        (
+            candidate_id,
+            str(feature.get("feature_version") or "curve-source-v1"),
+            _json.dumps(features, sort_keys=True),
+            str(feature["extractor_sha256"]),
+            str(gif_sha256),
+            float(feature.get("wall_clock_ms") or 0.0),
+            str(source_sha or ""),
+            len(timestamps),
+        ),
+    )

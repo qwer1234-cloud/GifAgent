@@ -149,3 +149,61 @@ def test_run_learning_once_respects_live_epoch_lease(tmp_path):
     conn2 = sqlite3.connect(tmp_path / "learning.db")
     reclaimed = run_learning_once(conn2, now_epoch=1_800_000_600, owner="w3")
     assert reclaimed["status"] in ("RUNNING", "NEEDS_ATTENTION", "RETRY_WAIT")
+
+
+def _with_learning_config(monkeypatch, section):
+    import app.config as config_module
+
+    monkeypatch.setattr(
+        config_module, "_config", {**config_module._config, "curve_learning": section}
+    )
+    return section
+
+
+def test_feedback_enqueue_is_gated_by_curve_learning_config(monkeypatch, tmp_path):
+    """P2 remediation: feedback only enqueues when the frozen config enables
+    curve_learning; the default-off contract skips the queue entirely."""
+    import json as _json
+
+    from app.services.learning_jobs import (
+        DEFAULT_LEARNING_POLICY,
+        collect_learning_stats,
+        enqueue_learning,
+        learning_policy_from_config,
+        learning_eligibility,
+    )
+    from app.services.learning_jobs import maybe_enqueue_learning
+
+    conn = sqlite3.connect(tmp_path / "learning.db")
+    apply_preference_schema(conn)
+
+    # No config section at all -> disabled -> skip.
+    monkeypatch.setattr("app.config._config", {})
+    enabled, policy = learning_policy_from_config()
+    assert enabled is False
+
+    # Explicitly disabled -> skip.
+    _with_learning_config(monkeypatch, {"enabled": False})
+    enabled, _ = learning_policy_from_config()
+    assert enabled is False
+
+    # Enabled with a small policy -> eligible feedback enqueues.
+    tiny = {
+        "enabled": True,
+        "min_new_effective_candidates": 1,
+        "min_new_source_groups": 1,
+        "min_positive_candidates": 1,
+        "min_negative_candidates": 1,
+        "min_interval_hours": 0,
+    }
+    _with_learning_config(monkeypatch, tiny)
+    enabled, policy = learning_policy_from_config()
+    assert enabled is True
+    # promotion_policy is forced manual regardless of config.
+    assert "promotion_policy" not in policy
+
+    stats = collect_learning_stats(conn, policy)
+    assert learning_eligibility(stats, policy) != []  # empty db -> ineligible
+    result = maybe_enqueue_learning(conn, policy)
+    assert result.status == "INELIGIBLE"
+    assert conn.execute("SELECT COUNT(*) FROM learning_jobs").fetchone()[0] == 0

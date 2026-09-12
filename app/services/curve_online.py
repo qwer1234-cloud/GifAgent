@@ -159,6 +159,7 @@ def load_curve_runtime_snapshot(
             model_version = deployment_row["model_version"]
             qualification_id = deployment_row["qualification_id"]
             deployment_config_hash = str(deployment_row["config_hash"] or "")
+            deployment_profile_version = deployment_row.get("profile_version")
 
             model_row = conn.execute(
                 """
@@ -207,6 +208,16 @@ def load_curve_runtime_snapshot(
         if not extractor_sha256:
             compatible = False
             inactive.append("extractor_sha256_missing")
+        # Profile drift: ACTIVE only runs on the profile the qualification
+        # frozen; a newer published profile requires re-qualification and
+        # meanwhile degrades every request to BASELINE.
+        if deployment_profile_version and str(
+            profile_version or ""
+        ) != str(deployment_profile_version):
+            # Missing or newer current profile both count as drift: the
+            # deployment only runs on its qualified profile identity.
+            compatible = False
+            inactive.append("profile_version_mismatch")
 
     qualified = bool(
         deployment_available
@@ -436,7 +447,8 @@ def _active_deployment_row(conn: Any) -> tuple[int, dict[str, Any]] | None:
     if revision is not None:
         row = conn.execute(
             "SELECT model_version, qualification_id, config_hash, extractor_sha256, "
-            "is_active, qualification_bundle_path, qualification_bundle_sha256 "
+            "is_active, qualification_bundle_path, qualification_bundle_sha256, "
+            "profile_version, profile_snapshot_sha256 "
             "FROM curve_model_deployments WHERE revision = ?",
             (revision,),
         ).fetchone()
@@ -445,6 +457,8 @@ def _active_deployment_row(conn: Any) -> tuple[int, dict[str, Any]] | None:
                 "model_version": row[0],
                 "qualification_id": row[1],
                 "config_hash": row[2],
+                "profile_version": row[7],
+                "profile_snapshot_sha256": row[8],
             }
         return None
     row = conn.execute(
@@ -458,6 +472,8 @@ def _active_deployment_row(conn: Any) -> tuple[int, dict[str, Any]] | None:
         "model_version": row[1],
         "qualification_id": row[2],
         "config_hash": row[3],
+        "profile_version": None,
+        "profile_snapshot_sha256": None,
     }
 
 
@@ -636,6 +652,15 @@ def _bind_deployment_config(
     ):
         reasons.append("feature_version_mismatch")
 
+    runtime_profile_version = runtime_config.get("profile_version")
+    bundle_profile_version = input_manifest.get("bundle_profile_version")
+    if (
+        runtime_profile_version is not None
+        and bundle_profile_version
+        and str(runtime_profile_version) != str(bundle_profile_version)
+    ):
+        reasons.append("profile_version_mismatch")
+
     model_extractor = input_manifest.get("model_extractor_sha256")
     runtime_extractor = runtime_config.get("extractor_sha256")
     if not runtime_extractor or not model_extractor:
@@ -695,6 +720,16 @@ def activate_deployment(
 
     model_version = _enrich_bundle_identity(conn, bundle)
 
+    try:
+        profile_snapshot = json.loads(
+            (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        profile_snapshot = {}
+    bundle_profile_version = str(profile_snapshot.get("profile_version") or "")
+    bundle_profile_sha = str(profile_snapshot.get("manifest_sha256") or "")
+    bundle.input_manifest.setdefault("bundle_profile_version", bundle_profile_version)
+
     reasons: list[str] = []
     evidence = validate_qualification_evidence(
         conn,
@@ -735,8 +770,9 @@ def activate_deployment(
             INSERT INTO curve_model_deployments (
                 model_version, qualification_id, config_hash, extractor_sha256,
                 is_active, approved_by, approved_at, previous_revision,
-                qualification_bundle_path, qualification_bundle_sha256
-            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                qualification_bundle_path, qualification_bundle_sha256,
+                profile_version, profile_snapshot_sha256
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 model_version,
@@ -748,6 +784,8 @@ def activate_deployment(
                 int(expected_revision),
                 str(run_dir.resolve()),
                 bundle_sha,
+                bundle_profile_version,
+                bundle_profile_sha,
             ),
         )
         revision = conn.execute("SELECT last_insert_rowid()").fetchone()[0]

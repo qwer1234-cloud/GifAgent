@@ -1,6 +1,7 @@
 """Tests for curve training manifests, immutable snapshots, and L2 logistic regression."""
 from __future__ import annotations
 
+import json as _json
 import json
 from pathlib import Path
 
@@ -325,3 +326,92 @@ def test_manifest_rows_must_match_declared_source_roles():
         "train_rows": [{"source_video_sha256": "holdout"}],
     }
     assert "source_role_mismatch" in validate_training_manifest(manifest)
+
+
+def test_ambiguous_publication_fails_closed(tmp_path: Path):
+    """P2 remediation: a candidate linked to multiple analysis records has
+    ambiguous baseline/window provenance and is excluded, never guessed."""
+    import sqlite3 as _sqlite3
+
+    from app.services.candidate_capture import persist_capture
+    from app.services.curve_training import build_training_snapshot
+    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+    from app.services.preference_schema import apply_preference_schema
+
+    conn = _sqlite3.connect(":memory:")
+    apply_preference_schema(conn)
+
+    cid = "cand-amb-0"
+    source = "a" * 64
+    conn.execute(
+        "INSERT INTO candidate_gifs (candidate_id, source_run_id, "
+        "source_run_candidate_id, source_video_sha256, source_video_path, "
+        "start_sec, end_sec, status) VALUES (?, 'run', 'rc', ?, '/v.mp4', 0.0, 5.0, 'candidate')",
+        (cid, source),
+    )
+    conn.execute(
+        "INSERT INTO preference_events (event_id, target_type, target_id, "
+        "rating, source_video_sha256, scenario_keys_json, created_at, event_kind) "
+        "VALUES ('ev-amb', 'candidate_gif', ?, 'like', ?, '[]', "
+        "'2026-09-01T00:00:00Z', 'feedback')",
+        (cid, source),
+    )
+    for record_index in range(2):
+        payload = {
+            "run_id": f"run-{record_index}",
+            "preexport_key": f"{record_index:064x}",
+            "capture_version": "capture-v1",
+            "source_video_sha256": source,
+            "start_us": 1_000_000 + record_index,
+            "end_us": 4_000_000 + record_index,
+            "anchor_us": 2_500_000,
+            "baseline_score": 0.5 + record_index / 10.0,
+            "capture_status": "CAPTURED",
+        }
+        persisted = persist_capture(conn, payload, tmp_path / "evidence")
+        conn.execute(
+            "INSERT INTO candidate_analysis_publications "
+            "(publication_id, record_id, candidate_id, gif_sha256) VALUES (?, ?, ?, ?)",
+            (f"pub-{record_index}", persisted.record_id, cid, f"{record_index:064x}"),
+        )
+        if record_index == 0:
+            conn.execute(
+                "INSERT INTO curve_features (candidate_id, feature_version, "
+                "availability, features_json, extractor_sha256, artifact_sha256, wall_clock_ms) "
+                "VALUES (?, 'curve-source-v1', 'AVAILABLE', ?, 'ex', ?, 1.0)",
+                (cid, _json.dumps({n: 0.5 for n in CURVE_SOURCE_FEATURE_NAMES}), f"{record_index:064x}"),
+            )
+    conn.execute(
+        "INSERT INTO preference_profile_current (slot, profile_version) "
+        "VALUES ('current', 'profile-v1')"
+    )
+    conn.commit()
+
+    snapshot = build_training_snapshot(conn, {"split_seed": 1}, tmp_path / "snap")
+    manifest = _json.loads(
+        (Path(snapshot.snapshot_dir) / "manifest.json").read_text(encoding="utf-8")
+    )
+    total_rows = (
+        len(manifest["train_rows"])
+        + len(manifest["development_rows"])
+        + len(manifest["holdout_rows"])
+        + len(manifest["reference_rows"])
+    )
+    assert total_rows == 0
+    assert any(
+        e["reason"] == "ambiguous_publication" for e in manifest["exclusions"]
+    )
+
+
+def test_mixed_extractor_identities_hard_fail_training(tmp_path: Path):
+    """P2 remediation: samples from two extractor identities never train; the
+    trainer refuses the snapshot instead of producing a mixed-domain DRAFT."""
+    snapshot_dir, manifest = _v2_manifest(tmp_path)
+    manifest["train_rows"][0]["extractor_sha256"] = "9" * 64
+    manifest["extractor_sha256"] = ""
+    (snapshot_dir / "manifest.json").write_text(
+        _json.dumps(manifest, sort_keys=True), encoding="utf-8"
+    )
+    result = train_draft(snapshot_dir, tmp_path / "out")
+    assert result["status"] == "NEEDS_ATTENTION"
+    assert result["error_code"] == "invalid_manifest"

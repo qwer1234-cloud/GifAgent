@@ -138,15 +138,20 @@ def _collect_samples(
         def exclude(reason: str) -> None:
             exclusions.append({"candidate_id": target_id, "reason": reason})
 
-        publication = conn.execute(
+        publications = conn.execute(
             "SELECT record_id, gif_sha256 FROM candidate_analysis_publications "
-            "WHERE candidate_id = ? LIMIT 1",
+            "WHERE candidate_id = ? ORDER BY created_at ASC, publication_id ASC",
             (target_id,),
-        ).fetchone()
-        if publication is None:
+        ).fetchall()
+        if not publications:
             exclude("publication_link_missing")
             continue
-        record_id, gif_sha256 = publication[0], publication[1]
+        if len(publications) > 1:
+            # A candidate linked to several analysis records has ambiguous
+            # baseline/window provenance: fail closed instead of guessing.
+            exclude("ambiguous_publication")
+            continue
+        record_id, gif_sha256 = publications[0][0], publications[0][1]
         if not gif_sha256:
             exclude("gif_hash_missing")
             continue
@@ -293,9 +298,17 @@ def build_training_snapshot(
     extractor_values = {s["extractor_sha256"] for s in samples}
     manifest_extractor = next(iter(extractor_values)) if len(extractor_values) == 1 else ""
     if len(extractor_values) > 1:
-        exclusions.append(
-            {"candidate_id": "*", "reason": "extractor_identity_mixed"}
-        )
+        # Mixed extractor identities can never share a feature domain: every
+        # sample is excluded and the manifest's empty extractor hard-fails
+        # validation downstream.
+        for s in samples:
+            exclusions.append(
+                {
+                    "candidate_id": s["candidate_id"],
+                    "reason": "extractor_identity_mixed",
+                }
+            )
+        samples = []
 
     event_watermark = hashlib.sha256(
         json.dumps(
@@ -407,6 +420,13 @@ def validate_training_manifest(manifest: Mapping[str, Any]) -> list[str]:
         and sorted(manifest["feature_names"]) != sorted(CURVE_SOURCE_FEATURE_NAMES)
     ):
         reasons.append("feature_names_mismatch")
+
+    if manifest.get("manifest_version") == TRAINING_MANIFEST_VERSION and not str(
+        manifest.get("extractor_sha256") or ""
+    ):
+        # A v2 snapshot without one pinned extractor identity must never
+        # reach the trainer (missing or mixed identities both land here).
+        reasons.append("extractor_sha256_missing")
 
     return reasons
 

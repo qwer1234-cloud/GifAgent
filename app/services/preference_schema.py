@@ -290,6 +290,8 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             previous_revision INTEGER,
             qualification_bundle_path TEXT,
             qualification_bundle_sha256 TEXT,
+            profile_version TEXT,
+            profile_snapshot_sha256 TEXT,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
         );
 
@@ -549,6 +551,8 @@ def _migrate_learning_job_columns(conn: sqlite3.Connection) -> None:
         (
             ("qualification_bundle_path", "TEXT"),
             ("qualification_bundle_sha256", "TEXT"),
+            ("profile_version", "TEXT"),
+            ("profile_snapshot_sha256", "TEXT"),
         ),
     )
 

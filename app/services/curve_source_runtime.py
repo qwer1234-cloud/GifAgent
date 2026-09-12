@@ -32,6 +32,7 @@ from app.services.curve_source_features import (
     SOURCE_DECODE_PROFILE_V1,
     CurveFeatureResult,
     CurveWindow,
+    compute_extractor_identity,
     validate_window_feature_values,
     window_input_hash,
 )
@@ -71,12 +72,13 @@ def _unavailable(
     reasons: Iterable[str],
     input_hash: str = "",
     wall_clock_ms: float = 0.0,
+    extractor_sha256: str = DEFAULT_SOURCE_EXTRACTOR_SHA256,
 ) -> CurveFeatureResult:
     return CurveFeatureResult(
         preexport_key=window.preexport_key,
         status="UNAVAILABLE",
         feature_version=CURVE_SOURCE_FEATURE_VERSION,
-        extractor_sha256=DEFAULT_SOURCE_EXTRACTOR_SHA256,
+        extractor_sha256=extractor_sha256,
         features=None,
         actual_timestamps=(),
         input_hash=input_hash,
@@ -275,6 +277,10 @@ class CurveSourceRuntime:
         ):
             return self._all_unavailable(windows, ["model_package_hash_mismatch"], t0)
 
+        # The expected extractor identity binds the model package AND the
+        # worker implementation; the response must echo exactly this.
+        expected_extractor = self._expected_extractor_identity(model_hash)
+
         worker_ready = Path(self.config.worker_executable).is_file() and Path(
             self.config.worker_script
         ).is_file()
@@ -287,14 +293,30 @@ class CurveSourceRuntime:
             owner=self.owner,
         )
         if not lock.acquire(wait_s=self.config.lock_wait_s):
-            return self._all_unavailable(windows, ["inference_runtime_busy"], t0)
+            return self._all_unavailable(
+                windows, ["inference_runtime_busy"], t0, expected_extractor
+            )
 
         try:
             return self._run_worker(
-                source_path, source_sha256, windows, timeout_s, model_hash, t0
+                source_path,
+                source_sha256,
+                windows,
+                timeout_s,
+                model_hash,
+                t0,
+                expected_extractor,
             )
         finally:
             lock.release()
+
+    def _expected_extractor_identity(self, model_hash: str) -> str:
+        """Compute the extractor identity the worker must echo: model package
+        plus the exact worker implementation plus the pose backend."""
+        worker_code_sha = hashlib.sha256(
+            Path(self.config.worker_script).read_bytes()
+        ).hexdigest()
+        return compute_extractor_identity(model_hash, worker_code_sha)
 
     def _build_request(
         self,
@@ -302,6 +324,7 @@ class CurveSourceRuntime:
         source_sha256: str,
         windows: tuple[CurveWindow, ...],
         model_hash: str,
+        expected_extractor: str = DEFAULT_SOURCE_EXTRACTOR_SHA256,
     ) -> dict[str, Any]:
         window_entries = []
         for window in windows:
@@ -310,7 +333,9 @@ class CurveSourceRuntime:
                     "preexport_key": window.preexport_key,
                     "start_us": window.start_us,
                     "end_us": window.end_us,
-                    "input_hash": window_input_hash(source_sha256, window),
+                    "input_hash": window_input_hash(
+                        source_sha256, window, extractor_sha256=expected_extractor
+                    ),
                 }
             )
         request = {
@@ -320,7 +345,7 @@ class CurveSourceRuntime:
             "windows": window_entries,
             "feature_version": CURVE_SOURCE_FEATURE_VERSION,
             "decode_profile": dict(SOURCE_DECODE_PROFILE_V1),
-            "extractor_sha256": DEFAULT_SOURCE_EXTRACTOR_SHA256,
+            "extractor_sha256": expected_extractor,
             "model_dir": str(self.config.model_dir),
             "model_package_sha256": model_hash,
         }
@@ -338,8 +363,11 @@ class CurveSourceRuntime:
         timeout_s: float,
         model_hash: str,
         t0: float,
+        expected_extractor: str = DEFAULT_SOURCE_EXTRACTOR_SHA256,
     ) -> tuple[CurveFeatureResult, ...]:
-        request = self._build_request(source_path, source_sha256, windows, model_hash)
+        request = self._build_request(
+            source_path, source_sha256, windows, model_hash, expected_extractor
+        )
 
         with tempfile.TemporaryDirectory(prefix="curve_source_runtime_") as tmp:
             work_dir = Path(tmp).resolve()
@@ -386,7 +414,9 @@ class CurveSourceRuntime:
             except ValueError:
                 return self._all_unavailable(windows, ["response_invalid"], t0)
 
-        return self._verify_response(request, response, windows, t0)
+        return self._verify_response(
+            request, response, windows, t0, expected_extractor
+        )
 
     def _verify_response(
         self,
@@ -394,6 +424,7 @@ class CurveSourceRuntime:
         response: Any,
         windows: tuple[CurveWindow, ...],
         t0: float,
+        expected_extractor: str = DEFAULT_SOURCE_EXTRACTOR_SHA256,
     ) -> tuple[CurveFeatureResult, ...]:
         if not isinstance(response, dict):
             return self._all_unavailable(windows, ["response_invalid"], t0)
@@ -403,6 +434,11 @@ class CurveSourceRuntime:
             return self._all_unavailable(windows, ["request_hash_mismatch"], t0)
         if response.get("model_package_sha256") != request.get("model_package_sha256"):
             return self._all_unavailable(windows, ["model_package_hash_mismatch"], t0)
+        if response.get("extractor_sha256") != request.get("extractor_sha256"):
+            # A different model package or worker implementation answered.
+            return self._all_unavailable(
+                windows, ["extractor_sha256_mismatch"], t0, expected_extractor
+            )
 
         results_raw = response.get("results")
         if not isinstance(results_raw, list):
@@ -437,18 +473,26 @@ class CurveSourceRuntime:
             if entry is None:
                 results.append(
                     _unavailable(
-                        window, ["window_result_missing"], wall_clock_ms=self._ms(t0)
+                        window,
+                        ["window_result_missing"],
+                        wall_clock_ms=self._ms(t0),
+                        extractor_sha256=expected_extractor,
                     )
                 )
                 continue
             if entry.get("input_hash") != expected_hashes[window.preexport_key]:
                 results.append(
                     _unavailable(
-                        window, ["input_hash_mismatch"], wall_clock_ms=self._ms(t0)
+                        window,
+                        ["input_hash_mismatch"],
+                        wall_clock_ms=self._ms(t0),
+                        extractor_sha256=expected_extractor,
                     )
                 )
                 continue
-            results.append(self._window_result(window, entry, self._ms(t0)))
+            results.append(
+                self._window_result(window, entry, self._ms(t0), expected_extractor)
+            )
         return tuple(results)
 
     @staticmethod
@@ -460,9 +504,13 @@ class CurveSourceRuntime:
         windows: tuple[CurveWindow, ...],
         reasons: list[str],
         t0: float,
+        extractor_sha256: str = DEFAULT_SOURCE_EXTRACTOR_SHA256,
     ) -> tuple[CurveFeatureResult, ...]:
         return tuple(
-            _unavailable(window, reasons, wall_clock_ms=self._ms(t0))
+            _unavailable(
+                window, reasons, wall_clock_ms=self._ms(t0),
+                extractor_sha256=extractor_sha256,
+            )
             for window in windows
         )
 
@@ -471,6 +519,7 @@ class CurveSourceRuntime:
         window: CurveWindow,
         entry: Mapping[str, Any],
         wall_clock_ms: float,
+        expected_extractor: str = DEFAULT_SOURCE_EXTRACTOR_SHA256,
     ) -> CurveFeatureResult:
         status = entry.get("status")
         features: Mapping[str, Any] | None = entry.get("features")
@@ -488,7 +537,7 @@ class CurveSourceRuntime:
                     preexport_key=window.preexport_key,
                     status="UNAVAILABLE",
                     feature_version=CURVE_SOURCE_FEATURE_VERSION,
-                    extractor_sha256=DEFAULT_SOURCE_EXTRACTOR_SHA256,
+                    extractor_sha256=expected_extractor,
                     features=None,
                     actual_timestamps=(),
                     input_hash=input_hash,
@@ -499,7 +548,7 @@ class CurveSourceRuntime:
                 preexport_key=window.preexport_key,
                 status="AVAILABLE",
                 feature_version=CURVE_SOURCE_FEATURE_VERSION,
-                extractor_sha256=DEFAULT_SOURCE_EXTRACTOR_SHA256,
+                extractor_sha256=expected_extractor,
                 features={name: float(features[name]) for name in sorted(features)},
                 actual_timestamps=tuple(float(ts) for ts in timestamps),
                 input_hash=input_hash,
@@ -510,4 +559,6 @@ class CurveSourceRuntime:
         reason_list = (
             reasons if isinstance(reasons, list) and reasons else ["window_inference_failed"]
         )
-        return _unavailable(window, reason_list, input_hash, total_ms)
+        return _unavailable(
+            window, reason_list, input_hash, total_ms, expected_extractor
+        )

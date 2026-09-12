@@ -108,9 +108,12 @@ resp = {
     "protocol_version": req["protocol_version"],
     "request_sha256": req["request_sha256"],
     "model_package_sha256": req["model_package_sha256"],
+    "extractor_sha256": req["extractor_sha256"],
     "feature_version": req["feature_version"],
     "results": results,
 }
+if mode == "bad_extractor":
+    resp["extractor_sha256"] = "9" * 64
 if mode == "bad_request_hash":
     resp["request_sha256"] = "0" * 64
 if mode == "bad_model_hash":
@@ -147,8 +150,8 @@ def _request_with_mode(mode: str, **extra) -> dict:
 def _patch_request_mode(runtime: CurveSourceRuntime, mode: str, **extra) -> None:
     original = runtime._build_request
 
-    def build_with_mode(source_path, source_sha256, windows, model_hash):
-        request = original(source_path, source_sha256, windows, model_hash)
+    def build_with_mode(source_path, source_sha256, windows, model_hash, extractor):
+        request = original(source_path, source_sha256, windows, model_hash, extractor)
         request.update(_request_with_mode(mode, **extra))
         return request
 
@@ -192,10 +195,18 @@ def test_request_protocol_fields_are_complete(runtime_env, tmp_path):
     assert len(dumped["model_package_sha256"]) == 64
     by_key = {w["preexport_key"]: w for w in dumped["windows"]}
     assert set(by_key) == {KEY_A, KEY_B}
+    expected_extractor = runtime._expected_extractor_identity(
+        model_package_sha256(Path(runtime.config.model_dir))
+    )
+    assert dumped["extractor_sha256"] == expected_extractor
     for key, window in by_key.items():
         assert window["start_us"] == (1_000_000 if key == KEY_A else 5_000_000)
         assert window["end_us"] == (4_000_000 if key == KEY_A else 8_000_000)
-        assert window["input_hash"] == window_input_hash(SOURCE_SHA, _windows()[0 if key == KEY_A else 1])
+        assert window["input_hash"] == window_input_hash(
+            SOURCE_SHA,
+            _windows()[0 if key == KEY_A else 1],
+            extractor_sha256=expected_extractor,
+        )
 
 
 def test_timeout_returns_structured_unavailable(runtime_env):
@@ -310,3 +321,37 @@ def test_model_package_hash_is_content_addressed(runtime_env):
     assert expected == model_package_sha256(model_dir)
     (model_dir / "pose.onnx").write_bytes(b"changed-model-bytes")
     assert model_package_sha256(model_dir) != expected
+
+
+def test_extractor_identity_binds_model_package_and_worker_code(runtime_env):
+    """P1 remediation: the extractor identity changes when the model package
+    OR the worker implementation changes, so feature domains can never be
+    silently mixed after an upgrade."""
+    runtime, tmp_path = runtime_env
+    model_dir = Path(runtime.config.model_dir)
+    model_hash = model_package_sha256(model_dir)
+    identity = runtime._expected_extractor_identity(model_hash)
+
+    # Same model + same worker -> same identity.
+    assert runtime._expected_extractor_identity(model_hash) == identity
+
+    # Model package change -> different identity.
+    (model_dir / "pose.onnx").write_bytes(b"updated-weights")
+    new_model_hash = model_package_sha256(model_dir)
+    assert new_model_hash != model_hash
+    assert runtime._expected_extractor_identity(new_model_hash) != identity
+
+    # Worker implementation change -> different identity.
+    worker_script = Path(runtime.config.worker_script)
+    worker_script.write_text(
+        worker_script.read_text(encoding="utf-8") + chr(10) + "# touched" + chr(10)
+    )
+    assert runtime._expected_extractor_identity(new_model_hash) != identity
+
+
+def test_extractor_echo_mismatch_is_structured_unavailable(runtime_env):
+    runtime, _tmp = runtime_env
+    _patch_request_mode(runtime, "bad_extractor")
+    results = runtime.evaluate_video(Path("fake.mp4"), SOURCE_SHA, _windows(), 10.0)
+    assert all(r.status == "UNAVAILABLE" for r in results)
+    assert all("extractor_sha256_mismatch" in r.missing_reasons for r in results)

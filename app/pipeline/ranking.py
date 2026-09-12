@@ -50,12 +50,17 @@ def _curve_video_context(reranker_conn, cfg: dict) -> dict | None:
     if mode not in ("shadow", "active"):
         return None
 
+    from dataclasses import replace
+
     from app.services.curve_online import load_curve_runtime_snapshot
     from app.services.curve_preference import load_curve_model
 
     snapshot = load_curve_runtime_snapshot(reranker_conn, cfg)
     model_version = snapshot.model_version
     if mode == "shadow" and model_version is None:
+        # Shadow diagnostics may explicitly name a DRAFT model without any
+        # deployment; the loaded version MUST reach the scoring snapshot or
+        # the shared scorer would treat every curve input as partial.
         model_version = cfg.get("curve_shadow_model_version") or None
     model = None
     if model_version:
@@ -67,6 +72,8 @@ def _curve_video_context(reranker_conn, cfg: dict) -> dict | None:
             )
         except ValueError:
             model = None
+    if model is not None and snapshot.model_version != model.model_version:
+        snapshot = replace(snapshot, model_version=model.model_version)
     return {"snapshot": snapshot, "model": model}
 
 

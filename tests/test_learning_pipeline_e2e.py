@@ -2,6 +2,7 @@
 QUALIFY -> COMPLETE with the real stage services (Task 6)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -24,31 +25,34 @@ TINY_POLICY = {
 
 
 def _seed_learning_db(db_path: Path) -> None:
-    """Synthetic library DB: events, publications, capture payloads,
-    source features, and vectors across three sources (Task 5 shapes)."""
+    """Real production chain, no manual feature backfill:
+
+    persist_capture (with AVAILABLE source-feature evidence in the payload)
+    -> ingest_published_clips (publication link + curve_features ledger entry
+    in one transaction) -> preference events on the materialized candidates.
+    """
+    import hashlib
+
     from app.services.candidate_capture import persist_capture
     from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+    from app.services.library_ingest import ingest_published_clips
 
     conn = sqlite3.connect(db_path)
     apply_preference_schema(conn)
 
     sources = ["a" * 64, "b" * 64, "c" * 64]
+    gif_dir = db_path.parent / "gifs"
+    gif_dir.mkdir(parents=True, exist_ok=True)
+
+    clips = []
     for i in range(36):
-        cid = f"cand-{i:02d}"
         source = sources[i % 3]
-        rating = "like" if i % 2 == 0 else "dislike"
-        conn.execute(
-            "INSERT INTO candidate_gifs (candidate_id, source_run_id, "
-            "source_run_candidate_id, source_video_sha256, source_video_path, "
-            "start_sec, end_sec, status) VALUES (?, 'run', ?, ?, '/v.mp4', 0.0, 5.0, 'candidate')",
-            (cid, f"rc-{cid}", source),
-        )
-        conn.execute(
-            "INSERT INTO preference_events (event_id, target_type, target_id, "
-            "rating, source_video_sha256, scenario_keys_json, created_at, event_kind) "
-            "VALUES (?, 'candidate_gif', ?, ?, ?, '[]', ?, 'feedback')",
-            (f"ev-{i:02d}", cid, rating, source, f"2026-09-01T{i // 24:02d}:{i % 24:02d}:00Z"),
-        )
+        gif = gif_dir / f"clip-{i:02d}.gif"
+        gif.write_bytes(b"GIF89a-e2e-" + str(i).encode())
+        features = {
+            name: 0.3 + ((i + index) % 6) / 12.0
+            for index, name in enumerate(CURVE_SOURCE_FEATURE_NAMES)
+        }
         payload = {
             "run_id": "run-e2e",
             "preexport_key": f"{i:064x}",
@@ -59,25 +63,76 @@ def _seed_learning_db(db_path: Path) -> None:
             "anchor_us": 2_500_000,
             "baseline_score": 0.5 + i / 100.0,
             "capture_status": "CAPTURED",
+            "candidate_id": f"clip-{i:02d}",
+            "source_feature": {
+                "status": "AVAILABLE",
+                "feature_version": "curve-source-v1",
+                "extractor_sha256": "e" * 64,
+                "features": features,
+                "actual_timestamps": [1.0, 2.0, 3.0],
+                "input_hash": "i" * 64,
+                "missing_reasons": [],
+                "wall_clock_ms": 1.0,
+            },
         }
         persisted = persist_capture(conn, payload, db_path.parent / "evidence")
-        conn.execute(
-            "INSERT INTO candidate_analysis_publications "
-            "(publication_id, record_id, candidate_id, gif_sha256) VALUES (?, ?, ?, ?)",
-            (f"pub-{i:02d}", persisted.record_id, cid, f"{i:064x}"),
+        clips.append(
+            {
+                "clip_id": f"clip-{i:02d}",
+                "start_ts": 1.0,
+                "end_ts": 4.0,
+                "formal_path": str(gif),
+                "sha256": hashlib.sha256(gif.read_bytes()).hexdigest(),
+                "gif_worthiness": payload["baseline_score"],
+                "analysis_record_id": persisted.record_id,
+                "best_frame": {
+                    "caption": f"synthetic clip {i}",
+                    "emotional_core": "joy",
+                },
+            }
         )
-        features = {name: 0.3 + (i % 6) / 12.0 for name in CURVE_SOURCE_FEATURE_NAMES}
+
+    def deterministic_embed(text: str) -> list[float]:
+        import hashlib as _hashlib
+
+        import numpy as _np
+
+        digest = _hashlib.sha256(text.encode("utf-8")).digest()
+        vec = _np.frombuffer(digest * 24, dtype=_np.uint8)[:768].astype(_np.float32)
+        return (vec / 255.0).tolist()
+
+    result = ingest_published_clips(
+        conn,
+        video_path=str(db_path.parent / "v.mp4"),
+        clips=clips,
+        run_id="run-e2e",
+        embed_fn=deterministic_embed,
+    )
+    assert result["needs_repair"] == 0
+    assert result["ingested"] == 36
+
+    # Feedback targets the ACTUAL materialized candidates, after the ledger
+    # entries exist -- exactly the order production runs in.
+    linked = conn.execute(
+        "SELECT p.candidate_id, r.source_video_sha256 "
+        "FROM candidate_analysis_publications p "
+        "JOIN candidate_analysis_records r ON r.record_id = p.record_id "
+        "ORDER BY p.candidate_id"
+    ).fetchall()
+    assert len(linked) == 36
+    for index, (candidate_id, source) in enumerate(linked):
+        rating = "like" if index % 2 == 0 else "dislike"
         conn.execute(
-            "INSERT INTO curve_features (candidate_id, feature_version, "
-            "availability, features_json, extractor_sha256, artifact_sha256, "
-            "wall_clock_ms) VALUES (?, 'curve-source-v1', 'AVAILABLE', ?, 'ex', ?, 1.0)",
-            (cid, json.dumps(features), f"{i:064x}"),
-        )
-        conn.execute(
-            "INSERT INTO candidate_vectors (candidate_id, vector_type, "
-            "embedding_model, embedding_dim, vector_blob, normalized, source_text_hash) "
-            "VALUES (?, 'clip', 'nomic-embed-text:latest', 768, ?, 1, ?)",
-            (cid, bytes([i]) * 8, f"texthash-{i}"),
+            "INSERT INTO preference_events (event_id, target_type, target_id, "
+            "rating, source_video_sha256, scenario_keys_json, created_at, event_kind) "
+            "VALUES (?, 'candidate_gif', ?, ?, ?, '[]', ?, 'feedback')",
+            (
+                f"ev-{index:02d}",
+                candidate_id,
+                rating,
+                source,
+                f"2026-09-02T{index // 24:02d}:{index % 24:02d}:00Z",
+            ),
         )
     conn.execute(
         "INSERT INTO preference_profile_current (slot, profile_version) "
@@ -113,26 +168,26 @@ def test_worker_advances_one_stage_per_run_until_complete(tmp_path):
     assert enqueue.job_id
 
     epoch = 1_800_000_000
-    # Each stage run happens after the previous lease expires, mirroring a
-    # worker that re-claims long-running jobs.
+    # Stage advance releases the lease atomically, so a 60s-poll worker
+    # claims the next stage IMMEDIATELY (no 1800s lease wait between stages).
     run1 = run_learning_once(conn, now_epoch=epoch, owner="w1", services=services)
-    assert run1["status"] == "RUNNING"
+    assert run1["status"] == "ADVANCED"
     assert run1["stage"] == "TRAIN"
 
     run2 = run_learning_once(
-        conn, now_epoch=epoch + 1801, owner="w1", services=services
+        conn, now_epoch=epoch + 1, owner="w1", services=services
     )
-    assert run2["status"] == "RUNNING"
+    assert run2["status"] == "ADVANCED"
     assert run2["stage"] == "QUALIFY"
 
     run3 = run_learning_once(
-        conn, now_epoch=epoch + 3602, owner="w1", services=services
+        conn, now_epoch=epoch + 2, owner="w1", services=services
     )
-    assert run3["status"] == "RUNNING"
+    assert run3["status"] == "ADVANCED"
     assert run3["stage"] == "COMPLETE"
 
     run4 = run_learning_once(
-        conn, now_epoch=epoch + 5403, owner="w1", services=services
+        conn, now_epoch=epoch + 3, owner="w1", services=services
     )
     assert run4["status"] == "SUCCEEDED"
 
@@ -239,7 +294,7 @@ def test_recovered_job_rejects_drifted_snapshot_artifact(tmp_path):
     )
 
     result = run_learning_once(
-        conn, now_epoch=1_800_001_801, owner="w1", services=services
+        conn, now_epoch=1_800_000_001, owner="w1", services=services
     )
     assert result["status"] == "NEEDS_ATTENTION"
     assert result["error_code"] == "snapshot_artifact_hash_mismatch"
@@ -300,4 +355,74 @@ def test_not_qualified_result_never_deploys(tmp_path):
     )
     assert snapshot.deployment_available is False
     assert "deployment_unavailable" in snapshot.inactive_reasons
+    conn.close()
+
+
+def test_stage_retry_budget_is_per_stage(tmp_path):
+    """A successful SNAPSHOT+TRAIN never consumes the QUALIFY retry budget;
+    the third QUALIFY failure stops the job as NEEDS_ATTENTION."""
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    services = _services(db_path, tmp_path)
+    enqueue = maybe_enqueue_learning(conn, TINY_POLICY)
+
+    epoch = 1_800_000_000
+    run_learning_once(conn, now_epoch=epoch, owner="w1", services=services)
+    run_learning_once(conn, now_epoch=epoch + 1, owner="w1", services=services)
+    assert run_learning_once.__name__  # keep linters quiet
+
+    def always_fail(**_kwargs):
+        raise RuntimeError("simulated qualification outage")
+
+    services["execute_qualification_run"] = always_fail
+
+    first = run_learning_once(
+        conn, now_epoch=epoch + 2, owner="w1", services=services
+    )
+    assert first["status"] == "RETRY_WAIT"
+    assert first["error_code"] == "qualify_failed"
+
+    # Backoff after the first failure is 600s (three prior claims).
+    second = run_learning_once(
+        conn, now_epoch=epoch + 2 + 600, owner="w1", services=services
+    )
+    assert second["status"] == "RETRY_WAIT"
+
+    third = run_learning_once(
+        conn, now_epoch=epoch + 2 + 1200, owner="w1", services=services
+    )
+    assert third["status"] == "NEEDS_ATTENTION"
+    assert third["error_code"] == "qualify_failed"
+    _ = enqueue
+
+    conn.close()
+
+
+def test_retry_wait_job_is_not_claimable_before_next_retry(tmp_path):
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    services = _services(db_path, tmp_path)
+    maybe_enqueue_learning(conn, TINY_POLICY)
+
+    def always_fail(**_kwargs):
+        raise RuntimeError("simulated qualification outage")
+
+    services_fail = dict(services)
+    services_fail["execute_qualification_run"] = always_fail
+
+    # Fast-forward through SNAPSHOT and TRAIN with the healthy services.
+    run_learning_once(conn, now_epoch=1_800_000_000, owner="w1", services=services)
+    run_learning_once(conn, now_epoch=1_800_000_001, owner="w1", services=services)
+    first = run_learning_once(
+        conn, now_epoch=1_800_000_002, owner="w1", services=services_fail
+    )
+    assert first["status"] == "RETRY_WAIT"
+
+    # Before next_retry_epoch the same job cannot be claimed.
+    idle = run_learning_once(
+        conn, now_epoch=1_800_000_003, owner="w2", services=services_fail
+    )
+    assert idle["status"] == "IDLE"
     conn.close()

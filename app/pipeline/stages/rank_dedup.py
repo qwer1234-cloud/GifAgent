@@ -249,16 +249,67 @@ def capture_rank_candidates(
     )
 
 
+def _preference_identity_for_clip(clip: dict) -> dict:
+    """Caption-gated preference identity frozen into the capture payload.
+
+    The candidate vector is only ever computed from
+    ``preference_embedding_text``; an empty caption yields no vector and no
+    legacy emotion/scene fallback embedding.
+    """
+    import base64 as b64mod
+
+    import numpy as np
+
+    from app.services.reranker import clip_scenario_keys, preference_embedding_text
+
+    best = clip.get("best_frame") if isinstance(clip.get("best_frame"), dict) else {}
+    caption = str(best.get("caption") or clip.get("caption") or "").strip()
+    emotion = str(
+        best.get("emotional_core") or clip.get("emotional_core") or ""
+    ).strip()
+    scene = str(best.get("scene_type") or clip.get("scene_type") or "").strip()
+    text = preference_embedding_text(caption=caption, emotion=emotion, scene_type=scene)
+    identity: dict = {
+        "embedding_text": text,
+        "embedding_text_sha256": (
+            hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None
+        ),
+        "embedding_model": "nomic-embed-text:latest",
+        "scenario_keys": clip_scenario_keys(clip),
+        "vector_float32_b64": None,
+        "vector_sha256": None,
+    }
+    if text:
+        try:
+            from app.services.embedding import compute_text_embedding
+
+            vector = np.asarray(compute_text_embedding(text), dtype=np.float32)
+            identity["vector_float32_b64"] = b64mod.b64encode(vector.tobytes()).decode(
+                "ascii"
+            )
+            identity["vector_sha256"] = hashlib.sha256(vector.tobytes()).hexdigest()
+        except Exception:
+            # Embedding service unavailable: the payload records the text
+            # identity but never a synthetic vector.
+            pass
+    return identity
+
+
 def _capture_payload_for_clip(
     context: RankCaptureContext,
     clip: dict,
     feature,
     runtime_snapshot: dict | None,
 ) -> dict:
-    """Build the immutable capture payload for one post-dedup candidate."""
-    baseline = clip.get("gif_worthiness")
+    """Build the immutable capture payload for one post-dedup candidate.
+
+    ``baseline_score`` is the exact no-curve production score the ranking
+    computed through the shared scorer for THIS candidate, profile, and
+    weights -- never a gif_worthiness placeholder.
+    """
+    baseline = clip.get("curve_baseline_score")
     if baseline is None:
-        baseline = clip.get("final_score", 0.0)
+        baseline = clip.get("final_score", clip.get("gif_worthiness", 0.0))
     payload = {
         "run_id": context.run_id,
         "preexport_key": clip["preexport_key"],
@@ -271,7 +322,12 @@ def _capture_payload_for_clip(
         "candidate_id": clip.get("candidate_id"),
         "clip_id": clip.get("clip_id"),
         "baseline_score": float(baseline),
+        "nominal_score": clip.get("curve_nominal_score"),
+        "effective_score": clip.get("curve_effective_score"),
+        "curve_route": clip.get("curve_route", "BASELINE"),
+        "score_profile_version": clip.get("score_profile_version"),
         "capture_status": "CAPTURED",
+        "preference_identity": _preference_identity_for_clip(clip),
     }
     if feature is not None:
         payload["source_feature"] = {
@@ -811,8 +867,17 @@ def _stage_rank_dedup(
         stage_id=rank_stage_id,
     )
 
-    # Task 3: capture evidence for every post-dedup scorable candidate after
-    # the quality boundary and BEFORE ranking/output truncation.
+    # Task 3/P1 remediation: the shared scorer runs for ALL post-dedup
+    # candidates first; capture then freezes the EXACT no-curve production
+    # baseline (plus nominal/effective) that the ranking itself used -- not
+    # a gif_worthiness placeholder -- before output truncation.
+    deduped_count = len(deduped_clips)
+    multi_frame_count = sum(
+        1 for c in clean_clips if int(c.get("frame_count", 1)) > 1
+    )
+    deduped_clips = _rank_pipeline_clips(deduped_clips, cfg)
+    full_rank_input = list(deduped_clips)
+
     capture_context = _rank_capture_context(video_path, cfg)
     capture_batch = capture_rank_candidates(capture_context, deduped_clips)
     if capture_context.enabled:
@@ -836,12 +901,6 @@ def _stage_rank_dedup(
                 and str(clip.get("preexport_key")) not in failed_set
             ]
 
-    deduped_count = len(deduped_clips)
-    multi_frame_count = sum(
-        1 for c in clean_clips if int(c.get("frame_count", 1)) > 1
-    )
-    full_rank_input = list(deduped_clips)
-    deduped_clips = _rank_pipeline_clips(deduped_clips, cfg)
     output_count = _planned_output_count(
         len(deduped_clips), OUTPUT_RATIO, MAX_OUTPUT
     )
