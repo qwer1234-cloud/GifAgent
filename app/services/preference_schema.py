@@ -212,6 +212,83 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(profile_version) REFERENCES preference_profile_builds(profile_version)
         );
 
+        CREATE TABLE IF NOT EXISTS candidate_analysis_records (
+            record_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            preexport_key TEXT NOT NULL,
+            capture_version TEXT NOT NULL,
+            source_video_sha256 TEXT NOT NULL,
+            start_us INTEGER NOT NULL,
+            end_us INTEGER NOT NULL,
+            anchor_us INTEGER NOT NULL,
+            anchor_source TEXT NOT NULL,
+            capture_status TEXT NOT NULL CHECK(capture_status IN ('CAPTURED', 'FAILED', 'NEEDS_REPAIR')),
+            failure_reason TEXT,
+            payload_path TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            UNIQUE(run_id, preexport_key, capture_version)
+        );
+
+        CREATE TABLE IF NOT EXISTS candidate_analysis_publications (
+            publication_id TEXT PRIMARY KEY,
+            record_id TEXT NOT NULL,
+            candidate_id TEXT NOT NULL,
+            gif_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY(record_id) REFERENCES candidate_analysis_records(record_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_candidate_analysis_pub_candidate
+            ON candidate_analysis_publications(candidate_id);
+        CREATE INDEX IF NOT EXISTS idx_candidate_analysis_pub_record
+            ON candidate_analysis_publications(record_id);
+
+        CREATE TABLE IF NOT EXISTS candidate_analysis_events (
+            event_id TEXT PRIMARY KEY,
+            record_id TEXT NOT NULL,
+            event_kind TEXT NOT NULL CHECK(event_kind IN ('scored', 'selected', 'not_selected', 'quality_rejected', 'publication_failed')),
+            payload_path TEXT NOT NULL,
+            payload_sha256 TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            FOREIGN KEY(record_id) REFERENCES candidate_analysis_records(record_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_candidate_analysis_events_record
+            ON candidate_analysis_events(record_id, event_kind);
+
+        CREATE TABLE IF NOT EXISTS learning_jobs (
+            job_id TEXT PRIMARY KEY,
+            job_type TEXT NOT NULL,
+            input_snapshot_sha256 TEXT NOT NULL,
+            policy_sha256 TEXT NOT NULL,
+            stage TEXT NOT NULL CHECK(stage IN ('SNAPSHOT', 'TRAIN', 'QUALIFY', 'COMPLETE')),
+            status TEXT NOT NULL CHECK(status IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'NEEDS_ATTENTION', 'SUCCEEDED', 'CANCELLED')),
+            owner TEXT,
+            lease_expires_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            next_retry_at TEXT,
+            result_package_path TEXT,
+            result_package_sha256 TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            UNIQUE(input_snapshot_sha256, policy_sha256)
+        );
+
+        CREATE TABLE IF NOT EXISTS curve_model_deployments (
+            revision INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_version TEXT NOT NULL,
+            qualification_id TEXT NOT NULL,
+            config_hash TEXT NOT NULL,
+            extractor_sha256 TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            approved_by TEXT NOT NULL,
+            approved_at TEXT NOT NULL,
+            previous_revision INTEGER,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
         CREATE INDEX IF NOT EXISTS idx_candidate_gifs_status_score
             ON candidate_gifs(status, final_score);
         CREATE INDEX IF NOT EXISTS idx_candidate_gifs_source
