@@ -504,7 +504,7 @@ def _replay_qualification_scores(
     profile_snapshot = json.loads(
         (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
     )
-    profile_version = profile_snapshot.get("profile_version")
+    profile_version = str(profile_snapshot.get("profile_version") or "")
 
     vectors = {
         str(row["candidate_id"]): row for row in jsonl("vectors.jsonl")
@@ -545,9 +545,11 @@ def _replay_qualification_scores(
         probability = curve_probability(model, dict(record.get("curve_features") or {}))
         scenario_keys = list(vector_row.get("scenario_keys") or [])
 
-        def score(curve_probability_value, curve_confidence):
-            return float(
-                score_preference_export_candidate(
+        def score(
+            curve_probability_value: float | None,
+            curve_confidence: float | None,
+        ) -> float:
+            result = score_preference_export_candidate(
                     reranker=_replay_reranker(run_dir),
                     candidate_vector=vector,
                     gif_worthiness=worthiness,
@@ -559,8 +561,8 @@ def _replay_qualification_scores(
                     curve_probability=curve_probability_value,
                     curve_model_version=model_version,
                     curve_model_confidence=curve_confidence,
-                )["final_score"]
-            )
+                )
+            return float(str(result["final_score"]))
 
         max_diff = max(max_diff, abs(score(None, None) - baselines[cid]))
         max_diff = max(max_diff, abs(score(probability, 1.0) - nominals[cid]))

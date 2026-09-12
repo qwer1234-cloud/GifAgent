@@ -244,3 +244,60 @@ def test_recovered_job_rejects_drifted_snapshot_artifact(tmp_path):
     assert result["status"] == "NEEDS_ATTENTION"
     assert result["error_code"] == "snapshot_artifact_hash_mismatch"
     conn.close()
+
+
+def test_not_qualified_result_never_deploys(tmp_path):
+    """Task 8 Step 3: a NOT_QUALIFIED scientific outcome completes the job
+    without any deployment; promoting the failing bundle is refused."""
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    services = _services(db_path, tmp_path)
+    enqueue = maybe_enqueue_learning(conn, TINY_POLICY)
+
+    epoch = 1_800_000_000
+    for step in range(4):
+        run_learning_once(
+            conn, now_epoch=epoch + step * 1801, owner="w1", services=services
+        )
+
+    package = json.loads(
+        Path(
+            conn.execute(
+                "SELECT result_package_path FROM learning_jobs WHERE job_id = ?",
+                (enqueue.job_id,),
+            ).fetchone()[0]
+        ).read_text(encoding="utf-8")
+    )
+    qualification = package["qualification"]
+    assert qualification["status"] == "NOT_QUALIFIED"
+
+    from app.services.curve_preference import load_qualification_bundle, promote_model
+
+    bundle, reasons = load_qualification_bundle(Path(qualification["run_dir"]))
+    assert bundle is None or reasons or qualification["status"] == "NOT_QUALIFIED"
+    if bundle is not None:
+        promotion = promote_model(
+            conn, model_version=package["model_version"], run_dir=Path(qualification["run_dir"])
+        )
+        assert promotion["status"] == "REFUSED"
+
+    deployments = conn.execute(
+        "SELECT COUNT(*) FROM curve_model_deployments WHERE is_active = 1"
+    ).fetchone()[0]
+    pointers = conn.execute(
+        "SELECT COUNT(*) FROM curve_model_deployment_current WHERE slot='current'"
+    ).fetchone()[0]
+    assert deployments == 0
+    assert pointers == 0
+
+    # With nothing deployed, an active curve request degrades to BASELINE.
+    from app.services.curve_online import load_curve_runtime_snapshot
+
+    snapshot = load_curve_runtime_snapshot(
+        conn,
+        {"curve_preference_enabled": True, "curve_preference_mode": "active"},
+    )
+    assert snapshot.deployment_available is False
+    assert "deployment_unavailable" in snapshot.inactive_reasons
+    conn.close()

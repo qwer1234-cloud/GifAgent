@@ -510,3 +510,53 @@ def test_publication_link_failure_marks_needs_repair(tmp_path, monkeypatch):
         (persisted.record_id,),
     ).fetchone()[0]
     assert event == 1
+
+
+def test_disabled_and_shadow_formal_order_are_identical(tmp_path):
+    """Task 8 Step 2: shadow capture changes neither the formal selection
+    order nor the scores; evidence is added on the side."""
+    outputs = {}
+    for scenario in ("disabled", "shadow"):
+        root = tmp_path / scenario
+        root.mkdir()
+        video = _synthetic_video(root)
+        runtime = FakeCurveRuntime()
+        cfg = _capture_cfg(
+            video, root, runtime,
+            candidate_capture_enabled=(scenario == "shadow"),
+            curve_preference_mode="shadow" if scenario == "shadow" else "off",
+        )
+        manifest, _work = _run_rank_stage(video, root, cfg)
+        # Identity schemes differ by design (legacy hash vs preexport
+        # prefix); the business outcome -- window, rank, score -- must not.
+        outputs[scenario] = [
+            (
+                clip.get("start_ts"),
+                clip.get("end_ts"),
+                clip.get("rank"),
+                clip.get("final_score"),
+            )
+            for clip in manifest["clips"]
+        ]
+    assert outputs["disabled"] == outputs["shadow"]
+
+
+def test_disabled_run_is_field_identical_to_legacy_shape(tmp_path):
+    """Task 8 Step 1: a disabled run carries no capture/curve diagnostic
+    fields on its business clips."""
+    root = tmp_path / "disabled"
+    root.mkdir()
+    video = _synthetic_video(root)
+    cfg = _capture_cfg(
+        video, root, FakeCurveRuntime(), candidate_capture_enabled=False
+    )
+    manifest, _work = _run_rank_stage(video, root, cfg)
+    for clip in manifest["clips"]:
+        for forbidden in (
+            "analysis_record_id",
+            "capture_status",
+            "source_feature_status",
+            "source_features",
+            "curve_route",
+        ):
+            assert forbidden not in clip

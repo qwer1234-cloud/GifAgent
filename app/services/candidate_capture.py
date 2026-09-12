@@ -49,6 +49,12 @@ class PersistedCapture:
     payload_sha256: str
 
 
+@dataclass(frozen=True)
+class CaptureBatchResult:
+    captures: tuple[PersistedCapture, ...]
+    failed_preexport_keys: tuple[str, ...]
+
+
 def seconds_to_microsecond_int(val: Any) -> int:
     """Convert float/int/str seconds to exact integer microseconds using Decimal half-up.
 
@@ -124,7 +130,7 @@ def preexport_key(
     return hashlib.sha256(canonical_bytes).hexdigest()
 
 
-def resolve_anchor_us(clip: dict, start_us: int, end_us: int) -> tuple[int, str]:
+def resolve_anchor_us(clip: dict[str, Any], start_us: int, end_us: int) -> tuple[int, str]:
     """Resolve the anchor timestamp in microseconds from clip metadata or fallback to midpoint."""
     best = clip.get("best_frame")
     best_ts = None
@@ -170,7 +176,7 @@ def compute_source_sha256(video_path: str | Path) -> str:
 
 
 def assign_candidate_capture_identities(
-    clips: list[dict],
+    clips: list[dict[str, Any]],
     video_path: str,
     source_sha256: str | None = None,
     capture_enabled: bool = False,
@@ -294,12 +300,12 @@ def assign_candidate_capture_identities(
         clip["source_video_sha256"] = source_sha256
 
 
-def _frozen_window_us(clip: dict) -> tuple[int, int, int]:
+def _frozen_window_us(clip: dict[str, Any]) -> tuple[int, int, int]:
     """Return the frozen (start_us, end_us, anchor_us) for a clip that already
     carries a preexport key, converting from seconds when needed."""
-    start_us = clip.get("start_us")
-    end_us = clip.get("end_us")
-    anchor_us = clip.get("anchor_us")
+    start_us: Any = clip.get("start_us")
+    end_us: Any = clip.get("end_us")
+    anchor_us: Any = clip.get("anchor_us")
     if start_us is None:
         start_val = clip.get("start_ts") if clip.get("start_ts") is not None else clip.get("start_s")
         end_val = clip.get("end_ts") if clip.get("end_ts") is not None else clip.get("end_s")
@@ -315,13 +321,13 @@ def _frozen_window_us(clip: dict) -> tuple[int, int, int]:
     return int(start_us), int(end_us), int(anchor_us)
 
 
-def canonical_capture_config_hash(cfg: dict) -> str:
+def canonical_capture_config_hash(cfg: dict[str, Any]) -> str:
     """Compute SHA-256 hash of canonical capture config JSON."""
     canonical_bytes = json.dumps(cfg, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(canonical_bytes).hexdigest()
 
 
-def capture_config(snapshot: dict) -> dict:
+def capture_config(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Normalize candidate_capture configuration from snapshot and compute its canonical hash."""
     raw = snapshot.get("candidate_capture", {}) or {}
     normalized = {
@@ -334,9 +340,9 @@ def capture_config(snapshot: dict) -> dict:
 
 
 def validate_candidate_capture_config(
-    candidate_capture: dict,
-    continuity_gate: dict,
-    curve_preference: dict,
+    candidate_capture: dict[str, Any],
+    continuity_gate: dict[str, Any],
+    curve_preference: dict[str, Any],
 ) -> None:
     """Validate that continuity enforce or curve active modes have candidate_capture enabled."""
     capture_enabled = bool(candidate_capture.get("enabled", False))
@@ -352,7 +358,7 @@ def validate_candidate_capture_config(
         raise ValueError("curve active mode requires candidate_capture.enabled=true")
 
 
-def validate_capture(payload: dict) -> list[str]:
+def validate_capture(payload: dict[str, Any]) -> list[str]:
     """Validate completeness and integrity of a candidate analysis record payload."""
     reasons: list[str] = []
 
@@ -419,7 +425,7 @@ def validate_capture(payload: dict) -> list[str]:
     return reasons
 
 
-def _canonical_payload_bytes(payload):
+def _canonical_payload_bytes(payload: Mapping[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
@@ -472,7 +478,7 @@ def _file_sha256_matches(path: Path, expected_sha256: str) -> bool:
 
 def persist_capture(
     conn: Any,
-    payload: dict,
+    payload: dict[str, Any],
     evidence_root: Path,
 ) -> PersistedCapture:
     """Persist an immutable capture payload and record it.
@@ -498,10 +504,16 @@ def persist_capture(
     elif status in ("FAILED", "NEEDS_REPAIR"):
         # A failure payload without a usable candidate key is content-addressed
         # into its own versioned failure identity instead of a fake key.
-        identity_key = hashlib.sha256(_canonical_payload_bytes(payload)).hexdigest()
-        capture_version = f"{capture_version}-failure"
+        identity_key = hashlib.sha256(
+            _canonical_payload_bytes(payload)
+        ).hexdigest()
     else:
         raise ValueError("invalid candidate capture payload: ['preexport_key_missing']")
+    if status in ("FAILED", "NEEDS_REPAIR"):
+        # Failure/repair payloads always live under their own versioned
+        # identity so a later successful capture never conflicts with the
+        # recorded failure evidence.
+        capture_version = f"{capture_version}-failure"
     capture_version = _safe_path_component(capture_version, "capture_version")
 
     payload_bytes = _canonical_payload_bytes(payload)
@@ -585,7 +597,7 @@ def append_candidate_analysis_event(
     conn: Any,
     record_id: str,
     event_kind: str,
-    event_payload,
+    event_payload: dict[str, Any],
     evidence_root: Path,
 ) -> str:
     """Append one analysis event with a content-addressed payload file.
@@ -619,7 +631,7 @@ def append_candidate_analysis_event(
     finally:
         conn.row_factory = previous_factory
     if existing is not None:
-        return existing[0]
+        return str(existing[0])
 
     target_file = _contained_evidence_path(
         evidence_root, "events", record_id, f"{event_id}.json"
@@ -640,8 +652,8 @@ def append_candidate_analysis_event(
 def load_candidate_analysis_events(
     conn: Any,
     record_id: str,
-    event_kind=None,
-):
+    event_kind: str | None = None,
+) -> list[dict[str, Any]]:
     """Load append-only analysis events for one capture record."""
     if event_kind is None:
         rows = conn.execute(

@@ -37,6 +37,7 @@ from app.services.preference_profile_snapshot import canonical_json_sha256
 from app.services.export_ranking import (
     adult_moe_export_score,
     cinematic_score_from_assessment,
+    normalize_vlm_unit_score,
 )
 
 if TYPE_CHECKING:
@@ -67,14 +68,14 @@ class EnrichmentError(RuntimeError):
     """A VLM enrichment response was refused, invalid, or unparseable."""
 
 
-def _clamp_score(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        return 0
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        number = 0
-    return max(0, min(100, number))
+def _parse_score(value: object, field_name: str) -> int:
+    """Parse integer or float score using production normalize_vlm_unit_score rules."""
+    unit = normalize_vlm_unit_score(value)
+    if unit is None:
+        raise EnrichmentError(
+            f"invalid or out-of-range score {value!r} for {field_name}"
+        )
+    return int(round(unit * 100.0))
 
 
 def parse_enrichment_response(
@@ -113,13 +114,18 @@ def parse_enrichment_response(
         r"[^a-z0-9_]+", "_", str(data.get("scene_type") or "").strip().lower()
     ).strip("_")
 
+    if "sex_act" not in data or "gif_worthiness" not in data:
+        raise EnrichmentError("missing sex_act or gif_worthiness in VLM response")
+    sex_act = _parse_score(data.get("sex_act"), "sex_act")
+    gif_worthiness = _parse_score(data.get("gif_worthiness"), "gif_worthiness")
+
     return {
         "caption": str(data.get("caption") or "").strip(),
         "emotional_core": emotion,
         "tags": tags,
         "scene_type": scene or None,
-        "sex_act": _clamp_score(data.get("sex_act")),
-        "gif_worthiness": _clamp_score(data.get("gif_worthiness")),
+        "sex_act": sex_act,
+        "gif_worthiness": gif_worthiness,
         "reason": str(data.get("reason") or "").strip(),
         "enriched_by": model,
         "enriched_at": enriched_at,
@@ -129,25 +135,18 @@ def parse_enrichment_response(
 def score_evidence_from_summary(
     summary: Mapping[str, Any],
 ) -> dict[str, int] | None:
-    """Return normalized worthiness/sex-act evidence when both are present."""
+    """Return normalized worthiness/sex-act evidence when both are present and valid."""
 
+    if not isinstance(summary, Mapping):
+        return None
     if "gif_worthiness" not in summary or "sex_act" not in summary:
         return None
-    worthiness_raw = summary["gif_worthiness"]
-    sex_act_raw = summary["sex_act"]
-    if any(
-        isinstance(v, bool) or not isinstance(v, (int, float, str))
-        for v in (worthiness_raw, sex_act_raw)
-    ):
-        return None
     try:
-        worthiness = int(worthiness_raw)
-        sex_act = int(sex_act_raw)
-    except (TypeError, ValueError):
+        worthiness = _parse_score(summary["gif_worthiness"], "gif_worthiness")
+        sex_act = _parse_score(summary["sex_act"], "sex_act")
+        return {"gif_worthiness": worthiness, "sex_act": sex_act}
+    except EnrichmentError:
         return None
-    if not (math.isfinite(worthiness) and math.isfinite(sex_act)):
-        return None
-    return {"gif_worthiness": worthiness, "sex_act": sex_act}
 
 
 @dataclass
@@ -212,7 +211,7 @@ def _ndcg_at_20_for_field(
     for source_rows in by_source.values():
         if len(source_rows) < 2:
             continue
-        ranked = sorted(source_rows, key=lambda r: getattr(r, field), reverse=True)
+        ranked = sorted(source_rows, key=lambda r: getattr(r, field), reverse=True)[:20]
         gains = np.array(
             [NDCG_GAIN_MAP.get(r.rating, 0) for r in ranked], dtype=np.float64
         )
@@ -405,11 +404,59 @@ def decide_curve_qualification(
 # Two-pass confidence protocol (nominal -> derived confidence -> effective)
 # ---------------------------------------------------------------------------
 
-BASE_SCORE_WEIGHT = 0.50
-PREFERENCE_SCORE_WEIGHT = 0.50
+BASE_SCORE_WEIGHT = 0.70
+PREFERENCE_SCORE_WEIGHT = 0.30
 HOLDOUT_MARGIN_DIVISOR = 0.05
 BOOTSTRAP_SEED = 20260905
 BOOTSTRAP_REPS = 2000
+
+
+def load_target_ranking_config(
+    config_path: Path | None = None,
+) -> tuple[float, float, str | None]:
+    """Load target base/preference weights and config hash from models.yaml."""
+    if config_path is None:
+        default_candidate = Path("dist/GifAgentUI/configs/models.yaml")
+        if default_candidate.is_file():
+            config_path = default_candidate
+
+    if config_path is None or not config_path.is_file():
+        return BASE_SCORE_WEIGHT, PREFERENCE_SCORE_WEIGHT, None
+
+    config_sha256 = _sha256_file(config_path)
+    base_weight = BASE_SCORE_WEIGHT
+    pref_weight = PREFERENCE_SCORE_WEIGHT
+
+    try:
+        import yaml
+
+        content = config_path.read_text(encoding="utf-8")
+        parsed = yaml.safe_load(content)
+        if isinstance(parsed, dict):
+            pref_mem = parsed.get("preference_memory") or {}
+            if isinstance(pref_mem, dict):
+                bw = pref_mem.get("base_score_weight")
+                pw = pref_mem.get("preference_score_weight")
+                if bw is not None and math.isfinite(float(bw)):
+                    base_weight = float(bw)
+                if pw is not None and math.isfinite(float(pw)):
+                    pref_weight = float(pw)
+    except Exception:
+        pass
+
+    return base_weight, pref_weight, config_sha256
+
+
+@dataclass(frozen=True)
+class ScoringCandidateEvidence:
+    candidate_id: str
+    preference_embedding_text: str
+    preference_embedding_text_sha256: str | None
+    candidate_vector: list[float] | None
+    candidate_vector_sha256: str | None
+    scenario_keys: list[str]
+    embedding_model: str
+    embedding_dim: int
 
 
 @dataclass
@@ -421,6 +468,7 @@ class TwoPassScores:
     nominal_comparison: SourceGroupedComparison
     effective_comparison: SourceGroupedComparison
     score_rows: list[GroupedScoreRow]
+    scoring_evidence: dict[str, ScoringCandidateEvidence]
 
 
 def run_two_pass_qualification_scores(
@@ -434,6 +482,7 @@ def run_two_pass_qualification_scores(
     preference_score_weight: float = PREFERENCE_SCORE_WEIGHT,
     bootstrap_seed: int = BOOTSTRAP_SEED,
     bootstrap_reps: int = BOOTSTRAP_REPS,
+    embed_fn: Callable[[str], list[float]] | None = None,
 ) -> TwoPassScores:
     """Score the same frozen records three ways and derive the confidence.
 
@@ -444,51 +493,52 @@ def run_two_pass_qualification_scores(
     """
 
     from app.services.curve_preference import curve_probability
-    from app.services.reranker import score_preference_export_candidate
+    from app.services.reranker import (
+        clip_scenario_keys,
+        preference_embedding_text,
+        score_preference_export_candidate,
+    )
+
+    if embed_fn is None:
+        from app.services.embedding import compute_text_embedding
+
+        embed_fn = compute_text_embedding
 
     baseline_scores: dict[str, float] = {}
     nominal_scores: dict[str, float] = {}
     grouped: list[GroupedScoreRow] = []
-    vector_cache: dict[str, np.ndarray] = {}
+    vector_cache: dict[str, np.ndarray | None] = {}
+    scoring_evidence: dict[str, ScoringCandidateEvidence] = {}
 
-    def _vector_for(candidate_id: str) -> np.ndarray:
-        cached = vector_cache.get(candidate_id)
-        if cached is not None:
-            return cached
-        row = work_conn.execute(
-            """
-            SELECT vector_blob FROM candidate_vectors
-            WHERE candidate_id = :candidate_id
-              AND vector_type = 'clip'
-              AND embedding_model = :model
-            """,
-            {"candidate_id": candidate_id, "model": EMBEDDING_MODEL},
-        ).fetchone()
-        vector = np.frombuffer(bytes(row["vector_blob"]), dtype=np.float32)
-        vector_cache[candidate_id] = vector
-        return vector
+    def _vector_for_text(text: str) -> np.ndarray | None:  # noqa: ANN202
+        if not text:
+            return None
+        if text in vector_cache:
+            return vector_cache[text]
+        try:
+            vec = embed_fn(text)
+            arr = np.array(vec, dtype=np.float32)
+            vector_cache[text] = arr
+            return arr
+        except Exception:
+            vector_cache[text] = None
+            return None
 
     def _score_record(
         record: Mapping[str, Any],
+        candidate_vector: np.ndarray | None,
+        scenario_keys: list[str],
+        worthiness: float,
         *,
         curve_probability_value: float | None,
         confidence_value: float | None,
     ) -> float:
-        candidate_id = str(record["candidate_id"])
-        worthiness_row = work_conn.execute(
-            "SELECT vlm_summary_json FROM candidate_gifs "
-            "WHERE candidate_id = :candidate_id",
-            {"candidate_id": candidate_id},
-        ).fetchone()
-        stored_summary = json.loads(worthiness_row["vlm_summary_json"] or "{}")
-        worthiness = _clamp_score(
-            stored_summary.get("gif_worthiness", 0)
-        )
+        assert candidate_vector is not None  # gated by caller (text required)
         result = score_preference_export_candidate(
             reranker=reranker,
-            candidate_vector=_vector_for(candidate_id),
+            candidate_vector=candidate_vector,
             gif_worthiness=float(worthiness),
-            scenario_keys=_scenario_keys_for(work_conn, candidate_id),
+            scenario_keys=scenario_keys,
             profile_version=profile_version,
             base_export_score=float(record["base_export_score"]),
             base_score_weight=base_score_weight,
@@ -500,14 +550,65 @@ def run_two_pass_qualification_scores(
         final_score = result["final_score"]
         return float(str(final_score))
 
+    parsed_records = []
     for record in records:
         candidate_id = str(record["candidate_id"])
-        worthiness_row = work_conn.execute(
-            "SELECT vlm_summary_json FROM candidate_gifs "
-            "WHERE candidate_id = :candidate_id",
+        cand_row = work_conn.execute(
+            "SELECT vlm_summary_json, tags_json FROM candidate_gifs WHERE candidate_id = :candidate_id",
             {"candidate_id": candidate_id},
         ).fetchone()
-        stored_summary = json.loads(worthiness_row["vlm_summary_json"] or "{}")
+        stored_summary = (
+            json.loads(cand_row["vlm_summary_json"] or "{}") if cand_row else {}
+        )
+        stored_tags = (
+            json.loads(cand_row["tags_json"] or "[]") if cand_row else []
+        )
+        if not isinstance(stored_tags, list):
+            stored_tags = []
+
+        caption = str(stored_summary.get("caption") or "").strip()
+        emotion = str(
+            stored_summary.get("emotional_core")
+            or stored_summary.get("emotion")
+            or ""
+        ).strip()
+        scene = str(stored_summary.get("scene_type") or "").strip()
+
+        emb_text = preference_embedding_text(
+            caption=caption, emotion=emotion, scene_type=scene
+        )
+        candidate_vector = _vector_for_text(emb_text)
+        scenario_keys = clip_scenario_keys(
+            {
+                "emotional_core": emotion,
+                "scene_type": scene,
+                "tags": stored_tags or stored_summary.get("tags") or [],
+            }
+        )
+        emb_text_sha = (
+            hashlib.sha256(emb_text.encode("utf-8")).hexdigest()
+            if emb_text
+            else None
+        )
+        vec_list = (
+            candidate_vector.tolist() if candidate_vector is not None else None
+        )
+        vec_sha = (
+            hashlib.sha256(candidate_vector.tobytes()).hexdigest()
+            if candidate_vector is not None
+            else None
+        )
+        scoring_evidence[candidate_id] = ScoringCandidateEvidence(
+            candidate_id=candidate_id,
+            preference_embedding_text=emb_text,
+            preference_embedding_text_sha256=emb_text_sha,
+            candidate_vector=vec_list,
+            candidate_vector_sha256=vec_sha,
+            scenario_keys=scenario_keys,
+            embedding_model=EMBEDDING_MODEL,
+            embedding_dim=EMBEDDING_DIM,
+        )
+
         record_worthiness = score_evidence_from_summary(stored_summary)
         worthiness = (
             record_worthiness["gif_worthiness"]
@@ -517,11 +618,30 @@ def run_two_pass_qualification_scores(
         curve_probability_value = curve_probability(
             model, dict(record["curve_features"])
         )
+        parsed_records.append(
+            (
+                record,
+                candidate_id,
+                candidate_vector,
+                scenario_keys,
+                worthiness,
+                curve_probability_value,
+            )
+        )
+
         baseline_scores[candidate_id] = _score_record(
-            record, curve_probability_value=None, confidence_value=None
+            record,
+            candidate_vector=candidate_vector,
+            scenario_keys=scenario_keys,
+            worthiness=worthiness,
+            curve_probability_value=None,
+            confidence_value=None,
         )
         nominal_scores[candidate_id] = _score_record(
             record,
+            candidate_vector=candidate_vector,
+            scenario_keys=scenario_keys,
+            worthiness=worthiness,
             curve_probability_value=curve_probability_value,
             confidence_value=1.0,
         )
@@ -558,25 +678,29 @@ def run_two_pass_qualification_scores(
 
     effective_scores: dict[str, float] = {}
     effective_grouped: list[GroupedScoreRow] = []
-    for row in grouped:
-        record = next(
-            r for r in records if str(r["candidate_id"]) == row.candidate_id
-        )
-        curve_probability_value = curve_probability(
-            model, dict(record["curve_features"])
-        )
-        effective_scores[row.candidate_id] = _score_record(
+    for (
+        record,
+        candidate_id,
+        candidate_vector,
+        scenario_keys,
+        worthiness,
+        curve_probability_value,
+    ) in parsed_records:
+        effective_scores[candidate_id] = _score_record(
             record,
+            candidate_vector=candidate_vector,
+            scenario_keys=scenario_keys,
+            worthiness=worthiness,
             curve_probability_value=curve_probability_value,
             confidence_value=effective_confidence,
         )
         effective_grouped.append(
             GroupedScoreRow(
-                candidate_id=row.candidate_id,
-                source=row.source,
-                rating=row.rating,
-                baseline=row.baseline,
-                proposed=effective_scores[row.candidate_id],
+                candidate_id=candidate_id,
+                source=str(record["source_video_sha256"]),
+                rating=str(record["rating"]),
+                baseline=baseline_scores[candidate_id],
+                proposed=effective_scores[candidate_id],
             )
         )
 
@@ -595,6 +719,7 @@ def run_two_pass_qualification_scores(
         nominal_comparison=nominal_comparison,
         effective_comparison=effective_comparison,
         score_rows=grouped,
+        scoring_evidence=scoring_evidence,
     )
 
 
@@ -1138,6 +1263,7 @@ def execute_qualification_run(
     db_path: Path,
     model_version: str,
     work_dir: Path,
+    config_path: Path | None = None,
     enrich_fn: Callable[[str], str] | None = None,
     vector_fn: Callable[[sqlite3.Connection, str], bool] | None = None,
     dry_run: bool = False,
@@ -1157,6 +1283,10 @@ def execute_qualification_run(
     from app.services.preference_memory import PreferenceMemoryService
     from app.services.preference_types import ProfileBuildConfig
     from app.services.reranker import PreferenceReranker
+
+    base_score_weight, preference_score_weight, config_sha256 = (
+        load_target_ranking_config(config_path)
+    )
 
     def now_fn() -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -1181,6 +1311,11 @@ def execute_qualification_run(
                     count_required_enrichments(source, holdout_rows) if model else 0
                 ),
                 "source_overlap": compute_source_overlap(model) if model else 0,
+                "target_ranking_config": {
+                    "config_sha256": config_sha256,
+                    "base_score_weight": base_score_weight,
+                    "preference_score_weight": preference_score_weight,
+                },
             }
         finally:
             source.close()
@@ -1288,7 +1423,20 @@ def execute_qualification_run(
                 records=inputs.records,
                 profile_version=snapshot.profile_version,
                 reranker=PreferenceReranker(work_conn),
+                base_score_weight=base_score_weight,
+                preference_score_weight=preference_score_weight,
             )
+            for r in inputs.records:
+                cid = str(r["candidate_id"])
+                if cid in two_pass.scoring_evidence:
+                    ev = two_pass.scoring_evidence[cid]
+                    r["preference_embedding_text"] = ev.preference_embedding_text
+                    r["preference_embedding_text_sha256"] = (
+                        ev.preference_embedding_text_sha256
+                    )
+                    r["candidate_vector_sha256"] = ev.candidate_vector_sha256
+                    r["scenario_keys"] = ev.scenario_keys
+
         decision = _decision_from_inputs(
             model=model,
             model_manifest_hashes_ok=model_manifest_hashes_ok,
@@ -1297,13 +1445,21 @@ def execute_qualification_run(
             limit=limit,
         )
 
+        model_row_identity = _model_row_identity(work_conn, model_version)
+        model_row_sha256 = canonical_json_sha256(model_row_identity)
         input_manifest = {
             "kind": "curve-qualification-input-manifest-v1",
             "qualification_id": qualification_id,
             "model_version": model_version,
+            "model_row_sha256": model_row_sha256,
             "model_training_manifest_sha256": model.training_manifest_sha256,
             "model_holdout_manifest_sha256": model.holdout_manifest_sha256,
             "profile_snapshot_sha256": snapshot.manifest_sha256,
+            "target_ranking_config_sha256": config_sha256,
+            "target_base_score_weight": base_score_weight,
+            "target_preference_score_weight": preference_score_weight,
+            "embedding_model": EMBEDDING_MODEL,
+            "embedding_dim": EMBEDDING_DIM,
             "holdout_row_count": len(holdout_rows_all),
             "evaluated_row_count": len(manifest_rows),
             "records": inputs.records,
@@ -1325,6 +1481,26 @@ def execute_qualification_run(
                 },
             ),
         }
+        if two_pass:
+            vector_rows = [
+                {
+                    "candidate_id": ev.candidate_id,
+                    "embedding_model": ev.embedding_model,
+                    "embedding_dim": ev.embedding_dim,
+                    "preference_embedding_text": ev.preference_embedding_text,
+                    "preference_embedding_text_sha256": ev.preference_embedding_text_sha256,
+                    "candidate_vector_sha256": ev.candidate_vector_sha256,
+                    "scenario_keys": ev.scenario_keys,
+                    "candidate_vector": ev.candidate_vector,
+                }
+                for ev in sorted(
+                    two_pass.scoring_evidence.values(),
+                    key=lambda x: x.candidate_id,
+                )
+            ]
+            artifacts["vectors_sha256"] = _write_jsonl(
+                run_dir / "vectors.jsonl", vector_rows
+            )
         if inputs.records:
             evidence_rows = [
                 {
@@ -1360,6 +1536,11 @@ def execute_qualification_run(
             "cinematic_fallback_count": inputs.cinematic_fallback_count,
             "post_manifest_event_changes": inputs.post_manifest_event_changes,
             "source_overlap": compute_source_overlap(model),
+            "target_ranking_config": {
+                "config_sha256": config_sha256,
+                "base_score_weight": base_score_weight,
+                "preference_score_weight": preference_score_weight,
+            },
             "baseline_coverage": len(inputs.records),
             "blocking": inputs.blocking,
             "nominal": (
@@ -1454,7 +1635,10 @@ def execute_qualification_run(
         (run_dir / "report.md").write_text(
             "\n".join(report_lines) + "\n", encoding="utf-8"
         )
-        metrics["report_sha256"] = _file_sha256(run_dir / "report.md")
+        report_sha = _file_sha256(run_dir / "report.md")
+        artifacts["report_sha256"] = report_sha
+        metrics["report_sha256"] = report_sha
+        metrics["artifacts"] = artifacts
         _write_json(metrics_path, metrics)
 
         probe_source = _open_read_only(db_path)

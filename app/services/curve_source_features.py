@@ -187,6 +187,7 @@ def format_source_feature_response(
         reasons = validate_window_feature_values(features, actual_timestamps or [])
         if reasons:
             raise ValueError(f"feature_set_incomplete: {reasons}")
+        assert features is not None  # validate_window_feature_values guaranteed it
         clean_features = {
             name: round(float(features[name]), 6)
             for name in CURVE_SOURCE_FEATURE_NAMES
@@ -258,6 +259,7 @@ def extract_source_features(request: dict[str, Any]) -> dict[str, Any]:
 
     runtime = request.get("runtime")
     if runtime is not None:
+        assert start_s is not None and end_s is not None
         window = CurveWindow(
             preexport_key=str(request.get("preexport_key") or input_hash),
             start_us=int(round(float(start_s) * 1_000_000)),

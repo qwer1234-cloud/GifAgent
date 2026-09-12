@@ -15,11 +15,11 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, cast
 
 from app.services.curve_preference import canonical_json_sha256
 
-DEFAULT_LEARNING_POLICY = {
+DEFAULT_LEARNING_POLICY: dict[str, Any] = {
     "min_new_effective_candidates": 100,
     "min_new_source_groups": 20,
     "min_positive_candidates": 20,
@@ -374,7 +374,7 @@ def _load_stage_package(conn: sqlite3.Connection, job_id: str) -> dict[str, Any]
     if hashlib.sha256(raw).hexdigest() != row[1]:
         return None
     try:
-        return json.loads(raw.decode("utf-8"))
+        return cast(dict[str, Any], json.loads(raw.decode("utf-8")))
     except ValueError:
         return None
 

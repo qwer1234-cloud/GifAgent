@@ -297,9 +297,12 @@ def build_training_snapshot(
             {"candidate_id": "*", "reason": "extractor_identity_mixed"}
         )
 
-    event_watermark = canonical_json_sha256(
-        sorted(s["event_content_sha256"] for s in samples)
-    )
+    event_watermark = hashlib.sha256(
+        json.dumps(
+            sorted(s["event_content_sha256"] for s in samples),
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     manifest = {
         "manifest_version": TRAINING_MANIFEST_VERSION,
         "feature_version": CURVE_SOURCE_FEATURE_VERSION,
@@ -550,8 +553,58 @@ def train_draft(
 
     manifest_sha256 = canonical_json_sha256(manifest)
     train_sources = manifest.get("train_sources") or []
+    dev_sources = manifest.get("development_sources") or []
     holdout_sources = manifest.get("holdout_sources") or []
     holdout_rows = manifest.get("holdout_rows") or []
+
+    def _legacy_row(sample: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "candidate_id": sample["candidate_id"],
+            "rating": sample["event_rating"],
+            "label": sample["label"],
+            "features": sample["features"],
+            "baseline": sample["baseline_score"],
+            "artifact_sha256": sample["artifact_sha256"],
+            "event_id": sample["event_id"],
+            "event_created_at": sample["event_created_at"],
+            "event_content_sha256": sample["event_content_sha256"],
+            "source": sample["source_video_sha256"],
+        }
+
+    def _source_set_sha256(sources: list[str]) -> str:
+        return hashlib.sha256(
+            json.dumps(sorted(str(s) for s in sources), separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()
+
+    # The model row freezes the qualification-compatible (rating/source row
+    # shape) training and holdout manifests. The full row-fact v2 snapshot is
+    # embedded inside, so any tampering with rows, baselines, events, or
+    # roles changes these hashes too.
+    training_manifest = {
+        "kind": "curve-training-manifest-v1",
+        "feature_version": feature_version,
+        "extractor_sha256": str(manifest.get("extractor_sha256") or ""),
+        "l2_lambda": float(l2_lambda),
+        "split_seed": manifest.get("split_seed"),
+        "feature_names": feature_names,
+        "sources": sorted(str(s) for s in (train_sources + dev_sources)),
+        "rows": [_legacy_row(r) for r in (train_rows + development_rows)],
+        "snapshot_manifest_sha256": manifest_sha256,
+        "snapshot_manifest": manifest,
+    }
+    holdout_manifest = {
+        "kind": "curve-holdout-manifest-v1",
+        "feature_version": feature_version,
+        "extractor_sha256": str(manifest.get("extractor_sha256") or ""),
+        "feature_names": feature_names,
+        "sources": sorted(str(s) for s in holdout_sources),
+        "rows": [_legacy_row(r) for r in holdout_rows],
+        "snapshot_manifest_sha256": manifest_sha256,
+    }
+    training_manifest_sha = canonical_json_sha256(training_manifest)
+    holdout_manifest_sha = canonical_json_sha256(holdout_manifest)
 
     model_artifact = {
         "model_version": model_version,
@@ -565,12 +618,12 @@ def train_draft(
         "feature_names_json": feature_names,
         "l2_lambda": float(l2_lambda),
         "training_code_version": TRAINING_CODE_VERSION,
-        "training_manifest_sha256": manifest_sha256,
-        "holdout_manifest_sha256": manifest_sha256,
-        "training_manifest_json": manifest,
-        "holdout_manifest_json": manifest,
-        "training_source_set_sha256": canonical_json_sha256(sorted(train_sources)),
-        "holdout_source_set_sha256": canonical_json_sha256(sorted(holdout_sources)),
+        "training_manifest_sha256": training_manifest_sha,
+        "holdout_manifest_sha256": holdout_manifest_sha,
+        "training_manifest_json": training_manifest,
+        "holdout_manifest_json": holdout_manifest,
+        "training_source_set_sha256": _source_set_sha256(train_sources + dev_sources),
+        "holdout_source_set_sha256": _source_set_sha256(holdout_sources),
         "holdout_row_count": len(holdout_rows),
         "training_event_watermark": str(manifest.get("event_watermark") or ""),
         "metrics_json": json.dumps(
@@ -623,7 +676,7 @@ def register_draft(conn: Any, result: Mapping[str, Any] | DraftTrainingResult) -
         )
 
     artifact = json.loads(
-        Path(payload["model_path"]).read_text(encoding="utf-8")
+        Path(str(payload["model_path"])).read_text(encoding="utf-8")
     )
     conn.execute(
         """

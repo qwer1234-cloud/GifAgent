@@ -56,6 +56,7 @@ exclude = [
 
 [[tool.mypy.overrides]]
 module = [
+  "yaml",
   "app.quality_moe.*",
   "app.task_engine.artifacts.*",
   "app.services.embedding",
@@ -70,5 +71,6 @@ module = [
   "app.db",
   "app.config",
 ]
+ignore_missing_imports = true
 follow_imports = "silent"
 ignore_errors = true

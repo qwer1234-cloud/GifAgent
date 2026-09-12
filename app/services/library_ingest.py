@@ -36,7 +36,8 @@ def library_ingest_enabled(cfg: dict[str, Any] | None = None) -> bool:
 
 def library_text_from_clip(clip: dict[str, Any]) -> dict[str, Any]:
     """Extract VLM caption/tags used for candidate_gifs + embedding text."""
-    frame = clip.get("best_frame") if isinstance(clip.get("best_frame"), dict) else {}
+    best_frame = clip.get("best_frame")
+    frame = best_frame if isinstance(best_frame, dict) else {}
     caption = str(
         frame.get("caption") or clip.get("caption") or frame.get("summary") or ""
     ).strip()
@@ -127,12 +128,12 @@ def published_clip_to_run_candidate(
 
 
 def ingest_published_clips(
-    conn,
+    conn: Any,
     *,
     video_path: str,
     clips: list[dict[str, Any]],
     run_id: str = "pipeline-materialize",
-    embed_fn=None,
+    embed_fn: Any = None,
 ) -> dict[str, int]:
     """Insert published GIFs into candidate_gifs + FTS + vectors.
 
@@ -201,7 +202,7 @@ def ingest_published_clips(
     }
 
 
-def _mark_capture_needs_repair(conn, record_id: str, reason: str) -> None:
+def _mark_capture_needs_repair(conn: Any, record_id: str, reason: str) -> None:
     """Flag a capture record NEEDS_REPAIR and append a publication_failed
     event; the original evidence is never rewritten."""
     try:

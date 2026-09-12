@@ -56,6 +56,26 @@ def blend_export_scores(
     )
 
 
+def preference_embedding_text(
+    *,
+    caption: str | None,
+    emotion: str | None = None,
+    scene_type: str | None = None,
+) -> str:
+    """Canonical text used for preference embedding across online ranking and qualification replay.
+
+    Caption-gated: empty caption yields an empty string (no generic fallback hit).
+    """
+    if not caption or not str(caption).strip():
+        return ""
+    parts = [str(caption).strip()]
+    if emotion and str(emotion).strip() and str(emotion).strip() != "?":
+        parts.append(str(emotion).strip())
+    if scene_type and str(scene_type).strip():
+        parts.append(str(scene_type).strip())
+    return " ".join(parts)
+
+
 def clip_scenario_keys(clip: dict[str, Any], *, max_tags: int = 5) -> list[str]:
     """Map a clip's emotion and tags into reranker scenario keys."""
     keys: list[str] = []
@@ -487,7 +507,7 @@ def score_preference_export_candidate(
     candidate_vector: np.ndarray,
     gif_worthiness: float,
     scenario_keys: list[str],
-    profile_version: str,
+    profile_version: str | None,
     base_export_score: float,
     base_score_weight: float,
     preference_score_weight: float,

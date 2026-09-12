@@ -473,7 +473,7 @@ class CurveSourceRuntime:
         wall_clock_ms: float,
     ) -> CurveFeatureResult:
         status = entry.get("status")
-        features = entry.get("features")
+        features: Mapping[str, Any] | None = entry.get("features")
         timestamps = entry.get("actual_timestamps") or []
         reasons = entry.get("missing_reasons") or []
         input_hash = str(entry.get("input_hash") or "")
@@ -481,6 +481,7 @@ class CurveSourceRuntime:
         total_ms = round(wall_clock_ms + worker_ms, 2)
 
         if status == "AVAILABLE":
+            assert features is not None  # strict validation rejects None
             strict_reasons = validate_window_feature_values(features, timestamps, window)
             if strict_reasons:
                 return CurveFeatureResult(
