@@ -75,9 +75,8 @@ def test_enqueue_learning_and_lease_execution():
     )
     assert job_id2 == job_id
 
-    # Run once
-    now_utc = datetime.now(timezone.utc).isoformat()
-    res = run_learning_once(conn, now_utc=now_utc, owner="worker-1")
+    # Run once (integer epoch injection per Task 6 Step 1)
+    res = run_learning_once(conn, now_epoch=1_800_000_000, owner="worker-1")
     assert res["status"] in ("SUCCEEDED", "RUNNING", "NEEDS_ATTENTION", "IDLE")
 
 
@@ -133,17 +132,20 @@ def test_claim_is_atomic_between_two_connections(tmp_path):
 
 
 def test_run_learning_once_respects_live_epoch_lease(tmp_path):
-    """R7: a live lease stored in the new epoch format must not be stealable
-    by comparing ISO clock strings ('1800000500' < '2026-...' is True)."""
+    """R7: a live integer-epoch lease must not be stealable by a second
+    worker before it expires, and a claim must be one atomic CAS."""
     conn = sqlite3.connect(tmp_path / "learning.db")
     apply_preference_schema(conn)
     enqueue_learning(conn, "f" * 64, "e" * 64)
     conn.execute(
         "UPDATE learning_jobs SET status='RUNNING', owner='w1', "
-        "lease_expires_at='1800000500'"
+        "lease_expires_epoch=1800000500"
     )
     conn.commit()
-    result = run_learning_once(
-        conn, now_utc="2026-09-12T00:00:00+00:00", owner="w2"
-    )
+    result = run_learning_once(conn, now_epoch=1_800_000_100, owner="w2")
     assert result["status"] == "IDLE"
+
+    # After expiry the same job becomes claimable again.
+    conn2 = sqlite3.connect(tmp_path / "learning.db")
+    reclaimed = run_learning_once(conn2, now_epoch=1_800_000_600, owner="w3")
+    assert reclaimed["status"] in ("RUNNING", "NEEDS_ATTENTION", "RETRY_WAIT")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -12,6 +13,8 @@ from app.services.preference_types import (
     RATING_TO_STATUS,
 )
 from app.services.scenario import json_dumps
+
+logger = logging.getLogger(__name__)
 
 
 _VALID_RATINGS = frozenset({"like", "neutral", "dislike", "quality_reject", "skip", "favorite"})
@@ -52,9 +55,32 @@ def load_latest_scoring_events(
     }
 
 
+def _best_effort_enqueue_learning(conn: sqlite3.Connection) -> None:
+    """Best-effort learning enqueue AFTER the authoritative feedback commit.
+
+    A queueing failure never rolls back user feedback; it only logs a
+    structured warning. No training or VLM work happens on the API thread.
+    """
+    try:
+        from app.services.learning_jobs import maybe_enqueue_learning
+
+        result = maybe_enqueue_learning(conn, None)
+        if result.status == "INELIGIBLE":
+            logger.debug(
+                "learning enqueue ineligible: %s", ",".join(result.reasons)
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "learning enqueue failed (feedback kept): %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+
+
 class PreferenceEventService:
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, embed_fn=None) -> None:
         self.conn = conn
+        self.embed_fn = embed_fn
 
     # ── public API ───────────────────────────────────────────────────────────
 
@@ -108,6 +134,9 @@ class PreferenceEventService:
             )
 
         self.conn.commit()
+
+        self._best_effort_scoring_vector(target_type, target_id, rating)
+        _best_effort_enqueue_learning(self.conn)
 
         return FeedbackEvent(
             event_id=event_id,
@@ -221,6 +250,11 @@ class PreferenceEventService:
         except Exception:
             self.conn.rollback()
             raise
+
+        self._best_effort_scoring_vector(
+            original["target_type"], original["target_id"], replacement
+        )
+        _best_effort_enqueue_learning(self.conn)
 
         return FeedbackEvent(
             event_id=new_event_id,
@@ -339,6 +373,7 @@ class PreferenceEventService:
                 (row["target_id"],),
             )
         self.conn.commit()
+        _best_effort_enqueue_learning(self.conn)
         return {
             "status": "undone",
             "event_id": row["event_id"],
@@ -360,6 +395,34 @@ class PreferenceEventService:
             source_video_sha256=row["source_video_sha256"],
             created_at=row["created_at"],
         )
+
+    def _best_effort_scoring_vector(
+        self, target_type: str, target_id: str, rating: str
+    ) -> None:
+        """Fill missing vectors when a candidate becomes a scoring target."""
+        if target_type != "candidate_gif" or rating not in SCORING_RATINGS:
+            return
+        try:
+            existing = self.conn.execute(
+                """SELECT 1 FROM candidate_vectors
+                   WHERE candidate_id=? AND vector_type='clip' LIMIT 1""",
+                (target_id,),
+            ).fetchone()
+            if existing is not None:
+                return
+            from app.services.candidate_vectors import upsert_candidate_vector
+
+            upsert_candidate_vector(
+                self.conn,
+                candidate_id=target_id,
+                embed_fn=self.embed_fn,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Best-effort scoring vector upsert failed for %s: %s",
+                target_id,
+                exc,
+            )
 
     def _read_previous_status(
         self, target_type: str, target_id: str

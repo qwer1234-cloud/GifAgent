@@ -266,8 +266,10 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             status TEXT NOT NULL CHECK(status IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'NEEDS_ATTENTION', 'SUCCEEDED', 'CANCELLED')),
             owner TEXT,
             lease_expires_at TEXT,
+            lease_expires_epoch INTEGER,
             attempts INTEGER NOT NULL DEFAULT 0,
             next_retry_at TEXT,
+            next_retry_epoch INTEGER,
             result_package_path TEXT,
             result_package_sha256 TEXT,
             error_code TEXT,
@@ -332,6 +334,7 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
     )
     _migrate_vector_exclusions(conn)
     _migrate_curve_model_columns(conn)
+    _migrate_learning_job_columns(conn)
 
     conn.commit()
 
@@ -505,6 +508,32 @@ def _migrate_vector_exclusions(conn: sqlite3.Connection) -> None:
     except BaseException:
         conn.execute("ROLLBACK TO SAVEPOINT vector_exclusions_migration")
         raise
+
+
+# ── learning job epoch-time migration ───────────────────────────────────────
+
+
+def _migrate_learning_job_columns(conn: sqlite3.Connection) -> None:
+    """Ensure learning_jobs gains integer epoch lease/retry columns.
+
+    The legacy ISO-text columns are kept for one-read compatibility only;
+    all comparisons now happen on integer epochs.
+    """
+    if "learning_jobs" not in {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+    }:
+        return
+    _ensure_columns(
+        conn,
+        "learning_jobs",
+        (
+            ("lease_expires_epoch", "INTEGER"),
+            ("next_retry_epoch", "INTEGER"),
+        ),
+    )
 
 
 # ── curve model column migration ─────────────────────────────────────────────
