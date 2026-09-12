@@ -288,7 +288,16 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             approved_by TEXT NOT NULL,
             approved_at TEXT NOT NULL,
             previous_revision INTEGER,
+            qualification_bundle_path TEXT,
+            qualification_bundle_sha256 TEXT,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS curve_model_deployment_current (
+            slot TEXT PRIMARY KEY CHECK(slot = 'current'),
+            revision INTEGER NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+            updated_by TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_candidate_gifs_status_score
@@ -532,6 +541,14 @@ def _migrate_learning_job_columns(conn: sqlite3.Connection) -> None:
         (
             ("lease_expires_epoch", "INTEGER"),
             ("next_retry_epoch", "INTEGER"),
+        ),
+    )
+    _ensure_columns(
+        conn,
+        "curve_model_deployments",
+        (
+            ("qualification_bundle_path", "TEXT"),
+            ("qualification_bundle_sha256", "TEXT"),
         ),
     )
 

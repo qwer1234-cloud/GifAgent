@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from app.services.reranker import score_preference_export_candidate
@@ -151,19 +152,13 @@ def load_curve_runtime_snapshot(
         if row is not None:
             profile_version = row[0]
 
-        deployment = conn.execute(
-            """
-            SELECT revision, model_version, qualification_id, config_hash
-            FROM curve_model_deployments
-            WHERE is_active = 1
-            ORDER BY revision DESC LIMIT 1
-            """
-        ).fetchone()
+        deployment = _active_deployment_row(conn)
         if deployment is not None:
             deployment_revision = int(deployment[0])
-            model_version = deployment[1]
-            qualification_id = deployment[2]
-            deployment_config_hash = str(deployment[3] or "")
+            deployment_row = deployment[1]
+            model_version = deployment_row["model_version"]
+            qualification_id = deployment_row["qualification_id"]
+            deployment_config_hash = str(deployment_row["config_hash"] or "")
 
             model_row = conn.execute(
                 """
@@ -394,6 +389,12 @@ def score_curve_candidate(
     }
 
 
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 def validate_deployment(
     model_status: str,
     qualified: bool,
@@ -410,72 +411,355 @@ def validate_deployment(
     return reasons
 
 
+@dataclass(frozen=True)
+class DeploymentResult:
+    status: str
+    revision: int | None
+    reasons: tuple[str, ...]
+
+
+def _current_pointer_revision(conn: Any) -> int | None:
+    row = conn.execute(
+        "SELECT revision FROM curve_model_deployment_current WHERE slot='current'"
+    ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _active_deployment_row(conn: Any) -> tuple[int, dict[str, Any]] | None:
+    """Resolve the active deployment: current pointer first, legacy is_active
+    row as a one-way fallback for databases predating the pointer table.
+
+    Returns ``(revision, row_dict)`` where row_dict always carries
+    model_version / qualification_id / config_hash.
+    """
+    revision = _current_pointer_revision(conn)
+    if revision is not None:
+        row = conn.execute(
+            "SELECT model_version, qualification_id, config_hash, extractor_sha256, "
+            "is_active, qualification_bundle_path, qualification_bundle_sha256 "
+            "FROM curve_model_deployments WHERE revision = ?",
+            (revision,),
+        ).fetchone()
+        if row is not None and int(row[4] or 0) == 1:
+            return revision, {
+                "model_version": row[0],
+                "qualification_id": row[1],
+                "config_hash": row[2],
+            }
+        return None
+    row = conn.execute(
+        "SELECT revision, model_version, qualification_id, config_hash, "
+        "is_active FROM curve_model_deployments WHERE is_active = 1 "
+        "ORDER BY revision DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return None
+    return int(row[0]), {
+        "model_version": row[1],
+        "qualification_id": row[2],
+        "config_hash": row[3],
+    }
+
+
 def get_current_deployment_revision(conn: Any) -> int:
-    """Return the highest existing revision number in curve_model_deployments."""
+    """Return the current deployment revision (pointer, else MAX revision)."""
+    pointer = _current_pointer_revision(conn)
+    if pointer is not None:
+        return pointer
     row = conn.execute("SELECT MAX(revision) FROM curve_model_deployments").fetchone()
     if row and row[0] is not None:
         return int(row[0])
     return 0
 
 
+def _replay_qualification_scores(
+    conn: Any,
+    bundle: Any,
+    run_dir: Path,
+) -> list[str]:
+    """Recompute baseline/nominal/effective from the frozen bundle artifacts
+    and compare row-by-row with the qualification score files."""
+    import numpy as np
+
+    from app.services.curve_preference import load_curve_model, curve_probability
+    from app.services.curve_preference_qualification import score_evidence_from_summary
+
+    reasons: list[str] = []
+    input_manifest = bundle.input_manifest
+    model_version = str(input_manifest.get("model_version"))
+    try:
+        model = load_curve_model(
+            conn, model_version, allowed_statuses=frozenset({"PUBLISHED"})
+        )
+    except ValueError:
+        return ["model_not_published"]
+
+    def jsonl(name: str) -> list[dict[str, Any]]:
+        return [
+            json.loads(line)
+            for line in (run_dir / name).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    profile_snapshot = json.loads(
+        (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+    )
+    profile_version = profile_snapshot.get("profile_version")
+
+    vectors = {
+        str(row["candidate_id"]): row for row in jsonl("vectors.jsonl")
+    }
+    baselines = {
+        str(row["candidate_id"]): float(row["baseline_score"])
+        for row in jsonl("baseline_scores.jsonl")
+    }
+    nominals = {
+        str(row["candidate_id"]): float(row["nominal_score"])
+        for row in jsonl("nominal_scores.jsonl")
+    }
+    effectives = {
+        str(row["candidate_id"]): float(row["effective_score"])
+        for row in jsonl("effective_scores.jsonl")
+    }
+
+    base_weight = float(input_manifest["target_base_score_weight"])
+    preference_weight = float(input_manifest["target_preference_score_weight"])
+    confidence = float(bundle.metrics.get("effective_confidence") or 0.0)
+
+    max_diff = 0.0
+    compared = 0
+    for record in input_manifest.get("records") or []:
+        cid = str(record["candidate_id"])
+        vector_row = vectors.get(cid)
+        if vector_row is None:
+            return ["candidate_identity_mismatch"]
+        vector = np.asarray(
+            vector_row.get("candidate_vector"), dtype=np.float32
+        )
+        summary = record.get("vlm_evidence") or {}
+        evidence = score_evidence_from_summary(summary)
+        if evidence is None:
+            worthiness = float(record.get("base_export_score") or 0.0) * 100.0
+        else:
+            worthiness = float(evidence["gif_worthiness"])
+        probability = curve_probability(model, dict(record.get("curve_features") or {}))
+        scenario_keys = list(vector_row.get("scenario_keys") or [])
+
+        def score(curve_probability_value, curve_confidence):
+            return float(
+                score_preference_export_candidate(
+                    reranker=_replay_reranker(run_dir),
+                    candidate_vector=vector,
+                    gif_worthiness=worthiness,
+                    scenario_keys=scenario_keys,
+                    profile_version=profile_version,
+                    base_export_score=float(record["base_export_score"]),
+                    base_score_weight=base_weight,
+                    preference_score_weight=preference_weight,
+                    curve_probability=curve_probability_value,
+                    curve_model_version=model_version,
+                    curve_model_confidence=curve_confidence,
+                )["final_score"]
+            )
+
+        max_diff = max(max_diff, abs(score(None, None) - baselines[cid]))
+        max_diff = max(max_diff, abs(score(probability, 1.0) - nominals[cid]))
+        max_diff = max(max_diff, abs(score(probability, confidence) - effectives[cid]))
+        compared += 1
+
+    if compared == 0:
+        return ["qualification_replay_empty"]
+    if max_diff > 1e-9:
+        reasons.append("qualification_replay_mismatch")
+    return reasons
+
+
+def _replay_reranker(run_dir: Path) -> Any:
+    """A reranker bound to the bundle's frozen work.db (the profile as of
+    qualification time), not the live library profile."""
+    import sqlite3
+
+    from app.services.reranker import PreferenceReranker
+
+    work_db = run_dir / "work.db"
+    conn = sqlite3.connect(f"file:{work_db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return PreferenceReranker(conn)
+
+
+def _bind_deployment_config(
+    conn: Any,
+    bundle: Any,
+    runtime_config: Mapping[str, Any],
+) -> list[str]:
+    """Bind the runtime config to the qualification's frozen algorithm config.
+
+    The algorithm config hash is derived from the qualification input
+    manifest's real weights and model feature domain -- never from the
+    profile snapshot hash and never a constant True.
+    """
+    reasons: list[str] = []
+    input_manifest = bundle.input_manifest
+
+    expected_cfg = curve_algorithm_config(
+        {
+            "base_score_weight": input_manifest["target_base_score_weight"],
+            "preference_score_weight": input_manifest["target_preference_score_weight"],
+            "curve_feature_version": input_manifest.get("model_feature_version"),
+        }
+    )
+    expected_hash = _canonical_config_hash(expected_cfg)
+
+    runtime_hash = runtime_config.get("algorithm_config_hash")
+    if not runtime_hash:
+        reasons.append("config_hash_missing")
+    elif str(runtime_hash) != expected_hash:
+        reasons.append("algorithm_config_mismatch")
+
+    runtime_base = runtime_config.get("base_score_weight")
+    runtime_pref = runtime_config.get("preference_score_weight")
+    if runtime_base is None or abs(
+        float(runtime_base) - float(input_manifest["target_base_score_weight"])
+    ) > 1e-12:
+        reasons.append("base_weight_mismatch")
+    if runtime_pref is None or abs(
+        float(runtime_pref) - float(input_manifest["target_preference_score_weight"])
+    ) > 1e-12:
+        reasons.append("preference_weight_mismatch")
+
+    runtime_feature_version = runtime_config.get("feature_version")
+    if (
+        runtime_feature_version is not None
+        and str(runtime_feature_version) != str(input_manifest.get("model_feature_version"))
+    ):
+        reasons.append("feature_version_mismatch")
+
+    model_extractor = input_manifest.get("model_extractor_sha256")
+    runtime_extractor = runtime_config.get("extractor_sha256")
+    if not runtime_extractor or not model_extractor:
+        reasons.append("extractor_sha256_missing")
+    elif str(runtime_extractor) != str(model_extractor):
+        reasons.append("extractor_sha256_mismatch")
+
+    return reasons
+
+
+def _enrich_bundle_identity(conn: Any, bundle: Any) -> str:
+    """Fill the bundle manifest's model identity fields from the live model
+    row (in place) and return the model version."""
+    input_manifest = bundle.input_manifest
+    model_version = str(input_manifest.get("model_version"))
+    previous_factory = conn.row_factory
+    conn.row_factory = None
+    try:
+        row = conn.execute(
+            "SELECT feature_version, extractor_sha256 FROM curve_preference_models "
+            "WHERE model_version = ?",
+            (model_version,),
+        ).fetchone()
+    finally:
+        conn.row_factory = previous_factory
+    input_manifest.setdefault("model_feature_version", row[0] if row else None)
+    input_manifest.setdefault("model_extractor_sha256", row[1] if row else None)
+    return model_version
+
+
 def activate_deployment(
     conn: Any,
-    qualification_id: str,
-    expected_revision: int = 0,
+    qualification_dir: Path,
+    expected_revision: int,
     operator: str = "operator",
-) -> dict[str, Any]:
-    """Activate a published curve preference model deployment via compare-and-swap."""
-    curr_rev = get_current_deployment_revision(conn)
-    if curr_rev != expected_revision:
-        return {
-            "status": "CONFLICT",
-            "error": f"revision_mismatch: expected {expected_revision}, got {curr_rev}",
-        }
+    runtime_config: Mapping[str, Any] | None = None,
+) -> DeploymentResult:
+    """Activate a PUBLISHED model deployment from a verified qualification bundle.
 
-    row = conn.execute(
-        """
-        SELECT q.model_version, m.status, q.status, q.profile_snapshot_sha256, m.extractor_sha256
-        FROM curve_preference_qualification_runs q
-        JOIN curve_preference_models m ON m.model_version = q.model_version
-        WHERE q.qualification_id = ?
-        """,
-        (qualification_id,),
-    ).fetchone()
-
-    if not row:
-        return {"status": "FAILED", "error": "qualification_or_model_not_found"}
-
-    is_map = isinstance(row, dict) or hasattr(row, "keys")
-    model_version = row["model_version"] if is_map else row[0]
-    model_status = row["status"] if is_map else row[1]
-    qual_status = row[2]
-    config_hash = row["profile_snapshot_sha256"] if is_map else row[3]
-    extractor_sha256 = row["extractor_sha256"] if is_map else row[4]
-
-    reasons = validate_deployment(model_status, qual_status == "QUALIFIED", True)
-    if reasons:
-        return {"status": "FAILED", "error": f"validation_failed: {reasons}"}
-
-    from datetime import datetime, timezone
-
-    now_str = datetime.now(timezone.utc).isoformat()
-
-    conn.execute("UPDATE curve_model_deployments SET is_active = 0")
-    cursor = conn.execute(
-        """
-        INSERT INTO curve_model_deployments (
-            model_version, qualification_id, config_hash, extractor_sha256,
-            is_active, approved_by, approved_at, previous_revision
-        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-        """,
-        (model_version, qualification_id, config_hash, extractor_sha256, operator, now_str, expected_revision),
+    The bundle is fully re-validated (model PUBLISHED, evidence integrity,
+    score replay), the runtime config is bound to the qualification's frozen
+    algorithm config, and the revision is appended under an atomic
+    compare-and-swap on the current pointer. Refusals leave the database
+    unchanged.
+    """
+    from app.services.curve_preference import (
+        load_qualification_bundle,
+        validate_qualification_evidence,
     )
-    conn.commit()
-    return {
-        "status": "ACTIVATED",
-        "revision": cursor.lastrowid,
-        "model_version": model_version,
-    }
+
+    runtime_config = dict(runtime_config or {})
+    run_dir = Path(qualification_dir)
+
+    bundle, load_reasons = load_qualification_bundle(run_dir)
+    if bundle is None:
+        return DeploymentResult("REFUSED", None, tuple(load_reasons))
+
+    model_version = _enrich_bundle_identity(conn, bundle)
+
+    reasons: list[str] = []
+    evidence = validate_qualification_evidence(
+        conn,
+        model_version=model_version,
+        bundle=bundle,
+        run_dir=run_dir,
+        allowed_model_statuses=frozenset({"PUBLISHED"}),
+        model_status_error="model_not_published",
+    )
+    reasons.extend(evidence)
+
+    reasons.extend(_bind_deployment_config(conn, bundle, runtime_config))
+
+    if not reasons:
+        reasons.extend(_replay_qualification_scores(conn, bundle, run_dir))
+
+    if reasons:
+        return DeploymentResult("REFUSED", None, tuple(dict.fromkeys(reasons)))
+
+    bundle_sha = bundle.hashes.get("input_manifest_sha256") or ""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _current_pointer_revision(conn)
+        current_rev = current if current is not None else 0
+        if current_rev != int(expected_revision):
+            conn.rollback()
+            return DeploymentResult(
+                "CONFLICT",
+                None,
+                (
+                    f"revision_mismatch: expected {expected_revision}, "
+                    f"current {current_rev}",
+                ),
+            )
+        conn.execute("UPDATE curve_model_deployments SET is_active = 0")
+        conn.execute(
+            """
+            INSERT INTO curve_model_deployments (
+                model_version, qualification_id, config_hash, extractor_sha256,
+                is_active, approved_by, approved_at, previous_revision,
+                qualification_bundle_path, qualification_bundle_sha256
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+            """,
+            (
+                model_version,
+                bundle.qualification_id,
+                str(runtime_config.get("algorithm_config_hash") or ""),
+                str(runtime_config.get("extractor_sha256") or ""),
+                operator,
+                _now_iso(),
+                int(expected_revision),
+                str(run_dir.resolve()),
+                bundle_sha,
+            ),
+        )
+        revision = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO curve_model_deployment_current "
+            "(slot, revision, updated_by) VALUES ('current', ?, ?)",
+            (int(revision), operator),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+    return DeploymentResult("ACTIVATED", int(revision), ())
 
 
 def rollback_deployment(
@@ -483,69 +767,148 @@ def rollback_deployment(
     target_revision: int,
     expected_revision: int,
     operator: str = "operator",
-) -> dict[str, Any]:
-    """Roll back curve model deployment to a previous revision or baseline (target_revision=0)."""
-    curr_rev = get_current_deployment_revision(conn)
-    if curr_rev != expected_revision:
-        return {
-            "status": "CONFLICT",
-            "error": f"revision_mismatch: expected {expected_revision}, got {curr_rev}",
-        }
+    runtime_config: Mapping[str, Any] | None = None,
+) -> DeploymentResult:
+    """Roll back to a previous revision (re-verified) or to baseline.
 
-    from datetime import datetime, timezone
+    A model rollback re-checks that the target model is still PUBLISHED, its
+    qualification bundle is readable and unmodified, and the runtime config
+    is compatible. An incompatible target only permits an explicit baseline
+    rollback. Every rollback appends an audited revision.
+    """
+    from app.services.curve_preference import (
+        load_qualification_bundle,
+        validate_qualification_evidence,
+    )
 
-    now_str = datetime.now(timezone.utc).isoformat()
-    conn.execute("UPDATE curve_model_deployments SET is_active = 0")
+    runtime_config = dict(runtime_config or {})
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _current_pointer_revision(conn)
+        current_rev = current if current is not None else 0
+        if current_rev != int(expected_revision):
+            conn.rollback()
+            return DeploymentResult(
+                "CONFLICT",
+                None,
+                (
+                    f"revision_mismatch: expected {expected_revision}, "
+                    f"current {current_rev}",
+                ),
+            )
 
-    if target_revision <= 0:
-        cursor = conn.execute(
+        if int(target_revision) <= 0:
+            conn.execute("UPDATE curve_model_deployments SET is_active = 0")
+            conn.execute(
+                """
+                INSERT INTO curve_model_deployments (
+                    model_version, qualification_id, config_hash, extractor_sha256,
+                    is_active, approved_by, approved_at, previous_revision
+                ) VALUES ('none', 'none', 'none', 'none', 0, ?, ?, ?)
+                """,
+                (operator, _now_iso(), int(expected_revision)),
+            )
+            revision = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.execute(
+                "INSERT OR REPLACE INTO curve_model_deployment_current "
+                "(slot, revision, updated_by) VALUES ('current', ?, ?)",
+                (int(revision), operator),
+            )
+            conn.commit()
+            return DeploymentResult("ROLLED_BACK", int(revision), ())
+
+        target = conn.execute(
+            "SELECT model_version, qualification_id, qualification_bundle_path "
+            "FROM curve_model_deployments WHERE revision = ?",
+            (int(target_revision),),
+        ).fetchone()
+        if target is None:
+            conn.rollback()
+            return DeploymentResult(
+                "REFUSED", None, ("target_revision_not_found",)
+            )
+        model_version, qualification_id, bundle_path = (
+            target[0], target[1], target[2],
+        )
+        conn.rollback()
+    except BaseException:
+        conn.rollback()
+        raise
+
+    reasons: list[str] = []
+    if not bundle_path or not Path(bundle_path).is_dir():
+        return DeploymentResult(
+            "REFUSED", None, ("qualification_bundle_missing",)
+        )
+    bundle, load_reasons = load_qualification_bundle(Path(bundle_path))
+    if bundle is None:
+        return DeploymentResult("REFUSED", None, tuple(load_reasons))
+
+    _enrich_bundle_identity(conn, bundle)
+    input_manifest = bundle.input_manifest
+    if str(input_manifest.get("model_version")) != str(model_version):
+        reasons.append("qualification_model_mismatch")
+    if str(input_manifest.get("qualification_id")) != str(qualification_id):
+        reasons.append("qualification_model_mismatch")
+    if not reasons:
+        reasons.extend(
+            validate_qualification_evidence(
+                conn,
+                model_version=str(model_version),
+                bundle=bundle,
+                run_dir=Path(bundle_path),
+                allowed_model_statuses=frozenset({"PUBLISHED"}),
+                model_status_error="model_not_published",
+            )
+        )
+    if not reasons:
+        reasons.extend(_bind_deployment_config(conn, bundle, runtime_config))
+    if reasons:
+        return DeploymentResult("REFUSED", None, tuple(dict.fromkeys(reasons)))
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = _current_pointer_revision(conn)
+        current_rev = current if current is not None else 0
+        if current_rev != int(expected_revision):
+            conn.rollback()
+            return DeploymentResult(
+                "CONFLICT",
+                None,
+                (
+                    f"revision_mismatch: expected {expected_revision}, "
+                    f"current {current_rev}",
+                ),
+            )
+        conn.execute("UPDATE curve_model_deployments SET is_active = 0")
+        conn.execute(
             """
             INSERT INTO curve_model_deployments (
                 model_version, qualification_id, config_hash, extractor_sha256,
-                is_active, approved_by, approved_at, previous_revision
-            ) VALUES ('none', 'none', 'none', 'none', 0, ?, ?, ?)
+                is_active, approved_by, approved_at, previous_revision,
+                qualification_bundle_path, qualification_bundle_sha256
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
             """,
-            (operator, now_str, expected_revision),
+            (
+                model_version,
+                qualification_id,
+                str(runtime_config.get("algorithm_config_hash") or ""),
+                str(runtime_config.get("extractor_sha256") or ""),
+                operator,
+                _now_iso(),
+                int(expected_revision),
+                str(Path(bundle_path).resolve()),
+                bundle.hashes.get("input_manifest_sha256") or "",
+            ),
+        )
+        revision = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.execute(
+            "INSERT OR REPLACE INTO curve_model_deployment_current "
+            "(slot, revision, updated_by) VALUES ('current', ?, ?)",
+            (int(revision), operator),
         )
         conn.commit()
-        return {
-            "status": "ROLLED_BACK",
-            "revision": cursor.lastrowid,
-            "target_revision": target_revision,
-            "is_active": False,
-        }
-
-    target_row = conn.execute(
-        """
-        SELECT model_version, qualification_id, config_hash, extractor_sha256
-        FROM curve_model_deployments
-        WHERE revision = ?
-        """,
-        (target_revision,),
-    ).fetchone()
-
-    if not target_row:
-        return {"status": "FAILED", "error": "target_revision_not_found"}
-
-    is_map = isinstance(target_row, dict) or hasattr(target_row, "keys")
-    model_version = target_row["model_version"] if is_map else target_row[0]
-    qualification_id = target_row["qualification_id"] if is_map else target_row[1]
-    config_hash = target_row["config_hash"] if is_map else target_row[2]
-    extractor_sha256 = target_row["extractor_sha256"] if is_map else target_row[3]
-
-    cursor = conn.execute(
-        """
-        INSERT INTO curve_model_deployments (
-            model_version, qualification_id, config_hash, extractor_sha256,
-            is_active, approved_by, approved_at, previous_revision
-        ) VALUES (?, ?, ?, ?, 1, ?, ?, ?)
-        """,
-        (model_version, qualification_id, config_hash, extractor_sha256, operator, now_str, expected_revision),
-    )
-    conn.commit()
-    return {
-        "status": "ROLLED_BACK",
-        "revision": cursor.lastrowid,
-        "target_revision": target_revision,
-        "is_active": True,
-    }
+    except BaseException:
+        conn.rollback()
+        raise
+    return DeploymentResult("ROLLED_BACK", int(revision), ())

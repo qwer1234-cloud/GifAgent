@@ -244,3 +244,179 @@ def test_promotion_supersedes_previous_published_model(tmp_path):
     superseded = dict(rows)
     assert superseded["m-old"] == "SUPERSEDED"
     conn.close()
+
+
+def test_promotion_refuses_tampered_confidence(qualified_run):
+    db_path, run_dir = qualified_run
+    metrics_file = run_dir / "metrics.json"
+    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+    metrics["effective_confidence"] = 0.99
+    metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
+
+    conn = sqlite3.connect(str(db_path))
+    result = promote_model(conn, model_version="m-qual", run_dir=run_dir)
+    conn.close()
+
+    assert result["status"] == "REFUSED"
+    assert "qualification_not_qualified" in result["reasons"]
+
+
+def test_promotion_refuses_missing_required_artifact_hash(qualified_run):
+    db_path, run_dir = qualified_run
+    metrics_file = run_dir / "metrics.json"
+    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+    del metrics["artifacts"]["baseline_scores_sha256"]
+    metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
+
+    conn = sqlite3.connect(str(db_path))
+    bundle, reasons = load_qualification_bundle(run_dir)
+    assert bundle is None
+    assert "bundle_hash_mismatch" in reasons
+    result = promote_model(conn, model_version="m-qual", run_dir=run_dir)
+    conn.close()
+
+    assert result["status"] == "REFUSED"
+    assert "bundle_hash_mismatch" in result["reasons"]
+
+
+def test_promotion_recalculates_and_refuses_when_scores_regressed(qualified_run):
+    db_path, run_dir = qualified_run
+    # Invert nominal scores to force negative LCB upon recalculation
+    nominal_file = run_dir / "nominal_scores.jsonl"
+    lines = [json.loads(line) for line in nominal_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for line in lines:
+        line["nominal_score"] = 1.0 - float(line["nominal_score"])
+    nominal_file.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+
+    # Update hash in metrics.json so hash passes, but recomputed gate fails
+    import hashlib
+    h = hashlib.sha256(nominal_file.read_bytes()).hexdigest()
+    metrics_file = run_dir / "metrics.json"
+    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+    metrics["artifacts"]["nominal_scores_sha256"] = h
+    metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
+
+    conn = sqlite3.connect(str(db_path))
+    result = promote_model(conn, model_version="m-qual", run_dir=run_dir)
+    conn.close()
+
+    assert result["status"] == "REFUSED"
+    assert "qualification_not_qualified" in result["reasons"] or "nominal_pairwise_lcb_not_positive" in result["reasons"]
+
+
+def test_promotion_refuses_partial_score_subset(qualified_run):
+    """Refuse promotion if score files only contain a subset of the holdout manifest."""
+    import hashlib
+
+    db_path, run_dir = qualified_run
+    # Keep only the first 2 candidates in baseline, nominal, effective score files
+    for fname, score_key in (
+        ("baseline_scores.jsonl", "baseline_score"),
+        ("nominal_scores.jsonl", "nominal_score"),
+        ("effective_scores.jsonl", "effective_score"),
+    ):
+        p = run_dir / fname
+        lines = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+        subset = lines[:2]
+        p.write_text("\n".join(json.dumps(l) for l in subset) + "\n", encoding="utf-8")
+        h = hashlib.sha256(p.read_bytes()).hexdigest()
+        metrics_file = run_dir / "metrics.json"
+        metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+        metrics["artifacts"][fname.replace(".jsonl", "_sha256")] = h
+        metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
+
+    conn = sqlite3.connect(str(db_path))
+    result = promote_model(conn, model_version="m-qual", run_dir=run_dir)
+    conn.close()
+
+    assert result["status"] == "REFUSED"
+    assert "qualification_model_mismatch" in result["reasons"]
+
+
+def test_promotion_refuses_score_label_drift(qualified_run):
+    """Refuse promotion if score file changes candidate rating from manifest."""
+    import hashlib
+
+    db_path, run_dir = qualified_run
+    p = run_dir / "baseline_scores.jsonl"
+    lines = [json.loads(line) for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+    lines[0]["rating"] = "dislike" if lines[0]["rating"] == "like" else "like"
+    p.write_text("\n".join(json.dumps(l) for l in lines) + "\n", encoding="utf-8")
+    h = hashlib.sha256(p.read_bytes()).hexdigest()
+
+    metrics_file = run_dir / "metrics.json"
+    metrics = json.loads(metrics_file.read_text(encoding="utf-8"))
+    metrics["artifacts"]["baseline_scores_sha256"] = h
+    metrics_file.write_text(json.dumps(metrics), encoding="utf-8")
+
+    conn = sqlite3.connect(str(db_path))
+    result = promote_model(conn, model_version="m-qual", run_dir=run_dir)
+    conn.close()
+
+    assert result["status"] == "REFUSED"
+    assert "candidate_identity_mismatch" in result["reasons"]
+
+
+def test_promotion_verifies_vectors_artifact_binding(qualified_run):
+    """Verify vectors.jsonl is required, verified, and bound to candidate set."""
+    db_path, run_dir = qualified_run
+    vectors_file = run_dir / "vectors.jsonl"
+    assert vectors_file.is_file()
+    vector_lines = [json.loads(line) for line in vectors_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(vector_lines) == 32
+    assert "preference_embedding_text" in vector_lines[0]
+    assert "candidate_vector" in vector_lines[0]
+    assert "embedding_model" in vector_lines[0]
+
+    # Tamper with vectors.jsonl
+    vectors_file.write_text(vectors_file.read_text(encoding="utf-8") + "\n{}\n", encoding="utf-8")
+    conn = sqlite3.connect(str(db_path))
+    bundle, reasons = load_qualification_bundle(run_dir)
+    assert bundle is None
+    assert "bundle_hash_mismatch" in reasons
+    conn.close()
+
+
+def test_shared_evidence_validator_isolates_model_statuses(qualified_run):
+    """The extracted validator enforces the caller's allowed statuses:
+    promotion only accepts DRAFT, deployment only accepts PUBLISHED."""
+    from types import SimpleNamespace
+
+    from app.services.curve_preference import (
+        load_qualification_bundle,
+        validate_qualification_evidence,
+    )
+
+    db_path, run_dir = qualified_run
+    conn = sqlite3.connect(str(db_path))
+    bundle, reasons = load_qualification_bundle(run_dir)
+    assert bundle is not None and reasons == []
+
+    # PUBLISHED-allowed on a still-DRAFT model: refused as not published.
+    draft_refusal = validate_qualification_evidence(
+        conn,
+        model_version="m-qual",
+        bundle=bundle,
+        run_dir=run_dir,
+        allowed_model_statuses=frozenset({"PUBLISHED"}),
+        model_status_error="model_not_published",
+    )
+    assert "model_not_published" in draft_refusal
+
+    # DRAFT-allowed on a PUBLISHED model: refused as not draft (deployment
+    # cannot be satisfied by a promotion-grade status and vice versa).
+    conn.execute(
+        "UPDATE curve_preference_models SET status = 'PUBLISHED' "
+        "WHERE model_version = 'm-qual'"
+    )
+    conn.commit()
+    published_refusal = validate_qualification_evidence(
+        conn,
+        model_version="m-qual",
+        bundle=bundle,
+        run_dir=run_dir,
+        allowed_model_statuses=frozenset({"DRAFT"}),
+        model_status_error="model_not_draft",
+    )
+    assert "model_not_draft" in published_refusal
+    conn.close()

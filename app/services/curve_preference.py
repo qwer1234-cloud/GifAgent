@@ -232,9 +232,24 @@ REQUIRED_BUNDLE_FILES = (
     "input_manifest.json",
     "profile_snapshot.json",
     "evidence.jsonl",
+    "vectors.jsonl",
     "metrics.json",
     "report.md",
     "work.db",
+    "baseline_scores.jsonl",
+    "nominal_scores.jsonl",
+    "effective_scores.jsonl",
+)
+
+REQUIRED_ARTIFACT_HASH_KEYS = (
+    ("input_manifest.json", "input_manifest_sha256"),
+    ("profile_snapshot.json", "profile_snapshot_sha256"),
+    ("evidence.jsonl", "evidence_sha256"),
+    ("vectors.jsonl", "vectors_sha256"),
+    ("report.md", "report_sha256"),
+    ("baseline_scores.jsonl", "baseline_scores_sha256"),
+    ("nominal_scores.jsonl", "nominal_scores_sha256"),
+    ("effective_scores.jsonl", "effective_scores_sha256"),
 )
 
 
@@ -244,6 +259,7 @@ class PromotionBundle:
     metrics: dict[str, Any]
     input_manifest: dict[str, Any]
     hashes: dict[str, str]
+    run_dir: Path | None = None
 
 
 def _promotion_file_sha256(path: Path) -> str:
@@ -260,32 +276,45 @@ def load_qualification_bundle(
     """Load and hash-verify the bundle; return (bundle, refusal_reasons)."""
 
     reasons: list[str] = []
+    metrics_path = run_dir / "metrics.json"
+    if metrics_path.is_file():
+        try:
+            m_pre = json.loads(metrics_path.read_text(encoding="utf-8"))
+            if isinstance(m_pre, dict) and m_pre.get("status") != "QUALIFIED":
+                reasons.append("qualification_not_qualified")
+        except Exception:
+            pass
+
     for name in REQUIRED_BUNDLE_FILES:
         if not (run_dir / name).is_file():
             reasons.append("bundle_file_missing")
             return None, reasons
 
-    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    input_manifest = json.loads(
-        (run_dir / "input_manifest.json").read_text(encoding="utf-8")
-    )
-    state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    try:
+        metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+        input_manifest = json.loads(
+            (run_dir / "input_manifest.json").read_text(encoding="utf-8")
+        )
+        state = json.loads((run_dir / "run_state.json").read_text(encoding="utf-8"))
+    except Exception:
+        reasons.append("bundle_file_missing")
+        return None, reasons
 
-    artifacts = metrics.get("artifacts") or {}
-    expected_hashes = {
-        "input_manifest.json": artifacts.get("input_manifest_sha256"),
-        "profile_snapshot.json": artifacts.get("profile_snapshot_sha256"),
-        "evidence.jsonl": artifacts.get("evidence_sha256"),
-        "report.md": artifacts.get("report_sha256"),
-        "baseline_scores.jsonl": artifacts.get("baseline_scores_sha256"),
-        "nominal_scores.jsonl": artifacts.get("nominal_scores_sha256"),
-        "effective_scores.jsonl": artifacts.get("effective_scores_sha256"),
-    }
-    for name, expected in expected_hashes.items():
-        if expected is None:
-            continue
-        if _promotion_file_sha256(run_dir / name) != expected:
+    artifacts = metrics.get("artifacts")
+    if not isinstance(artifacts, dict):
+        reasons.append("bundle_hash_mismatch")
+        return None, reasons
+
+    for file_name, hash_key in REQUIRED_ARTIFACT_HASH_KEYS:
+        expected = artifacts.get(hash_key)
+        if hash_key == "report_sha256" and not expected:
+            expected = metrics.get("report_sha256")
+        if not expected or not isinstance(expected, str):
             reasons.append("bundle_hash_mismatch")
+            continue
+        if _promotion_file_sha256(run_dir / file_name) != expected:
+            reasons.append("bundle_hash_mismatch")
+
     if _promotion_file_sha256(run_dir / "metrics.json") != metrics.get(
         "metrics_self_sha256"
     ) and metrics.get("metrics_self_sha256") is not None:
@@ -309,6 +338,12 @@ def load_qualification_bundle(
         "profile_snapshot_sha256": _promotion_file_sha256(
             run_dir / "profile_snapshot.json"
         ),
+        "evidence_sha256": _promotion_file_sha256(
+            run_dir / "evidence.jsonl"
+        ),
+        "vectors_sha256": _promotion_file_sha256(
+            run_dir / "vectors.jsonl"
+        ),
         "baseline_scores_sha256": _promotion_file_sha256(
             run_dir / "baseline_scores.jsonl"
         ),
@@ -326,18 +361,28 @@ def load_qualification_bundle(
             metrics=metrics,
             input_manifest=input_manifest,
             hashes=hashes,
+            run_dir=run_dir,
         ),
         [],
     )
 
 
-def validate_promotion(
+def validate_qualification_evidence(
     conn: sqlite3.Connection,
     *,
     model_version: str,
     bundle: PromotionBundle,
+    run_dir: Path | None = None,
+    allowed_model_statuses: frozenset[str] = frozenset({"DRAFT"}),
+    model_status_error: str = "model_status_not_allowed",
 ) -> list[str]:
-    """Revalidate the bundle against the live database; return refusal codes."""
+    """Revalidate a qualification bundle against the live database.
+
+    Shared by DRAFT promotion and PUBLISHED deployment activation: bundle
+    integrity, model/manifest identity, candidate mapping, score files, and
+    the statistical decision are all re-checked here. The only difference is
+    which model statuses each caller accepts.
+    """
 
     reasons: list[str] = []
     input_manifest = bundle.input_manifest
@@ -369,10 +414,11 @@ def validate_promotion(
         conn.row_factory = previous_factory
 
     if model_row is None:
-        reasons.append("model_not_draft")
+        reasons.append(model_status_error)
         return reasons
-    if model_row["status"] != "DRAFT":
-        reasons.append("model_not_draft")
+    if model_row["status"] not in allowed_model_statuses:
+        reasons.append(model_status_error)
+        return reasons
     if (
         model_row["training_manifest_sha256"]
         != input_manifest.get("model_training_manifest_sha256")
@@ -389,7 +435,281 @@ def validate_promotion(
         ):
             reasons.append("qualification_id_conflict")
 
+    target_dir = run_dir or bundle.run_dir
+    if (
+        target_dir is None
+        or not (target_dir / "baseline_scores.jsonl").is_file()
+        or not (target_dir / "nominal_scores.jsonl").is_file()
+        or not (target_dir / "effective_scores.jsonl").is_file()
+    ):
+        reasons.append("bundle_file_missing")
+        return reasons
+
+    try:
+        from app.services.curve_preference_qualification import (
+            GroupedScoreRow,
+            evaluate_source_grouped_scores,
+            decide_curve_qualification,
+            compute_source_overlap,
+            class_counts_from_manifest_rows,
+            HOLDOUT_MARGIN_DIVISOR,
+            BOOTSTRAP_SEED,
+            BOOTSTRAP_REPS,
+        )
+
+        model_obj = load_curve_model(
+            conn, model_version, allowed_statuses=allowed_model_statuses
+        )
+        holdout_manifest = model_obj.holdout_manifest or {}
+        holdout_rows = holdout_manifest.get("rows")
+        if not isinstance(holdout_rows, list) or len(holdout_rows) < 30:
+            reasons.append("holdout_too_small")
+            return reasons
+
+        # 1. Manifest candidate mapping (source, rating) & duplicate check
+        manifest_candidate_map: dict[str, tuple[str, str]] = {}
+        for r in holdout_rows:
+            cid = str(r.get("candidate_id") or "")
+            if not cid or cid in manifest_candidate_map:
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+            manifest_candidate_map[cid] = (
+                str(r.get("source") or ""),
+                str(r.get("rating") or ""),
+            )
+        expected_cids = set(manifest_candidate_map.keys())
+
+        # 2. Input manifest records verification
+        input_records = bundle.input_manifest.get("records")
+        if not isinstance(input_records, list):
+            reasons.append("qualification_model_mismatch")
+            return reasons
+        input_cids: set[str] = set()
+        for r in input_records:
+            cid = str(r.get("candidate_id") or "")
+            if not cid or cid in input_cids or cid not in manifest_candidate_map:
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+            input_cids.add(cid)
+            exp_src, exp_rat = manifest_candidate_map[cid]
+            if (
+                str(r.get("source_video_sha256") or "") != exp_src
+                or str(r.get("rating") or "") != exp_rat
+            ):
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+        if input_cids != expected_cids:
+            reasons.append("qualification_model_mismatch")
+            return reasons
+
+        # 3. Baseline scores verification
+        baseline_lines = [
+            json.loads(line)
+            for line in (target_dir / "baseline_scores.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        baseline_map: dict[str, float] = {}
+        for line in baseline_lines:
+            cid = str(line.get("candidate_id") or "")
+            if not cid or cid in baseline_map or cid not in manifest_candidate_map:
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+            exp_src, exp_rat = manifest_candidate_map[cid]
+            if (
+                str(line.get("source_video_sha256") or "") != exp_src
+                or str(line.get("rating") or "") != exp_rat
+            ):
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+            baseline_map[cid] = float(line["baseline_score"])
+        if set(baseline_map.keys()) != expected_cids:
+            reasons.append("qualification_model_mismatch")
+            return reasons
+
+        # 4. Nominal scores verification
+        nominal_lines = [
+            json.loads(line)
+            for line in (target_dir / "nominal_scores.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        nominal_map: dict[str, float] = {}
+        for line in nominal_lines:
+            cid = str(line.get("candidate_id") or "")
+            if not cid or cid in nominal_map or cid not in manifest_candidate_map:
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+            nominal_map[cid] = float(line["nominal_score"])
+        if set(nominal_map.keys()) != expected_cids:
+            reasons.append("qualification_model_mismatch")
+            return reasons
+
+        # 5. Effective scores verification
+        effective_lines = [
+            json.loads(line)
+            for line in (target_dir / "effective_scores.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+        effective_map: dict[str, float] = {}
+        for line in effective_lines:
+            cid = str(line.get("candidate_id") or "")
+            if not cid or cid in effective_map or cid not in manifest_candidate_map:
+                reasons.append("candidate_identity_mismatch")
+                return reasons
+            effective_map[cid] = float(line["effective_score"])
+        if set(effective_map.keys()) != expected_cids:
+            reasons.append("qualification_model_mismatch")
+            return reasons
+
+        # 6. Vectors artifact verification (if vectors.jsonl present)
+        if (target_dir / "vectors.jsonl").is_file():
+            vector_lines = [
+                json.loads(line)
+                for line in (target_dir / "vectors.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.strip()
+            ]
+            vector_cids: set[str] = set()
+            for line in vector_lines:
+                cid = str(line.get("candidate_id") or "")
+                if (
+                    not cid
+                    or cid in vector_cids
+                    or cid not in manifest_candidate_map
+                ):
+                    reasons.append("candidate_identity_mismatch")
+                    return reasons
+                vector_cids.add(cid)
+            if vector_cids != expected_cids:
+                reasons.append("qualification_model_mismatch")
+                return reasons
+
+        # 7. Construct grouped score rows anchored on frozen manifest sources & ratings
+        nominal_grouped = [
+            GroupedScoreRow(
+                candidate_id=cid,
+                source=manifest_candidate_map[cid][0],
+                rating=manifest_candidate_map[cid][1],
+                baseline=baseline_map[cid],
+                proposed=nominal_map[cid],
+            )
+            for cid in sorted(expected_cids)
+        ]
+        effective_grouped = [
+            GroupedScoreRow(
+                candidate_id=cid,
+                source=manifest_candidate_map[cid][0],
+                rating=manifest_candidate_map[cid][1],
+                baseline=baseline_map[cid],
+                proposed=effective_map[cid],
+            )
+            for cid in sorted(expected_cids)
+        ]
+
+        recomputed_nominal = evaluate_source_grouped_scores(
+            nominal_grouped,
+            baseline_field="baseline",
+            proposed_field="proposed",
+            bootstrap_seed=BOOTSTRAP_SEED,
+            bootstrap_reps=BOOTSTRAP_REPS,
+        )
+        recomputed_effective = evaluate_source_grouped_scores(
+            effective_grouped,
+            baseline_field="baseline",
+            proposed_field="proposed",
+            bootstrap_seed=BOOTSTRAP_SEED,
+            bootstrap_reps=BOOTSTRAP_REPS,
+        )
+
+        training_rows = model_obj.training_manifest.get("rows")
+        effective_feedback_count = (
+            len(training_rows) if isinstance(training_rows, list) else 0
+        )
+        data_confidence = min(1.0, effective_feedback_count / 100)
+        nominal_lcb = recomputed_nominal.pairwise_delta_lcb95
+        margin_factor = (
+            max(0.0, min(1.0, nominal_lcb / HOLDOUT_MARGIN_DIVISOR))
+            if math.isfinite(nominal_lcb)
+            else 0.0
+        )
+        recomputed_confidence = min(data_confidence, margin_factor)
+
+        recorded_confidence = bundle.metrics.get("effective_confidence")
+        if (
+            recorded_confidence is None
+            or not math.isfinite(float(recorded_confidence))
+            or abs(float(recorded_confidence) - recomputed_confidence) > 1e-6
+        ):
+            reasons.append("qualification_not_qualified")
+
+        train_class_counts = class_counts_from_manifest_rows(
+            training_rows if isinstance(training_rows, list) else []
+        )
+        holdout_class_counts = class_counts_from_manifest_rows(holdout_rows)
+        decision = decide_curve_qualification(
+            # The statistical decision reflects the qualification-time state:
+            # the model was a DRAFT when the bundle was produced, whether this
+            # call now promotes that DRAFT or activates the PUBLISHED model.
+            model_status="DRAFT",
+            model_manifest_hashes_ok=(
+                model_row["training_manifest_sha256"]
+                == input_manifest.get("model_training_manifest_sha256")
+                and model_row["holdout_manifest_sha256"]
+                == input_manifest.get("model_holdout_manifest_sha256")
+            ),
+            source_overlap=compute_source_overlap(model_obj),
+            holdout_row_count=len(expected_cids),
+            train_class_counts=train_class_counts,
+            holdout_class_counts=holdout_class_counts,
+            blocking=bundle.metrics.get("blocking") or [],
+            nominal_pair_count=recomputed_nominal.pair_count,
+            nominal_pairwise_delta_lcb95=recomputed_nominal.pairwise_delta_lcb95,
+            effective_pairwise_delta_lcb95=recomputed_effective.pairwise_delta_lcb95,
+            effective_ndcg_delta=recomputed_effective.ndcg_at_20_delta,
+            non_finite_count=(
+                recomputed_nominal.non_finite_count
+                + recomputed_effective.non_finite_count
+            ),
+        )
+
+        if decision.status != "QUALIFIED":
+            for r in decision.reasons:
+                if r not in reasons:
+                    reasons.append(r)
+            if "qualification_not_qualified" not in reasons:
+                reasons.append("qualification_not_qualified")
+    except Exception:
+        reasons.append("qualification_not_qualified")
+
     return reasons
+
+
+def validate_promotion(
+    conn: sqlite3.Connection,
+    *,
+    model_version: str,
+    bundle: PromotionBundle,
+    run_dir: Path | None = None,
+) -> list[str]:
+    """Revalidate the bundle against the live database; return refusal codes.
+
+    Promotion only accepts DRAFT models; deployment activation reuses the
+    same evidence validation with PUBLISHED-only statuses.
+    """
+    return validate_qualification_evidence(
+        conn,
+        model_version=model_version,
+        bundle=bundle,
+        run_dir=run_dir,
+        allowed_model_statuses=frozenset({"DRAFT"}),
+        model_status_error="model_not_draft",
+    )
 
 
 def promotion_backup_database(db_path: Path) -> Path:
@@ -468,7 +788,7 @@ def promote_model(
         }
 
     validation = validate_promotion(
-        conn, model_version=model_version, bundle=bundle
+        conn, model_version=model_version, bundle=bundle, run_dir=run_dir
     )
     if validation:
         return {
