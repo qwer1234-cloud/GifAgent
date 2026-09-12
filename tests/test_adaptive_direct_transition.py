@@ -367,8 +367,12 @@ def test_direct_rank_dedup_preserves_snap_dedup_identity_quality_rank_order(
         cfg_overrides={"temporal_dedup_enabled": True},
     )
 
+    # 2026-09-11 remediation Task 3: identities are frozen right after the
+    # boundary snaps (before dedup) and re-verified after dedup, so the
+    # shared pipeline never re-derives candidate IDs from list indexes.
     expected = [
         "_apply_boundary_snaps",
+        "_assign_candidate_identities",
         "embedding_dedup_clips",
         "temporal_dedup_clips",
         "_assign_candidate_identities",

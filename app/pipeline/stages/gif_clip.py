@@ -22,6 +22,7 @@ from app.quality_moe.repair import build_ffmpeg_filter
 from app.services.batch_logging import format_gif_export_line, run_gif_export_attempt
 from app.services.gif_naming import build_gif_filename
 from app.services.gif_windows import build_export_window
+from app.services.library_ingest import library_text_from_clip
 
 
 def _stage_gif_clip(
@@ -197,6 +198,7 @@ def _stage_gif_clip(
         "status": "succeeded",
         "output_key": f"gif_clip:{clip_id}",
         "quality_assessment": assessment,
+        "library_text": library_text_from_clip(target_clip),
         **quality_lineage,
     }
     if manifest["schema_version"] == 2:
@@ -219,6 +221,9 @@ def _stage_gif_clip(
             "transition_risk",
             "motion_type",
             "guard_reason",
+            "analysis_record_id",
+            "preexport_key",
+            "source_feature_status",
         ):
             if field in target_clip:
                 manifest[field] = target_clip[field]

@@ -8,6 +8,7 @@ import re
 
 from app.pipeline.quality_bridge import _QUALITY_LINEAGE_FIELDS
 from app.pipeline.stage_io import _make_artifact, _save_manifest
+from app.services.library_ingest import ingest_succeeded_gifs_into_library
 from app.services.potplayer_bookmarks import PotPlayerBookmark, write_pbf_file
 
 
@@ -387,6 +388,11 @@ def _stage_materialize(
                 "gif_name": gm.get("gif_name"),
                 **{
                     field: gm[field]
+                    for field in ("analysis_record_id", "preexport_key")
+                    if field in gm
+                },
+                **{
+                    field: gm[field]
                     for field in _QUALITY_LINEAGE_FIELDS
                     if field in gm
                 },
@@ -432,6 +438,13 @@ def _stage_materialize(
     pbf_path_local = os.path.join(formal_export_dir, f"{video_name}.pbf")
     if os.path.exists(pbf_path_local):
         artifacts.append(_make_artifact(pbf_path_local, "pbf_file"))
+
+    # After GIFs are on disk: candidate_gifs + FTS + vectors. Never fail the stage.
+    ingest_succeeded_gifs_into_library(
+        video_path=video_path,
+        clips=succeeded_formal,
+        cfg=cfg,
+    )
 
     # P0-2: materialize enters needs_attention when a SUCCEEDED clip could
     # not be published (verification failure or unrecoverable conflict).

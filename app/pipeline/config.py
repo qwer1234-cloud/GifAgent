@@ -174,6 +174,33 @@ def extract_config(config_data: dict) -> dict:
         "quality_moe": quality_moe.to_dict(),
         "quality_moe_config_hash": quality_moe.config_hash,
     }
+    cand_cap = config_data.get("candidate_capture", {}) or {}
+    cont_gate = config_data.get("continuity_gate", {}) or {}
+    curve_pref = cont_gate.get("curve_preference", {}) or {}
+
+    from app.services.candidate_capture import (
+        capture_config,
+        validate_candidate_capture_config,
+    )
+
+    validate_candidate_capture_config(cand_cap, cont_gate, curve_pref)
+    norm_capture = capture_config(config_data)
+
+    config["candidate_capture_enabled"] = norm_capture["enabled"]
+    config["candidate_capture_version"] = norm_capture["version"]
+    config["candidate_capture_failure_policy"] = norm_capture["failure_policy"]
+    config["candidate_capture_config_hash"] = norm_capture["config_hash"]
+    config["candidate_capture"] = norm_capture
+    config["candidate_capture_evidence_root"] = str(
+        cand_cap.get("evidence_root", "data/candidate_evidence") or "data/candidate_evidence"
+    )
+    config["candidate_capture_db_path"] = str(cand_cap.get("db_path", "") or "")
+
+    config["continuity_gate_enabled"] = bool(cont_gate.get("enabled", False))
+    config["continuity_gate_mode"] = str(cont_gate.get("mode", "shadow") or "shadow")
+    config["curve_preference_enabled"] = bool(curve_pref.get("enabled", False))
+    config["curve_preference_mode"] = str(curve_pref.get("mode", "shadow") or "shadow")
+
     config["action_config_hash"] = computed_action_hash
     if config["max_refine_frames"] < 0:
         raise ValueError("max_refine_frames must be >= 0")
@@ -217,4 +244,7 @@ def _extract_direct_snapshot_config(config_data: dict) -> dict:
         "adaptive": config_data.get("adaptive", {}) or {},
         "preference_memory": config_data.get("preference_memory", {}) or {},
         "quality_moe": config_data.get("quality_moe", {}) or {},
+        "candidate_capture": config_data.get("candidate_capture", {}) or {},
+        "continuity_gate": config_data.get("continuity_gate", {}) or {},
+        "curve_learning": config_data.get("curve_learning", {}) or {},
     })

@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import math
 import os
 import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 
@@ -42,6 +45,335 @@ from app.services.action_pipeline import materialize_action_candidates
 from app.services.clip_dedup import embedding_dedup_clips, temporal_dedup_clips
 from app.services.frame_extract import extract_frames
 from app.services.temporal_evidence import TemporalEvidenceCache
+
+
+# ── Task 3: candidate capture integration (single shared integration point) ─
+
+
+@dataclass
+class RankCaptureContext:
+    """Everything the shared rank stage needs to capture candidate evidence.
+
+    ``source_sha256`` is resolved lazily during capture when the config did
+    not pin it, so the context itself stays mutable.
+    """
+
+    enabled: bool
+    mode: str
+    run_id: str
+    video_path: str
+    source_sha256: str
+    capture_version: str
+    evidence_root: Path
+    db_path: str | None
+    runtime: object | None
+    failure_policy: str
+
+
+def _rank_capture_context(video_path: str, cfg: dict) -> RankCaptureContext:
+    """Build the capture context from the frozen flat pipeline config.
+
+    Disabled by default: when ``candidate_capture_enabled`` is false the
+    capture path must not touch the database or the feature runtime at all.
+    """
+    enabled = bool(cfg.get("candidate_capture_enabled", False))
+    mode = str(cfg.get("curve_preference_mode", "off") or "off").lower()
+    if mode in ("", "disabled"):
+        mode = "off"
+    runtime = cfg.get("curve_source_runtime")
+    if runtime is None and enabled:
+        from app.services.curve_source_runtime import CurveSourceRuntime
+
+        runtime = CurveSourceRuntime(owner=f"rank:{os.path.basename(video_path)}")
+    return RankCaptureContext(
+        enabled=enabled,
+        mode=mode,
+        run_id=f"rank-{hashlib.sha256(os.path.abspath(video_path).encode('utf-8')).hexdigest()[:16]}",
+        video_path=video_path,
+        source_sha256=str(cfg.get("source_video_sha256", "") or ""),
+        capture_version=str(cfg.get("candidate_capture_version", "capture-v1")),
+        evidence_root=Path(
+            cfg.get("candidate_capture_evidence_root", "data/candidate_evidence")
+        ),
+        db_path=str(cfg.get("candidate_capture_db_path", "") or "") or None,
+        runtime=runtime,
+        failure_policy=str(cfg.get("candidate_capture_failure_policy", "record_and_retry")),
+    )
+
+
+def _open_capture_connection(context: RankCaptureContext):
+    if context.db_path:
+        import sqlite3
+
+        conn = sqlite3.connect(context.db_path, timeout=30)
+    else:
+        from app.db import get_connection
+
+        conn = get_connection()
+    conn.row_factory = None
+    return conn
+
+
+def _clip_feature_windows(clips: list[dict]) -> list[tuple[dict, "CurveWindow"]]:
+    from app.services.curve_source_features import CurveWindow
+
+    windows: list[tuple[dict, CurveWindow]] = []
+    for clip in clips:
+        key = clip.get("preexport_key")
+        start_us = clip.get("start_us")
+        end_us = clip.get("end_us")
+        if not key or not isinstance(start_us, int) or not isinstance(end_us, int):
+            continue
+        windows.append(
+            (
+                clip,
+                CurveWindow(
+                    preexport_key=key, start_us=start_us, end_us=end_us
+                ),
+            )
+        )
+    return windows
+
+
+def _extract_features_for_clips(
+    context: RankCaptureContext, clips: list[dict]
+) -> dict[str, "CurveFeatureResult"]:
+    """Extract source curve features for all post-dedup windows in one batch
+    request per video; results are keyed strictly by preexport key."""
+    from app.services.curve_source_features import CurveFeatureResult
+    from app.services.curve_source_runtime import CurveSourceRuntime
+
+    window_pairs = _clip_feature_windows(clips)
+    if not window_pairs:
+        return {}
+    if not isinstance(context.runtime, CurveSourceRuntime):
+        # A fake/test runtime only needs the evaluate_video protocol.
+        if context.runtime is None or not hasattr(context.runtime, "evaluate_video"):
+            return {}
+    windows = tuple(window for _clip, window in window_pairs)
+    try:
+        results = context.runtime.evaluate_video(
+            Path(context.video_path),
+            context.source_sha256,
+            windows,
+            float(120.0),
+        )
+    except Exception:
+        return {
+            window.preexport_key: CurveFeatureResult(
+                preexport_key=window.preexport_key,
+                status="UNAVAILABLE",
+                feature_version="curve-source-v1",
+                extractor_sha256="",
+                features=None,
+                actual_timestamps=(),
+                input_hash="",
+                missing_reasons=("inference_runtime_unavailable",),
+                wall_clock_ms=0.0,
+            )
+            for _clip, window in window_pairs
+        }
+    by_key: dict[str, CurveFeatureResult] = {}
+    for result in results:
+        by_key[result.preexport_key] = result
+    return by_key
+
+
+def capture_rank_candidates(
+    context: RankCaptureContext,
+    clips: list[dict],
+    runtime_snapshot: dict | None = None,
+) -> "CaptureBatchResult":
+    """Persist every post-dedup scorable candidate after the Quality MoE gate.
+
+    Called between the quality boundary and output truncation. Failures are
+    recorded as versioned failure payloads and returned in
+    ``failed_preexport_keys``; they never raise into the ranking path.
+    """
+    from app.services.candidate_capture import (
+        CaptureBatchResult,
+        SourceIdentityUnavailable,
+        persist_capture,
+    )
+    from app.services.preference_schema import apply_preference_schema
+
+    if not context.enabled or not clips:
+        return CaptureBatchResult(captures=(), failed_preexport_keys=())
+
+    captures: list = []
+    failed_keys: list[str] = []
+    conn = _open_capture_connection(context)
+    try:
+        apply_preference_schema(conn)
+        evidence_root = Path(context.evidence_root)
+        evidence_root.mkdir(parents=True, exist_ok=True)
+
+        if not context.source_sha256:
+            from app.services.candidate_capture import compute_source_sha256
+
+            try:
+                context.source_sha256 = compute_source_sha256(context.video_path)
+            except Exception as exc:
+                print(f"  Candidate capture: source identity unavailable ({exc})")
+                return CaptureBatchResult(captures=(), failed_preexport_keys=())
+
+        feature_results = _extract_features_for_clips(context, clips)
+
+        for clip in clips:
+            key = clip.get("preexport_key")
+            if not key:
+                continue
+            feature = feature_results.get(key)
+            payload = _capture_payload_for_clip(
+                context, clip, feature, runtime_snapshot
+            )
+            try:
+                persisted = persist_capture(conn, payload, evidence_root)
+                captures.append(persisted)
+                clip["analysis_record_id"] = persisted.record_id
+                clip["capture_status"] = "CAPTURED"
+                if feature is not None:
+                    clip["source_feature_status"] = feature.status
+                    if feature.status == "AVAILABLE":
+                        clip["source_features"] = feature.features
+            except Exception as exc:
+                failed_keys.append(str(key))
+                clip["capture_status"] = "FAILED"
+                clip["capture_failed_reason"] = str(exc)[:200]
+                _persist_capture_failure(conn, context, clip, payload, exc)
+        conn.commit()
+    finally:
+        conn.close()
+    return CaptureBatchResult(
+        captures=tuple(captures), failed_preexport_keys=tuple(failed_keys)
+    )
+
+
+def _capture_payload_for_clip(
+    context: RankCaptureContext,
+    clip: dict,
+    feature,
+    runtime_snapshot: dict | None,
+) -> dict:
+    """Build the immutable capture payload for one post-dedup candidate."""
+    baseline = clip.get("gif_worthiness")
+    if baseline is None:
+        baseline = clip.get("final_score", 0.0)
+    payload = {
+        "run_id": context.run_id,
+        "preexport_key": clip["preexport_key"],
+        "capture_version": context.capture_version,
+        "source_video_sha256": context.source_sha256,
+        "start_us": clip["start_us"],
+        "end_us": clip["end_us"],
+        "anchor_us": clip.get("anchor_us", (clip["start_us"] + clip["end_us"]) // 2),
+        "anchor_source": clip.get("anchor_source", "window_midpoint"),
+        "candidate_id": clip.get("candidate_id"),
+        "clip_id": clip.get("clip_id"),
+        "baseline_score": float(baseline),
+        "capture_status": "CAPTURED",
+    }
+    if feature is not None:
+        payload["source_feature"] = {
+            "status": feature.status,
+            "feature_version": feature.feature_version,
+            "extractor_sha256": feature.extractor_sha256,
+            "features": feature.features,
+            "actual_timestamps": list(feature.actual_timestamps),
+            "input_hash": feature.input_hash,
+            "missing_reasons": list(feature.missing_reasons),
+            "wall_clock_ms": feature.wall_clock_ms,
+        }
+        if feature.status != "AVAILABLE":
+            payload["capture_status"] = "CAPTURED"
+            payload["feature_unavailable_reasons"] = list(feature.missing_reasons)
+    if runtime_snapshot:
+        payload["runtime_snapshot"] = dict(runtime_snapshot)
+    return payload
+
+
+def _persist_capture_failure(
+    conn, context: RankCaptureContext, clip: dict, payload: dict, exc: Exception
+) -> None:
+    """Record a versioned failure payload; never raises into the pipeline."""
+    from app.services.candidate_capture import persist_capture
+
+    try:
+        failure_payload = dict(payload)
+        failure_payload["capture_status"] = "FAILED"
+        failure_payload["failure_reason"] = str(exc)[:500]
+        persist_capture(conn, failure_payload, Path(context.evidence_root))
+        conn.commit()
+    except Exception:
+        print(
+            f"  Candidate capture: failure payload could not be recorded for "
+            f"{clip.get('preexport_key', '?')}"
+        )
+
+
+def _append_rank_selection_events(
+    context: RankCaptureContext,
+    clips: list[dict],
+    selected_ids: set[str],
+    quality_rejected_ids: set[str],
+) -> None:
+    """Append scored/selected/not_selected/quality_rejected analysis events.
+
+    ``not_selected`` is a routing fact, never a dislike; ``quality_rejected``
+    is a quality gate fact, never an aesthetic negative sample. Best-effort:
+    event failures never break the formal output.
+    """
+    from app.services.candidate_capture import append_candidate_analysis_event
+
+    if not context.enabled or not clips:
+        return
+    conn = _open_capture_connection(context)
+    try:
+        from app.services.preference_schema import apply_preference_schema
+
+        apply_preference_schema(conn)
+        evidence_root = Path(context.evidence_root)
+        for clip in clips:
+            record_id = clip.get("analysis_record_id")
+            if not record_id:
+                continue
+            clip_id = str(clip.get("clip_id") or clip.get("candidate_id") or "")
+            scored_payload = {
+                "run_id": context.run_id,
+                "clip_id": clip_id,
+                "preexport_key": clip.get("preexport_key"),
+                "route": clip.get("curve_route", "BASELINE"),
+                "baseline_score": clip.get("baseline_score"),
+                "final_score": clip.get("final_score"),
+                "source_feature_status": clip.get("source_feature_status"),
+            }
+            try:
+                append_candidate_analysis_event(
+                    conn, record_id, "scored", scored_payload, evidence_root
+                )
+                if clip_id in quality_rejected_ids:
+                    kind = "quality_rejected"
+                elif clip_id in selected_ids:
+                    kind = "selected"
+                else:
+                    kind = "not_selected"
+                selection_payload = {
+                    "run_id": context.run_id,
+                    "clip_id": clip_id,
+                    "preexport_key": clip.get("preexport_key"),
+                    "rank": clip.get("rank"),
+                    "kind": kind,
+                }
+                append_candidate_analysis_event(
+                    conn, record_id, kind, selection_payload, evidence_root
+                )
+            except Exception:
+                print(
+                    f"  Candidate capture: selection event failed for {clip_id}"
+                )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _freeze_stage_action_config(
@@ -436,6 +768,11 @@ def _stage_rank_dedup(
         clean_clips, video_path, cfg, evidence_cache,
     )
 
+    # Task 3: freeze candidate identities right after boundary snaps so dedup
+    # works on stable identities; the post-dedup call below re-verifies the
+    # frozen preexport keys (idempotent with capture enabled).
+    _assign_candidate_identities(clean_clips, video_path, cfg=cfg)
+
     # Embedding dedup
     dedup_input_count = len(clean_clips)
     embedding_deduped_count = len(clean_clips)
@@ -460,7 +797,7 @@ def _stage_rank_dedup(
     # Evaluate quality on the full post-dedup set, then truncate for export.
     # Direct mode uses the same order so report_only evidence and active
     # soft-reject share one candidate population across both pipelines.
-    _assign_candidate_identities(deduped_clips, video_path)
+    _assign_candidate_identities(deduped_clips, video_path, cfg=cfg)
     deduped_clips, quality_moe = _evaluate_quality_pipeline_candidates(
         deduped_clips,
         video_path=video_path,
@@ -474,10 +811,36 @@ def _stage_rank_dedup(
         stage_id=rank_stage_id,
     )
 
+    # Task 3: capture evidence for every post-dedup scorable candidate after
+    # the quality boundary and BEFORE ranking/output truncation.
+    capture_context = _rank_capture_context(video_path, cfg)
+    capture_batch = capture_rank_candidates(capture_context, deduped_clips)
+    if capture_context.enabled:
+        print(
+            f"  Candidate capture: {len(capture_batch.captures)} captured, "
+            f"{len(capture_batch.failed_preexport_keys)} failed"
+        )
+        if capture_batch.failed_preexport_keys:
+            print(
+                "  Candidate capture failed keys: "
+                + ", ".join(key[:12] for key in capture_batch.failed_preexport_keys)
+            )
+        if capture_context.mode == "active":
+            # Active curve mode requires complete capture: candidates whose
+            # evidence could not be persisted must not reach protected output.
+            failed_set = set(capture_batch.failed_preexport_keys)
+            deduped_clips = [
+                clip
+                for clip in deduped_clips
+                if clip.get("capture_status") != "FAILED"
+                and str(clip.get("preexport_key")) not in failed_set
+            ]
+
     deduped_count = len(deduped_clips)
     multi_frame_count = sum(
         1 for c in clean_clips if int(c.get("frame_count", 1)) > 1
     )
+    full_rank_input = list(deduped_clips)
     deduped_clips = _rank_pipeline_clips(deduped_clips, cfg)
     output_count = _planned_output_count(
         len(deduped_clips), OUTPUT_RATIO, MAX_OUTPUT
@@ -485,6 +848,27 @@ def _stage_rank_dedup(
     deduped_clips = deduped_clips[:output_count]
     for i, clip in enumerate(deduped_clips):
         clip["rank"] = i + 1
+
+    # Task 3: append selection events after ranking and the output cap.
+    selected_ids = {
+        str(clip.get("clip_id") or clip.get("candidate_id") or "")
+        for clip in deduped_clips
+    }
+    assessed_ids = {
+        str(entry.get("candidate_id"))
+        for entry in (quality_moe.get("assessed_candidates") or [])
+        if isinstance(entry, dict) and entry.get("candidate_id")
+    }
+    returned_ids = {
+        str(clip.get("candidate_id") or clip.get("clip_id") or "")
+        for clip in full_rank_input
+    }
+    _append_rank_selection_events(
+        capture_context,
+        full_rank_input,
+        selected_ids,
+        assessed_ids - returned_ids,
+    )
 
     print(f"  Final: {len(deduped_clips)} deduped clips")
 
@@ -499,6 +883,13 @@ def _stage_rank_dedup(
         "quality_moe": quality_moe,
         "output_key": "rank_dedup",
     }
+    if capture_context.enabled:
+        manifest["candidate_capture"] = {
+            "enabled": True,
+            "mode": capture_context.mode,
+            "captured": len(capture_batch.captures),
+            "failed_preexport_keys": list(capture_batch.failed_preexport_keys),
+        }
     manifest_path = _save_manifest(work_dir, "rank_dedup", manifest)
 
     return {
