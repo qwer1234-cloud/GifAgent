@@ -314,6 +314,38 @@ def ndcg_at_20(rows: list[dict], scores: np.ndarray) -> float:
     return float(np.mean(values)) if values else float("nan")
 
 
+def run_snapshot_training(
+    conn,
+    policy: dict,
+    output_dir: Path,
+    register_conn=None,
+) -> dict:
+    """2026-09-11 remediation Task 5 entry point.
+
+    Chains the row-fact-driven snapshot builder, the strict DRAFT trainer,
+    and (optionally) DRAFT registration. Registration never writes
+    PUBLISHED; promotion stays a separate authorized action.
+    """
+    from app.services.curve_training import (
+        build_training_snapshot,
+        register_draft,
+        train_draft,
+    )
+
+    snapshot = build_training_snapshot(conn, policy, Path(output_dir))
+    result = train_draft(
+        Path(snapshot.snapshot_dir), Path(output_dir), feature_version="curve-source-v1"
+    )
+    model_version = None
+    if register_conn is not None and result["status"] == "DRAFT":
+        model_version = register_draft(register_conn, result)
+    return {
+        "snapshot": snapshot,
+        "result": result,
+        "model_version": model_version,
+    }
+
+
 def build_manifest(
     kind: str,
     rows: list[dict],
