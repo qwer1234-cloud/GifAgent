@@ -297,7 +297,7 @@ def test_build_training_snapshot_from_row_facts(tmp_path: Path):
         conn.execute(
             "INSERT INTO candidate_vectors (candidate_id, vector_type, "
             "embedding_model, embedding_dim, vector_blob, normalized, source_text_hash) "
-            "VALUES (?, 'clip', 'nomic-embed-text:latest', 768, ?, 1, ?)",
+            "VALUES (?, 'preference', 'nomic-embed-text:latest', 768, ?, 1, ?)",
             (
                 cid,
                 vector_to_blob(pref_vec, embedding_dim=768),
@@ -557,7 +557,7 @@ def test_capture_vector_identity_is_a_training_gate(tmp_path: Path):
         conn.execute(
             "INSERT INTO candidate_vectors (candidate_id, vector_type, "
             "embedding_model, embedding_dim, vector_blob, normalized, source_text_hash) "
-            "VALUES (?, 'clip', 'nomic-embed-text:latest', 768, ?, 1, ?)",
+            "VALUES (?, 'preference', 'nomic-embed-text:latest', 768, ?, 1, ?)",
             (
                 cid,
                 vector_to_blob(ledger_vec, embedding_dim=768),

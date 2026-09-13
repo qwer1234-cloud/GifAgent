@@ -218,10 +218,13 @@ def _collect_samples(
             exclude("source_features_unavailable")
             continue
 
+        # The immutable scoring vector lives under vector_type='preference'
+        # (frozen at publication); the refreshable retrieval vector under
+        # 'clip' is a different feature and must not shadow it.
         vector_row = conn.execute(
             "SELECT embedding_model, source_text_hash, vector_blob, embedding_dim "
             "FROM candidate_vectors "
-            "WHERE candidate_id = ? AND vector_type = 'clip' LIMIT 1",
+            "WHERE candidate_id = ? AND vector_type = 'preference' LIMIT 1",
             (target_id,),
         ).fetchone()
         if vector_row is None:

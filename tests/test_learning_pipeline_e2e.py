@@ -566,3 +566,85 @@ def test_same_owner_reclaim_invalidates_old_token(tmp_path):
         raised = True
     assert raised, "stale token write must be refused"
     conn.close()
+
+
+def test_regular_vector_refresh_does_not_invalidate_training(tmp_path):
+    """P1 remediation: the frozen scoring vector lives under its own
+    vector_type; a routine retrieval-vector refresh (upsert_candidate_vector)
+    must not touch it, so the training snapshot is stable across refreshes."""
+    from app.services.candidate_vectors import upsert_candidate_vector
+
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    services = _services(db_path, tmp_path)
+    maybe_enqueue_learning(conn, TINY_POLICY)
+
+    run_learning_once(conn, now_epoch=1_800_000_000, owner="w1", services=services)
+
+    frozen_before = conn.execute(
+        "SELECT COUNT(*) FROM candidate_vectors WHERE vector_type = 'preference'"
+    ).fetchone()[0]
+    assert frozen_before == 36
+
+    # Routine refresh of ONE candidate's retrieval vector (semantic text).
+    target = conn.execute(
+        "SELECT candidate_id FROM candidate_gifs LIMIT 1"
+    ).fetchone()[0]
+    assert upsert_candidate_vector(conn, candidate_id=target, embed_fn=None) in (
+        True,
+        False,
+    )
+
+    # Rebuild the snapshot: the same 36 samples remain trainable.
+    run_learning_once(conn, now_epoch=1_800_000_001, owner="w1", services=services)
+    package = json.loads(
+        Path(
+            conn.execute(
+                "SELECT result_package_path FROM learning_jobs WHERE status != 'SUCCEEDED' "
+                "ORDER BY created_at LIMIT 1"
+            ).fetchone()[0]
+        ).read_text(encoding="utf-8")
+    )
+    snapshot_info = package["snapshot"]
+    total = (
+        snapshot_info["train_row_count"]
+        + snapshot_info["development_row_count"]
+        + snapshot_info["final_holdout_row_count"]
+    )
+    assert total == 36
+    conn.close()
+
+
+def test_lease_lost_is_reported_and_keeps_polling(tmp_path, monkeypatch):
+    """P2 remediation: a stale worker whose lease was taken over mid-stage
+    gets a structured LEASE_LOST result; the job state of the NEW holder is
+    untouched and the loop can continue."""
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    services = _services(db_path, tmp_path)
+    maybe_enqueue_learning(conn, TINY_POLICY)
+
+    from app.services.learning_jobs import LearningLeaseLost, run_learning_once
+
+    def raise_lease_lost(*_args, **_kwargs):
+        raise LearningLeaseLost("lease taken over mid-stage")
+
+    monkeypatch.setattr(
+        "app.services.learning_jobs.execute_learning_stage", raise_lease_lost
+    )
+    result = run_learning_once(
+        conn, now_epoch=1_800_000_000, owner="w1", services=services
+    )
+    assert result["status"] == "LEASE_LOST"
+    assert result["error_code"] == "lease_lost"
+
+    # The job stays claimable by the legitimate holder; no fake state written.
+    job = conn.execute(
+        "SELECT status, stage FROM learning_jobs WHERE job_id = ?",
+        (result["job_id"],),
+    ).fetchone()
+    assert job[0] == "RUNNING"  # claimed by w1's own claim in this run
+    assert job[1] == "SNAPSHOT"
+    conn.close()

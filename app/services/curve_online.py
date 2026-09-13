@@ -240,12 +240,19 @@ def load_curve_runtime_snapshot(
             compatible = False
             inactive.append("profile_version_mismatch")
         else:
-            live_state = _profile_rows_sha256(
-                _live_profile_rows(conn, str(profile_version))
-            )
-            if live_state != str(deployment_profile_state_sha):
+            try:
+                live_state = _profile_rows_sha256(
+                    _live_profile_rows(conn, str(profile_version))
+                )
+            except ValueError:
+                # Inconsistent duplicate rows etc.: invalid profile evidence
+                # degrades to BASELINE, never raises into ranking.
                 compatible = False
-                inactive.append("profile_content_mismatch")
+                inactive.append("profile_evidence_invalid")
+            else:
+                if live_state != str(deployment_profile_state_sha):
+                    compatible = False
+                    inactive.append("profile_content_mismatch")
 
     qualified = bool(
         deployment_available
@@ -776,14 +783,20 @@ def activate_deployment(
             # published profile at all) is refused: re-qualify first.
             reasons.append("profile_version_mismatch")
         elif qualified_rows_sha:
-            live_rows_sha = _profile_rows_sha256(
-                _live_profile_rows(conn, bundle_profile_version)
-            )
-            if live_rows_sha != qualified_rows_sha:
-                # Same version but ANY content field (centroid, confidence,
-                # tag weights) drifted from the qualification snapshot: the
-                # live profile was never qualified. Refuse activation.
-                reasons.append("profile_content_mismatch")
+            try:
+                live_rows_sha = _profile_rows_sha256(
+                    _live_profile_rows(conn, bundle_profile_version)
+                )
+            except ValueError:
+                # Inconsistent duplicate rows: the live profile evidence is
+                # not verifiable against the qualification snapshot.
+                reasons.append("profile_evidence_invalid")
+            else:
+                if live_rows_sha != qualified_rows_sha:
+                    # Same version but ANY content field (centroid, confidence,
+                    # tag weights) drifted from the qualification snapshot: the
+                    # live profile was never qualified. Refuse activation.
+                    reasons.append("profile_content_mismatch")
     evidence = validate_qualification_evidence(
         conn,
         model_version=model_version,
@@ -964,11 +977,15 @@ def rollback_deployment(
     elif bundle_profile_version != str(target_profile_version):
         reasons.append("profile_version_mismatch")
     else:
-        live_state = _profile_rows_sha256(
-            _live_profile_rows(conn, str(target_profile_version))
-        )
-        if live_state != str(target_profile_state_sha):
-            reasons.append("profile_content_mismatch")
+        try:
+            live_state = _profile_rows_sha256(
+                _live_profile_rows(conn, str(target_profile_version))
+            )
+        except ValueError:
+            reasons.append("profile_evidence_invalid")
+        else:
+            if live_state != str(target_profile_state_sha):
+                reasons.append("profile_content_mismatch")
     if not reasons:
         reasons.extend(
             validate_qualification_evidence(

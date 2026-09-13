@@ -441,17 +441,21 @@ def _save_stage_package(
     raw = json.dumps(package, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     now_epoch = int(time.time())
+    # The token is the credential: as long as THIS claim still owns the
+    # RUNNING job (nobody else re-claimed), the save also RENEWS the lease so
+    # a legitimately long stage is not lost to its own expiry. If another
+    # worker re-claimed, the token differs and the stale save is refused.
     updated = conn.execute(
-        "UPDATE learning_jobs SET result_package_sha256 = ? "
+        "UPDATE learning_jobs SET result_package_sha256 = ?, "
+        "lease_expires_epoch = ? "
         "WHERE job_id = ? AND owner = ? AND lease_token = ? "
-        "AND status = 'RUNNING' "
-        "AND lease_expires_epoch IS NOT NULL AND lease_expires_epoch > ?",
+        "AND status = 'RUNNING'",
         (
             hashlib.sha256(raw).hexdigest(),
+            int(now_epoch + int(DEFAULT_LEARNING_POLICY["lease_seconds"])),
             job_id,
             expected_owner,
             expected_token,
-            now_epoch,
         ),
     ).rowcount
     if updated != 1:
@@ -716,7 +720,8 @@ def _apply_stage_result(
             (result.next_stage, _now_iso(), *lease_params),
         ).rowcount
         if updated != 1:
-            return {"status": "NEEDS_ATTENTION", "stage": job.stage, "error_code": "lease_lost"}
+            # The new holder owns the job; leave its state untouched.
+            return {"status": "LEASE_LOST", "stage": job.stage, "error_code": "lease_lost"}
         return {"status": "ADVANCED", "stage": result.next_stage, "error_code": None}
 
     if result.outcome == "COMPLETE":
@@ -816,8 +821,21 @@ def run_learning_once(
         return {"status": "IDLE", "job_id": None, "stage": None}
 
     stage_services = dict(services) if services else default_services(conn)
-    result = execute_learning_stage(conn, job, stage_services)
-    applied = _apply_stage_result(conn, job, result, now_epoch)
+    try:
+        result = execute_learning_stage(conn, job, stage_services)
+        applied = _apply_stage_result(conn, job, result, now_epoch)
+    except LearningLeaseLost:
+        # A stale worker lost its claim mid-stage: report and keep polling.
+        # The job and its stage package belong to the current holder and are
+        # left completely untouched.
+        conn.rollback()
+        return {
+            "status": "LEASE_LOST",
+            "job_id": job.job_id,
+            "job_type": "curve_preference",
+            "stage": job.stage,
+            "error_code": "lease_lost",
+        }
     conn.commit()
     return {
         "status": applied["status"],

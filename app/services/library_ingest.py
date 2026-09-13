@@ -342,10 +342,12 @@ def _record_source_features(
         raise ValueError(
             f"capture feature input hash mismatch for record {record_id}"
         )
-    # The formal ledger vector IS the frozen scoring vector: byte-for-byte,
-    # normalized by the production rule, with the preference text hash as the
-    # ledger identity. Scoring, capture, and the preference profile therefore
-    # share one vector domain -- no second embedding computation.
+    # The immutable scoring vector is stored under its own vector_type so the
+    # refreshable retrieval vector ('clip', semantic text) can be re-embedded
+    # at any time without invalidating frozen training evidence. Byte-for-byte
+    # normalized by the production rule; the preference text hash is the row
+    # identity. Scoring, capture, and training therefore share one vector
+    # domain -- no second embedding computation.
     identity = payload.get("preference_identity") or {}
     if identity.get("scoring_input_committed") and identity.get(
         "vector_float32_b64"
@@ -354,6 +356,7 @@ def _record_source_features(
 
         import numpy as np
 
+        from app.services.candidate_vectors import EMBEDDING_TEXT_SCHEMA_VERSION
         from app.services.vector_math import vector_to_blob
 
         frozen = np.frombuffer(
@@ -365,13 +368,14 @@ def _record_source_features(
             INSERT OR REPLACE INTO candidate_vectors (
                 candidate_id, vector_type, embedding_model, embedding_dim,
                 vector_blob, normalized, source_text_hash, text_schema_version
-            ) VALUES (?, 'clip', ?, 768, ?, 1, ?, 1)
+            ) VALUES (?, 'preference', ?, 768, ?, 1, ?, ?)
             """,
             (
                 candidate_id,
                 str(identity.get("embedding_model") or "nomic-embed-text:latest"),
                 vector_to_blob(frozen, embedding_dim=768),
                 str(identity.get("embedding_text_sha256") or ""),
+                int(EMBEDDING_TEXT_SCHEMA_VERSION),
             ),
         )
     conn.execute(

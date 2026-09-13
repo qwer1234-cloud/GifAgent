@@ -489,3 +489,58 @@ def test_runtime_fails_closed_without_profile_fingerprint(tmp_path):
     )
     assert "profile_identity_missing" in snapshot.inactive_reasons
     conn.close()
+
+
+def test_inconsistent_duplicate_profile_rows_degrade_to_baseline(tmp_path):
+    """P2 remediation: duplicate same-version global rows with different
+    content are invalid profile evidence -- runtime degrades to BASELINE
+    instead of raising, and activation refuses."""
+    conn, run_dir, model_version = _promoted_fixture(tmp_path)
+    config = _runtime_config(conn, run_dir, model_version)
+    profile_version = json.loads(
+        (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+    )["profile_version"]
+
+    # Insert a second global row for the same version with different content.
+    conn.execute(
+        "INSERT INTO preference_profiles (profile_version, scope, scenario_key, "
+        "like_count, dislike_count, neutral_count, confidence, liked_centroid_blob, "
+        "tag_weights_json) VALUES (?, 'global', NULL, 9, 1, 0, 0.5, ?, '{}')",
+        (profile_version, bytes(range(64))),
+    )
+    conn.commit()
+
+    activation = activate_deployment(
+        conn,
+        qualification_dir=run_dir,
+        expected_revision=0,
+        operator="admin",
+        runtime_config=config,
+    )
+    assert activation.status == "REFUSED"
+    assert "profile_evidence_invalid" in activation.reasons
+
+    # Even a forced active revision degrades to BASELINE instead of raising.
+    conn.execute(
+        """
+        INSERT INTO curve_model_deployments (
+            model_version, qualification_id, config_hash, extractor_sha256,
+            is_active, approved_by, approved_at, profile_version,
+            profile_snapshot_sha256
+        ) VALUES ('m-qual', 'q-accept', 'x', 'x', 1, 'op', '2026-09-13T00:00:00Z',
+            ?, 'stale-fingerprint')
+        """,
+        (profile_version,),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO curve_model_deployment_current "
+        "(slot, revision, updated_by) VALUES ('current', "
+        "(SELECT MAX(revision) FROM curve_model_deployments), 'op')"
+    )
+    conn.commit()
+    snapshot = load_curve_runtime_snapshot(
+        conn,
+        {"curve_preference_enabled": True, "curve_preference_mode": "active"},
+    )
+    assert "profile_evidence_invalid" in snapshot.inactive_reasons
+    conn.close()
