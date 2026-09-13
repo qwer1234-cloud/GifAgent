@@ -102,6 +102,38 @@ def test_load_folder_choices_shows_fully_rated_folder_when_none_unrated(monkeypa
     assert "already rated" in result[1]
 
 
+def test_load_folder_choices_hides_duplicate_export_when_none_unrated(monkeypatch):
+    from app.ui.tabs import review
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "root": r"C:\exports\adaptive_test\Comatozze",
+                "folders": [
+                    {
+                        "folder": r"C:\exports\adaptive_test\Comatozze\Vid A",
+                        "relative_folder": "Vid A",
+                        "count": 12,
+                        "status_counts": {"liked": 12},
+                        "unmaterialized_count": 0,
+                        "duplicate_of_rated": True,
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(review.httpx, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    result = review.load_folder_choices(r"C:\exports\adaptive_test\Comatozze")
+
+    assert result[3] == 0
+    assert result[2] == []
+    assert result[0]["value"] is None
+    assert "fully rated" in result[1]
+
+
 def test_rate_and_advance_selects_next_gif_in_current_folder(monkeypatch):
     from app.ui.tabs import review as candidate_review
 
@@ -454,6 +486,57 @@ def test_rate_and_advance_reloads_only_when_local_page_queue_is_empty(monkeypatc
     assert result[4] == [following, following_next]
     assert result[5] == "cand-following"
     assert result[11] == "D:/exports/A/following-next.gif"
+
+
+def test_rate_and_advance_reloads_page_zero_after_candidate_page_is_exhausted():
+    from app.ui.tabs import review as review_tab
+
+    current = _candidate("cand-last", "D:/exports/A/last.gif")
+    following = _candidate("cand-next-page", "D:/exports/A/next-page.gif")
+    calls = []
+
+    def load_page(page, page_size=review_tab.PAGE_SIZE, filter_status="candidate", folder=None):
+        calls.append(page)
+        return ["gallery"], "Folder: A | Page 1/3", gr.update(value=0), [following]
+
+    result = review_tab.rate_and_advance(
+        "cand-last", "like", "", "D:/exports/A/last.gif", 1, "candidate", "A",
+        "D:/exports", [{"folder": "A"}],
+        page_items_state=[current],
+        _submit_action=lambda *_args: "Rated: liked",
+        _load_page=load_page,
+        _load_folders=lambda *_a, **_k: pytest.fail("must not auto-advance"),
+    )
+
+    assert calls == [0]
+    assert result[5] == "cand-next-page"
+    assert result[9]["value"] == "A"
+
+
+def test_rate_and_advance_does_not_skip_folder_that_is_still_reviewable():
+    from app.ui.tabs import review as review_tab
+
+    current = _candidate("cand-last", "D:/exports/A/last.gif")
+
+    def load_page(page, page_size=review_tab.PAGE_SIZE, filter_status="candidate", folder=None):
+        return [], "Folder: A", gr.update(value=0), []
+
+    result = review_tab.rate_and_advance(
+        "cand-last", "like", "", "D:/exports/A/last.gif", 0, "candidate", "A",
+        "D:/exports", [{"folder": "A"}, {"folder": "B"}],
+        page_items_state=[current],
+        _submit_action=lambda *_args: "Rated: liked",
+        _load_page=load_page,
+        _load_folders=lambda _root: (
+            gr.update(),
+            "Found 2",
+            [{"folder": "A"}, {"folder": "B"}],
+            2,
+        ),
+    )
+
+    assert result[9]["value"] == "A"
+    assert "Staying in the current folder" in result[2]
 
 
 def test_select_candidate_returns_the_following_path_for_preload():

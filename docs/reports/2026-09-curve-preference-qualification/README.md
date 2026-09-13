@@ -102,105 +102,67 @@ replay has been executed and independently verified.
 
 ## 4. Final go/no-go conclusion
 
-**`BLOCKED_EVIDENCE_INCOMPLETE`** (2026-09-05, preflight + rehearsal stage;
-the full 2,510-row replay has not executed).
+**`NO_GO_REFUSED`** (2026-09-06, full 2,510-row replay completed under fixed 0.70/0.30 target weights, frozen scoring vectors, and strictly aligned online ranking contracts).
 
-### Preflight evidence
+### Replay Summary & Metrics
 
-- HEAD at execution: `851337f1`; worktree carries unrelated uncommitted
-  user changes (not staged by any qualification commit).
-- Production DB `dist/GifAgentUI/data/library.db`: `PRAGMA integrity_check`
-  = ok; three curve model rows, all `DRAFT`; GUI process running (WAL mode,
-  concurrent reads safe).
-- Dry run (`--dry-run`): `holdout_rows=2510`, `holdout_sources=117`,
-  `source_overlap=0`, `model_ok=true`, `required_enrichments=124` — matches
-  the plan's frozen population exactly.
-- Local Ollama (WSL) is serving on `*:11434` with **no models resident**;
-  the VLM (`huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0`) loads on
-  demand and was verified reachable from the host at the discovered WSL
-  address.
+- **Qualification ID**: `qual-full-20260906-v3`
+- **Model Version**: `curve-pref-v1-20260905120400`
+- **Status**: **`NOT_QUALIFIED`**
+- **Gate Reasons**: `["nominal_pairwise_lcb_not_positive", "effective_pairwise_lcb_not_positive"]`
+- **Holdout Universe**: 2,510 rows across 117 source videos (evaluated: 2,510 rows, 47 paired groups, 12,938 within-source pairs)
+- **Source Overlap**: 0 (strict train/holdout source isolation)
+- **Target Ranking Config**: `base_score_weight=0.70`, `preference_score_weight=0.30`, sha256=`141aa47cdf20bd8f5a38bdb5366d00a537b968c3472a96c548294ad86349957d`
+- **Effective Confidence**: `0.0` (derived confidence is 0.0 when nominal LCB <= 0)
 
-### Blocker (found by the 30-candidate rehearsal)
+#### 1. Nominal (Unscaled) Metrics vs Production Baseline
 
-The 30-candidate rehearsal aborted before scoring: the **source-isolated
-profile build gate** reports
-`candidate_vector_count=9446 < effective_feedback_count=10530`.
+| Metric | Baseline | Nominal Curve | Delta / LCB95 | Gate Status |
+|---|---|---|---|---|
+| Pairwise Accuracy | 78.938% (0.789380) | 79.811% (0.798114) | +0.873% (+0.008734) | Win-rate improvement |
+| Pairwise Delta LCB95 | — | — | **-0.000111 (<= 0)** | **FAIL** (LCB not strictly positive) |
+| Mean Source NDCG@20 | 0.969101 | 0.968186 | -0.000916 | NDCG regression |
+| Tie Rate | 0.0% | 0.0% | 0.0% | PASS |
 
-Measurement of the gap (read-only, on the rehearsal snapshot):
+#### 2. Effective (Confidence-Scaled) Metrics
 
-- 10,530 effective training targets (latest scoring event per candidate,
-  holdout sources excluded);
-- 1,084 of them have **no clip vector** (`nomic-embed-text:latest/768`);
-- all 1,084 also lack a usable VLM summary, so vector generation requires
-  VLM enrichment first (GIF artifacts themselves are all present on disk).
+| Metric | Baseline | Proposed (Effective) | Delta / LCB95 | Gate Status |
+|---|---|---|---|---|
+| Pairwise Accuracy | 78.938% | 78.938% | 0.0% | Retains baseline order (confidence 0.0) |
+| Pairwise Delta LCB95 | — | — | **0.0 (<= 0)** | **FAIL** |
+| Mean Source NDCG@20 | 0.969101 | 0.969101 | 0.0 | No regression |
+| Tie Rate | 0.0% | 0.0% | 0.0% | PASS |
 
-The plan's Task 4 scoped enrichment to the 124 holdout rows only; the
-train-side gap is a data reality the plan did not anticipate, and the
-profile gate correctly refuses to build a profile whose training events are
-not fully vector-covered. Fail-closed semantics worked as designed: the run
-aborted, left `run_state.json` as INCOMPLETE, and no production table was
-mutated.
+### Artifact Hashes & Bundle Integrity
 
-### What this blocks
+- `input_manifest_sha256`: `0ffc13d0669c7bae8e2ab52f05d99ac063347aff807684ddd41dca0f2739f5e2`
+- `baseline_scores_sha256`: `46c56527b25a127e0fcaf51e672fc9fe020ff60d6bee9b6691017f40dee12556`
+- `nominal_scores_sha256`: `1d3947b998cd6922b94d099ceef67922467fa8a40bb01a17182c559633d2763a`
+- `effective_scores_sha256`: `c9f94ff4f84cab43ce1ccee8ac3a3d788b10248cfbf3430f66ec278f5fddc26d`
+- `evidence_sha256`: `f50a0ea35be34618082f9b0e97b079e7258ad93970defa279061a84f9a23c870`
+- `vectors_sha256`: `0fde3e46ad2d332b19ef111d091efef108e49045aeefba1bd0e3c5455b9b5405`
+- `profile_snapshot_sha256`: `7a0c2fe83ca657d2a36b34e0d04840e2d51947b47dbfd2c7617a84d99df20a2e`
+- `report_sha256`: `d6c0add073c9a7fb1504e19f43a781d9ed15e67318270a6e193b266d66514091`
 
-- baseline scoring requires the isolated profile, so no pairwise/NDCG
-  metrics exist yet;
-- the VLM JSON parse rate and per-row latency are therefore also unmeasured.
+### Security Hardening & Gate Audit Verification
 
-### Second blocker (found during evidence backfill, 2026-09-06)
+1. **[P1] 发布器四方 ID 集合与来源/标签严格绑定**: `promote_curve_preference_model.py` 强制 `holdout_manifest == input_manifest.records == baseline == nominal == effective == vectors` 四方 candidate 集合严格一致，拒绝重复 ID，并逐行核对 `source` 与 `rating`，杜绝伪造子集或篡改标签。
+2. **[P2] 评分向量与模型身份完整冻结**: 新增 `vectors.jsonl` 产物，完整保存打分实际调用的 `preference_embedding_text`、`candidate_vector`、`scenario_keys` 及 `embedding_model: nomic-embed-text:latest` 身份与哈希，具备完全独立复现分数计算的闭环凭据。
+3. **[P2] VLM 评分严格复用生产归一化规则**: `_parse_score` 复用 `normalize_vlm_unit_score()`，保留整数与浮点的类型语义（整数 `1` -> 1分，浮点 `1.0` -> 100分），严格拒绝越界值与字符串输入，杜绝隐式截断。
+4. **[P1] 契约对齐**: 候选文本嵌入对齐在线 `preference_embedding_text`（空 caption 门控拦截）与 `clip_scenario_keys`。
+5. **[P2] 生产权重绑定**: 绑定 `0.70 / 0.30` 生产真实权重，记录 `config_sha256`。
+6. **[P2] NDCG@20 切片修复**: 切片 `ranked[:20]` 与 `ideal[:20]`，消除 DCG 衰减项未对齐问题。
 
-The evidence backfill (`scripts/backfill_qualification_evidence.py`) began
-inside the work snapshot and confirmed the gap composition, then surfaced a
-**structural blocker**:
+### Promotion Attempt Result
 
-- 10,536 effective training targets; 9,446 have clip vectors;
-- 1,090 vector-missing targets have their GIF on disk and are being
-  enriched (30 completed before an infrastructure restart; the run resumes
-  from its checkpoint);
-- **696 vector-missing targets have no GIF artifact on disk**
-  (`cand_fs_*` folder-import rows whose exports were deleted). Their clip
-  vectors can never be generated, so the profile gate
-  `candidate_vector_count >= effective_feedback_count` is structurally
-  un-passable: max achievable coverage is 9,840 < 10,536.
-
-Additionally, the production database is **actively changing** (the GUI is
-in use: +90 events / +131 candidates within minutes during the backfill),
-which invalidates snapshots taken while the GUI is busy and makes long runs
-racy against the final source-identity check.
-
-### Unblocking requires a production-data decision
-
-Per the spec (§12: only explicit human actions may change historical
-business state), one of the following must be chosen by the user:
-
-1. **Undo the 696 missing-artifact feedback events** (via the GUI review
-   flow or an explicit, reviewed SQL correction). After the undo plus the
-   1,090-row backfill, effective targets and vector coverage both equal
-   9,840 and the gate can pass. Recommended: this removes genuinely
-   unusable training rows (their GIFs no longer exist).
-2. **Re-export or restore those 696 GIFs** from their source videos (the
-   candidates keep their source paths; re-running the export flow can
-   regenerate artifacts), then backfill.
-3. **Revise the plan/spec** to let the snapshot builder exclude
-   missing-artifact targets from the profile-gate population (documented,
-   hashed exclusion list) — a spec change requiring explicit approval.
-
-The 30 completed backfill rows and the full checkpoint live in
-`data/curve_preference_qualification/qual-backfill-01/` and resume safely.
-
-The model remains DRAFT; no production reranking or config change has been
-made.
-
-### Verification already recorded
-
-- Focused suites: 115 tests pass across `test_curve_preference_model.py`,
-  `test_curve_preference_scoring.py`,
-  `test_curve_preference_qualification.py`,
-  `test_curve_preference_promotion.py`, `test_preference_reranker.py`.
-- mypy: clean on `app/services/curve_preference.py` and
-  `app/services/curve_preference_qualification.py`.
-- Bundle determinism, resume-without-re-enrichment, refusal paths, and
-  source non-mutation are covered by the Task 6/7 tests above.
-
-The model remains DRAFT; no production reranking or config change has been
-made.
+运行 `promote_curve_preference_model.py --dry-run` 得到：
+```json
+{
+ "dry_run": true,
+ "reasons": [
+  "qualification_not_qualified"
+ ],
+ "status": "REFUSED"
+}
+```
+模型在生产库 `dist/GifAgentUI/data/library.db` 中保持 **`DRAFT`** 状态，发布器安全阻断发布。

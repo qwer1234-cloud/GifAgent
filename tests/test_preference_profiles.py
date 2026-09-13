@@ -22,7 +22,11 @@ def seeded_db(profile_db):
     from app.services.preference_events import PreferenceEventService
 
     conn = profile_db
-    svc = PreferenceEventService(conn)
+
+    def _no_embed(_text: str) -> list[float]:
+        raise RuntimeError("seeded_db must not call the embedding service")
+
+    svc = PreferenceEventService(conn, embed_fn=_no_embed)
 
     videos = ["video-a", "video-b", "video-c"]
     # Insert like candidate rows

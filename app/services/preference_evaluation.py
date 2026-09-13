@@ -81,7 +81,7 @@ class PreferenceEvaluationService:
         """
         # ---- 1. Verify build exists ----------------------------------------
         build = self.conn.execute(
-            """SELECT profile_version, event_watermark, status
+            """SELECT profile_version, event_watermark, status, config_json
                FROM preference_profile_builds
                WHERE profile_version = ?""",
             (profile_version,),
@@ -89,6 +89,15 @@ class PreferenceEvaluationService:
 
         if build is None:
             raise ValueError(f"Build not found: {profile_version}")
+
+        exclude_source_videos: set[str] = set()
+        if "config_json" in build.keys() and build["config_json"]:
+            try:
+                cfg = json.loads(build["config_json"])
+                if isinstance(cfg, dict) and "exclude_source_videos" in cfg:
+                    exclude_source_videos = set(cfg["exclude_source_videos"])
+            except Exception:
+                pass
 
         # ---- 2. Load holdout judgments -------------------------------------
         holdout_judgments: dict[str, dict[str, str]] = {}
@@ -112,6 +121,7 @@ class PreferenceEvaluationService:
             overlap = self._check_source_video_overlap(
                 event_watermark=build["event_watermark"],
                 holdout_candidate_ids=list(holdout_judgments.keys()),
+                exclude_source_videos=exclude_source_videos,
             )
             gate_reasons.extend(overlap)
 
@@ -181,18 +191,29 @@ class PreferenceEvaluationService:
         elif holdout_count > 0:
             holdout_judgments = self._synthetic_holdout(holdout_count)
 
+        exclude_source_videos: set[str] = set()
+        if "config_json" in build.keys() and build["config_json"]:
+            try:
+                cfg = json.loads(build["config_json"])
+                if isinstance(cfg, dict) and "exclude_source_videos" in cfg:
+                    exclude_source_videos = set(cfg["exclude_source_videos"])
+            except Exception:
+                pass
+
         # ---- 2. Source-video integrity check -------------------------------
         overlap_reasons = []
         if holdout_judgments:
             overlap_reasons = self._check_source_video_overlap(
                 event_watermark=build["event_watermark"],
                 holdout_candidate_ids=list(holdout_judgments.keys()),
+                exclude_source_videos=exclude_source_videos,
             )
 
         # Collect per-source-video stats
         source_video_info = self._collect_source_video_info(
             event_watermark=build["event_watermark"],
             holdout_candidate_ids=list(holdout_judgments.keys()),
+            exclude_source_videos=exclude_source_videos,
         )
 
         source_video_integrity = {
@@ -304,6 +325,7 @@ class PreferenceEvaluationService:
         *,
         event_watermark: str,
         holdout_candidate_ids: list[str],
+        exclude_source_videos: set[str] | None = None,
     ) -> list[str]:
         """Return gate reasons for any source-video overlap between training
         events and holdout candidates."""
@@ -315,7 +337,10 @@ class PreferenceEvaluationService:
             (event_watermark,),
         ).fetchall()
 
-        training_videos: set[str] = {row[0] for row in training_rows}
+        exclude_set = exclude_source_videos or set()
+        training_videos: set[str] = {
+            row[0] for row in training_rows if row[0] not in exclude_set
+        }
 
         if not training_videos or not holdout_candidate_ids:
             return []
@@ -442,6 +467,7 @@ class PreferenceEvaluationService:
         *,
         event_watermark: str,
         holdout_candidate_ids: list[str],
+        exclude_source_videos: set[str] | None = None,
     ) -> dict[str, Any]:
         """Collect per-source-video statistics for train/holdout."""
         training_rows = self.conn.execute(
@@ -450,7 +476,10 @@ class PreferenceEvaluationService:
                WHERE created_at <= ?""",
             (event_watermark,),
         ).fetchall()
-        training_videos: set[str] = {row[0] for row in training_rows}
+        exclude_set = exclude_source_videos or set()
+        training_videos: set[str] = {
+            row[0] for row in training_rows if row[0] not in exclude_set
+        }
 
         holdout_videos: set[str] = set()
         if holdout_candidate_ids:

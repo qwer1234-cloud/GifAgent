@@ -139,7 +139,10 @@ def load_folder_choices(root_dir: str):
                 or folder.get("unmaterialized_count", 0) > 0)
         ]
         fully_rated = len(folders) - len(reviewable)
-        shown = reviewable or folders
+        local_rated = [
+            folder for folder in folders if not folder.get("duplicate_of_rated")
+        ]
+        shown = reviewable or local_rated
         choices = [(_folder_label(folder), folder["folder"]) for folder in shown]
         selected = choices[0][1] if len(choices) == 1 else None
         if not choices:
@@ -188,7 +191,7 @@ def load_candidates(
             "status": filter_status or "candidate",
             "folder": folder,
         }
-        resp = httpx.get(f"{API_BASE}/api/candidates", params=params, timeout=10)
+        resp = httpx.get(f"{API_BASE}/api/candidates", params=params, timeout=60)
         if resp.status_code == 200:
             data = resp.json()
             return data.get("candidates", []), data
@@ -465,6 +468,17 @@ def _apply_local_rating(
     return remaining, next_item
 
 
+def _folder_paths_match(left: str | None, right: str | None) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return Path(left).resolve(strict=False) == Path(right).resolve(strict=False)
+    except OSError:
+        return os.path.normcase(os.path.normpath(left)) == os.path.normcase(
+            os.path.normpath(right)
+        )
+
+
 def _local_queue_info(folder: str | None, page: int, remaining: int) -> str:
     folder_name = os.path.basename((folder or "").rstrip("\\/")) or folder or "?"
     return f"Folder: {folder_name} | Page {int(page) + 1} | Local queue remaining: {remaining}"
@@ -536,8 +550,19 @@ def rate_and_advance(
             )
 
     gallery, info, page_update, page_items = load_page(
-        int(page), filter_status=filter_status, folder=folder
+        0 if filter_status in (None, "", "candidate") else int(page),
+        filter_status=filter_status,
+        folder=folder,
     )
+    if isinstance(info, str) and info.startswith("Error:"):
+        cid, label, preview, artifact_path = select_first_candidate(page_items)
+        return (
+            result, gallery, info, page_update, page_items,
+            cid, label, preview, artifact_path,
+            gr.update(value=folder), previous_folders,
+            _next_preview_path(page_items[0], page_items) if page_items else None,
+            gr.update(),
+        )
     if page_items:
         cid, label, preview, artifact_path = select_first_candidate(page_items)
         return (
@@ -554,6 +579,30 @@ def rate_and_advance(
     else:
         _folder_update, folder_info, refreshed_folders = folder_result
         remaining_folder_count = len(refreshed_folders)
+    current_still_reviewable = any(
+        _folder_paths_match(item.get("folder"), folder) for item in refreshed_folders
+    )
+    if current_still_reviewable:
+        gallery, info, page_update, page_items = load_page(
+            0, filter_status=filter_status, folder=folder
+        )
+        if page_items:
+            cid, label, preview, artifact_path = select_first_candidate(page_items)
+            return (
+                result, gallery, info, page_update, page_items,
+                cid, label, preview, artifact_path,
+                gr.update(value=folder), previous_folders,
+                _next_preview_path(page_items[0], page_items),
+                remaining_folder_count,
+            )
+        return (
+            result, gallery,
+            f"{info} Staying in the current folder; remaining GIFs did not load.",
+            page_update, page_items,
+            "", "Reload this folder to continue.", None, "",
+            gr.update(value=folder), previous_folders, None,
+            remaining_folder_count,
+        )
     next_folder = next_reviewable_folder(previous_folders, refreshed_folders, folder)
     folder_choices = [(_folder_label(item), item["folder"]) for item in refreshed_folders]
     if next_folder:

@@ -1,0 +1,35 @@
+{
+  "profile_version": "profile_fdddd3c754081c8f",
+  "source_video_integrity": {
+    "overlap_violations": 0,
+    "overlap_reasons": [],
+    "training_source_videos": 637,
+    "holdout_source_videos": 5,
+    "shared_source_videos": 0,
+    "integrity_ok": true
+  },
+  "base_ndcg_at_20": 0.0,
+  "preference_ndcg_at_20": 0.0,
+  "ndcg_delta": 0.0,
+  "pairwise_win_rate": 0.0,
+  "exploration_diversity": {
+    "distinct_source_videos": 5,
+    "distinct_scenario_keys": 117,
+    "candidate_count": 43
+  },
+  "vector_coverage": {
+    "total_candidates": 43,
+    "with_vectors": 43,
+    "coverage_ratio": 1.0
+  },
+  "inactive_fallbacks": {
+    "total": 43,
+    "preference_scored": 0,
+    "base_fallback": 43,
+    "fallback_ratio": 1.0
+  },
+  "publish_gate": {
+    "can_publish": true,
+    "gate_reasons": []
+  }
+}

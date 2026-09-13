@@ -32,3 +32,26 @@ build/
 
 # Token sprint shared root (coordinator control plane + artifacts)
 data/token_sprint/
+
+# Local runtime state, media, model weights, evidence bundles and experiments.
+# Keep reproducible code/fixtures in scripts/ and tests/, summaries in docs/.
+/data/
+/app/data/
+/scratch/
+# Generated per-candidate judgments / split identities; keep summary reports.
+/docs/reports/2026-09-preference-memory/holdout/
+/.venv-*/
+/.mypy_cache/
+/.ruff_cache/
+/.hypothesis/
+/.coverage
+/htmlcov/
+.env.*
+!.env.example
+
+# Generated Mimosa hook/audit output (not scanner configuration).
+/.mimosa/finding-ledger/
+/.mimosa/history/
+/.mimosa/hook-state/
+/.mimosa/hook-status/
+/.mimosa/reports/

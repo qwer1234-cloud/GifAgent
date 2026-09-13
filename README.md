@@ -2,6 +2,76 @@
 
 > 本地影视 GIF 自动标注与偏好挖掘 Agent —— 基于 Ollama + FAISS + RAG 的智能片段发现系统
 
+## 代码状态与近期变更（2026-09-13）
+
+新视频数据闭环 A 与曲线偏好学习 C 的整改代码已通过复核，状态为
+**`A/C CODE_ACCEPTED_SHADOW_DISABLED`**。这不是生产启用或模型晋升结论：
+capture、曲线学习及曲线排序仍默认关闭，模式缺省为 shadow，晋升保持人工操作。
+连续性 B（主体跟踪、动作语义连续性硬门、人工复核续跑）**未实现、未上线**。
+已有动作边界/转场保护和姿态特征提取不能等同于人物动作连续性的强保证。
+
+### 已实现的学习链路
+
+- **新视频证据捕获**：源文件 SHA-256、微秒窗口和锚点生成 preexport 身份；
+  `rank_dedup` 先挂载源视频曲线特征，再共享评分，再冻结证据，最后截断导出。
+  成功入库时在同一事务内建立 publication 关联并写入训练特征账本。
+- **特征运行时**：原视频使用 `curve-source-v1`；历史 GIF 的 `curve-v1` 是不同输入域，
+  不可混训。外置 ONNX worker 校验源哈希、窗口 input hash、模型包及后端实现身份；
+  运行时或证据不可用会产生结构化缺失状态，不补零伪造特征。
+- **向量分工**：`candidate_vectors.vector_type='clip'` 是可刷新的检索向量，
+  也是画像质心与画像资格快照唯一消费的类型；`'preference'` 保存捕获时的评分向量，
+  用于训练证据核验，不参与画像质心。常规检索向量刷新不得覆盖评分证据。
+- **训练与评估**：有效反馈按撤销/correction/最新事件语义解析；训练、开发、最终
+  holdout 按源视频隔离。NumPy L2 逻辑回归只拟合训练集，结果先为 DRAFT。
+  资格评估重放共享评分器，绑定配置、画像、清单、实际向量和产物哈希；
+  必须相对无曲线基线满足配对统计门禁，不能以“优于随机”代替发布资格。
+- **后台学习**：`learning_jobs` 持久化 `SNAPSHOT → TRAIN → QUALIFY → COMPLETE`。
+  每次领取使用独立 `lease_token`；被接管的 worker 返回 `LEASE_LOST` 并继续轮询，
+  不修改新持有者状态。训练、资格、人工晋升、部署 CAS 与回滚相互分离。
+- **影子排序**：记录 baseline / nominal / effective 三路分数，shadow 不改变生产顺序。
+  active 还需合格模型、匹配的配置及画像内容；身份缺失、漂移或异常证据回退 BASELINE。
+
+### 审核与评估工具更新
+
+候选审核按规范化片段身份复用重复文件的评分状态，避免复制文件夹再次出现整批待评；
+审核剩余集合缩小时从首页补充候选，加载失败或当前文件夹仍有候选时不会误跳下一目录。
+相关实现为 `candidate_identity.py`、候选 API 和 `app/ui/tabs/review.py`。
+
+画像 build/preview API 接受 `exclude_source_videos`，源排除列表参与画像版本与评估；
+可用以下 CLI 生成源分组 holdout，或评估已构建的画像（请显式选择数据库）：
+
+```powershell
+uv run python scripts/preference_holdout_split.py --db <library-copy.db> --output-dir data/preference_holdout
+uv run python scripts/evaluate_preference.py --db <library-copy.db> --profile-version <version> --holdout data/preference_holdout/holdout.jsonl --grouped
+```
+
+拆分后，必须将生成的 `exclude_source_videos.json` 内容传入画像 build/preview API 的
+同名数组字段；只生成 holdout 文件不会自动排除训练来源。曲线资格脚本另支持
+`--config` 绑定目标排序配置和 `--qualification-id` 指定运行包身份。
+
+### 验收边界与开发入口
+
+`d40ca4ef` 的隔离提交已复现指定 17 个 A/C 回归文件 **236 passed**，
+`mypy app/services` 检查 63 个文件通过。测试证明代码契约，不证明真实媒体覆盖率、
+模型优于生产基线或 EXE 可用；真实媒体全链路、连续性 B、完整打包及安全审计仍须独立验收。
+后续提交的测试总数以重新执行结果为准，不沿用历史工作树计数。
+
+本次仓库同步前全量回归（2026-09-13）：**2654 passed / 2 failed / 2 skipped**。
+已知失败为 `test_active_review_api.py::TestProfilePreview::test_preview_does_not_publish`
+（直接调用端点时的 `Body(None)` 默认参数）和
+`token_sprint/test_snapshot_fts_rebuild.py::TestRebuildContract::test_rebuild_without_clear_skips_when_state_complete`
+（FTS 重建/跳过契约）。本次仅同步代码与文档，不修订这两项行为，不能据此宣称全量发布门禁通过。
+
+- [开发约束与模块地图](Agent.md)
+- [新视频连续性与偏好学习实施计划](docs/superpowers/plans/2026-09-06-new-video-continuity-preference-learning.md)
+- [A/C 闭环整改计划](docs/superpowers/plans/2026-09-11-new-video-learning-closure-remediation.md)
+- [整改交付与逐轮验证记录](docs/reports/2026-09-new-video-learning-closure/README.md)
+- [曲线资格评估记录](docs/reports/2026-09-curve-preference-qualification/README.md)
+
+Git 仅保存源码、配置模板、测试、设计文档和精选报告。`data/`、`app/data/`、
+`scratch/`、本地模型/虚拟环境、构建产物和 Mimosa 运行日志不纳管；
+忽略不等于备份，源媒体、数据库、反馈及资格证据包须另行保存。
+
 ## 概述
 
 GifAgent 是一个运行在本地的影视片段智能管理工具。它自动扫描 GIF/视频文件，调用本地 VLM 分析每一帧的审美特征和情感表达，通过质量门禁过滤低质量输出，建立 FAISS 向量索引支持相似检索，并在新视频中自动发现符合偏好的经典片段。
@@ -52,7 +122,7 @@ E:\data\originals\（8000+ GIF）
 | 并发 | `frame_extract_workers=6`，`vlm_score_workers=2`（需 `OLLAMA_NUM_PARALLEL=2`），`gpu_stage_workers=1`，`cpu_stage_workers=3` |
 | 默认关闭 | `boundary_snap_enabled`、`score_calibration_enabled`（缺省即旧行为；未做盲测前不要打开） |
 | Quality MoE | `enabled: true`，`report_only: false`；排序 80% adult（0.4×worthiness + 0.6×sex_act）+ 20% cinematic |
-| Preference Memory | 若 `enabled: true`，**用 caption embedding 替代** adult 排序 |
+| Preference Memory | 若 `enabled: true`，共享评分器混合基础导出分与 caption 偏好分；权重取冻结配置，证据不足回退基础分 |
 | 阶段超时 | 默认 1h；`vlm` 4h；`refine` 6h |
 | 打包入口 | `dist/GifAgentUI/GifAgentUI.exe`（API `8000` + Gradio `7861`） |
 
@@ -228,7 +298,7 @@ uv run python scripts/test_video_batch.py --dir "C:/path/to/videos"
 ```
 
 输出：
-- `data/exports/adaptive_test/{video_name}/`：每个视频的候选 GIF 片段（区域 merge，默认 `max_merge_span_s=24`）
+- `data/exports/adaptive_test/{video_name}/`：每个视频的候选 GIF 片段（区域 merge，主配置默认 `max_merge_span_s=18`）
 - `data/exports/adaptive_test/{video_name}/Sample/`：9 宫格缩略图（`{video_name}_grid.jpg`）+ 9 张独立帧图（`{video_name}_sample_*.jpg`）
 - GIF 命名格式：`{video_name}@@@{seq}_{start_ms}ms-{end_ms}ms.gif`（旧的秒格式仅用于兼容读取）
 - `data/batch_checkpoint.json`：批量处理断点文件（含视频指纹，用于跨文件名去重）
@@ -683,7 +753,7 @@ uv run python scripts/preference_memory.py status --json
 
 ```bash
 uv run pytest tests/ -v
-# Current suite: 1733 collected tests (2026-08-28).
+# 查看当前数量：uv run pytest tests/ --collect-only -q
 # Covers: JSON 解析、placeholder 检测、emotional_core 归一化、
 # FAISS manifest 验证、reset 安全性、候选物化、反馈事件、偏好画像、Holdout 评估、重排序、
 # 质量实验室 API、盲测 A/B、晋级/回滚
@@ -759,8 +829,9 @@ Source-grouped 评估（Phase 3）:
 ### 功能开关
 
 在 `configs/models.yaml` 中通过 `preference_memory.enabled` 控制。为 `true` 时，
-自适应导出用 caption embedding 对收藏质心打分，**并替代** adult `sex_act` 排序。
-要按成人动作强度导出时请关闭 Preference Memory。
+自适应导出通过共享评分器将基础导出分与 caption 偏好分混合，权重由
+`base_score_weight` / `preference_score_weight` 冻结决定；画像或向量不可用时保留基础分。
+关闭 Preference Memory 则使用原有 adult MoE / VLM 排序。
 
 ```yaml
 preference_memory:
@@ -804,13 +875,12 @@ the first missing row. Endpoint failures are never recorded as candidate
 exclusions. The desktop launcher shuts down the owned keeper idempotently on
 window close.
 
-```
-
 Profile 页面中的 `Backfill Missing Vectors` 会在后台以单个任务运行，并每两秒刷新
 `Vector Backfill` 状态。任务开始前会检查 Ollama 端点和配置的 embedding 模型；服务不可用时
 会立即标记为 `paused`，不会对每个 GIF 逐个等待连接超时。每个向量独立提交，重启后只处理
 仍缺失的向量，不会修改已有评分、数据库记录或导出目录。
 
+```bash
 # 发布画像
 uv run python scripts/preference_memory.py publish --profile-version <version>
 ```

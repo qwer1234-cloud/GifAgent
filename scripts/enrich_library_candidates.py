@@ -29,6 +29,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -38,6 +39,7 @@ import numpy as np  # noqa: E402
 from PIL import Image, ImageSequence  # noqa: E402
 
 from app.quality_moe.evaluator import _contact_sheet  # noqa: E402
+from app.services.candidate_vectors import upsert_candidate_vector  # noqa: E402
 from app.services.scenario import normalize_scenario_keys  # noqa: E402
 
 DEFAULT_DB = "dist/GifAgentUI/data/library.db"
@@ -100,7 +102,9 @@ def _load_frames(path: Path, max_frames: int, max_side: int) -> list[np.ndarray]
     return frames
 
 
-def _ask_vlm(client: httpx.Client, base_url: str, model: str, sheet: Path, timeout: float) -> dict:
+def _ask_vlm(
+    client: httpx.Client, base_url: str, model: str, sheet: Path, timeout: float
+) -> dict[str, Any]:
     payload = {
         "model": model,
         "prompt": ENRICH_PROMPT,
@@ -136,7 +140,7 @@ def _ask_vlm(client: httpx.Client, base_url: str, model: str, sheet: Path, timeo
     raise RuntimeError(last_err)
 
 
-def _record_from(data: dict, model: str) -> tuple[str, str, str]:
+def _record_from(data: dict[str, Any], model: str) -> tuple[str, str, str]:
     emotion = str(data.get("emotional_core") or "").strip().lower()
     if emotion not in _EMOTIONS:
         emotion = "other"
@@ -251,6 +255,10 @@ def main(argv: list[str] | None = None) -> int:
                     (summary_json, tags_json, scenario_json, _now(), rid),
                 )
                 conn.commit()
+                try:
+                    upsert_candidate_vector(conn, candidate_id=cid)
+                except Exception:
+                    pass
                 sheet.unlink(missing_ok=True)
             except Exception as exc:  # noqa: BLE001 - one bad row must not stop the batch
                 status = "skipped"

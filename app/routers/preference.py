@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/preference", tags=["preference"])
 
 class BuildRequest(BaseModel):
     dry_run: bool = False
+    exclude_source_videos: list[str] = []
 
 
 class PublishResponse(BaseModel):
@@ -61,7 +62,10 @@ def trigger_build(body: BuildRequest | None = Body(default=None)):
 
         body = body or BuildRequest()
         service = PreferenceMemoryService(conn)
-        result = service.build_profile(dry_run=body.dry_run)
+        result = service.build_profile(
+            dry_run=body.dry_run,
+            exclude_source_videos=body.exclude_source_videos,
+        )
         return result
     finally:
         conn.close()
@@ -125,8 +129,12 @@ def evaluate_profile(body: EvaluateRequest):
 # ── Phase 3 Task 6: Profile preview, rollback, vector-health ────────────────
 
 
+class PreviewRequest(BaseModel):
+    exclude_source_videos: list[str] = []
+
+
 @router.post("/profiles/preview")
-def preview_profile_endpoint():
+def preview_profile_endpoint(body: PreviewRequest | None = Body(default=None)):
     """Preview whether a profile build would pass all gates.
 
     Returns gate reasons, metrics, and the computed profile_version --
@@ -136,10 +144,15 @@ def preview_profile_endpoint():
     try:
         apply_preference_schema(conn)
 
-        from app.services.preference_memory import ProfileBuildConfig
+        from app.services.preference_types import ProfileBuildConfig
 
+        body = body or PreviewRequest()
         config = ProfileBuildConfig()
-        result = preview_profile(conn, config)
+        result = preview_profile(
+            conn,
+            config,
+            exclude_source_videos=body.exclude_source_videos,
+        )
         return {
             "profile_version": result.profile_version,
             "status": result.status,

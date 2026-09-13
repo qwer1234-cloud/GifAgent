@@ -29,8 +29,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sqlite3
 import sys
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -42,7 +44,7 @@ from app.services.curve_preference_qualification import (  # noqa: E402
 
 def _make_enrich_fn(
     sheet_dir: Path, base_url: str, model: str
-) -> "callable[[str], str]":
+) -> Callable[[str], str]:
     """Reuse the production enrichment primitives for missing VLM evidence."""
 
     import httpx
@@ -70,12 +72,12 @@ def _make_enrich_fn(
     return enrich
 
 
-def _make_vector_fn():
+def _make_vector_fn() -> Callable[[sqlite3.Connection, str], bool]:
     """Vector generation uses the production upsert path inside work.db."""
 
     from app.services.candidate_vectors import upsert_candidate_vector
 
-    def generate(work_conn, candidate_id: str) -> bool:
+    def generate(work_conn: sqlite3.Connection, candidate_id: str) -> bool:
         try:
             return bool(
                 upsert_candidate_vector(work_conn, candidate_id=candidate_id)
@@ -109,6 +111,16 @@ def main(argv: list[str] | None = None) -> int:
         "--model", default="huihui_ai/qwen3-vl-abliterated:8b-instruct-q8_0",
         help="VLM model used only for missing VLM evidence",
     )
+    parser.add_argument(
+        "--config",
+        default="dist/GifAgentUI/configs/models.yaml",
+        help="production ranking config file (for target weights & hash binding)",
+    )
+    parser.add_argument(
+        "--qualification-id",
+        default=None,
+        help="explicit qualification run ID to create or resume",
+    )
     args = parser.parse_args(argv)
 
     enrich_fn = None
@@ -124,15 +136,19 @@ def main(argv: list[str] | None = None) -> int:
         db_path=Path(args.db),
         model_version=args.model_version,
         work_dir=Path(args.work_dir),
+        config_path=Path(args.config) if args.config else None,
         enrich_fn=enrich_fn,
         vector_fn=vector_fn,
         dry_run=args.dry_run,
         limit=args.limit,
         qualification_id=(
-            "rehearsal-"
-            + uuid.uuid4().hex[:8]
-            if args.limit
-            else None
+            args.qualification_id
+            or (
+                "rehearsal-"
+                + uuid.uuid4().hex[:8]
+                if args.limit
+                else None
+            )
         ),
     )
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -30,6 +31,11 @@ def main() -> None:
         description="Evaluate a preference profile against a holdout set."
     )
     parser.add_argument(
+        "--db",
+        default=None,
+        help="SQLite database path (defaults to database configured in models.yaml)",
+    )
+    parser.add_argument(
         "--profile-version",
         required=True,
         help="Profile version to evaluate (e.g. profile_abc123def45678)",
@@ -46,25 +52,51 @@ def main() -> None:
         default=0,
         help="Generate N synthetic holdout judgments (for testing)",
     )
+    parser.add_argument(
+        "--grouped",
+        action="store_true",
+        help="Run source-grouped evaluation for active-learning quality metrics",
+    )
     args = parser.parse_args()
 
     if args.holdout is None and args.holdout_count <= 0:
         parser.error("Either --holdout <jsonl> or --holdout-count <N> is required.")
 
-    conn = get_connection()
-    apply_preference_schema(conn)
+    if args.db:
+        db_path = Path(args.db)
+        if not db_path.exists():
+            print(f"ERROR: database not found: {db_path}", file=sys.stderr)
+            sys.exit(1)
+        conn = sqlite3.connect(str(db_path), timeout=30.0)
+        conn.row_factory = sqlite3.Row
+    else:
+        conn = get_connection()
 
-    service = PreferenceEvaluationService(conn)
-    report = service.evaluate(
-        args.profile_version,
-        holdout_path=args.holdout,
-        holdout_count=args.holdout_count,
-    )
+    try:
+        apply_preference_schema(conn)
+        service = PreferenceEvaluationService(conn)
 
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+        if args.grouped:
+            report = service.evaluate_source_grouped(
+                args.profile_version,
+                holdout_path=args.holdout,
+                holdout_count=args.holdout_count,
+            )
+            can_publish = report["publish_gate"]["can_publish"]
+        else:
+            report = service.evaluate(
+                args.profile_version,
+                holdout_path=args.holdout,
+                holdout_count=args.holdout_count,
+            )
+            can_publish = report["can_publish"]
 
-    if not report["can_publish"]:
-        sys.exit(1)
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+
+        if not can_publish:
+            sys.exit(1)
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

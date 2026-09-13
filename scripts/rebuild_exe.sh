@@ -112,14 +112,21 @@ else
   exit 1
 fi
 
-# Verify that the bundled adaptive exporter is from the current source.  An
-# EXE-only replacement can leave a stale _internal/scripts copy behind, which
-# silently restores the legacy seconds-based filename format.
+# Verify the bundled adaptive exporter is the current facade, not a stale
+# seconds-based copy left behind by an EXE-only replacement. Millisecond
+# naming now lives in app.pipeline (inside PYZ), so the script check is
+# the pipeline import plus a source-tree filename helper.
 RUNTIME_ADAPTIVE="$EXE_DIR/_internal/scripts/test_video_adaptive.py"
-if [[ -f "$RUNTIME_ADAPTIVE" ]] && grep -Fq "from app.services.gif_naming import build_gif_filename" "$RUNTIME_ADAPTIVE"; then
-  echo "✓ bundled adaptive exporter uses millisecond filenames"
+if [[ -f "$RUNTIME_ADAPTIVE" ]] && grep -Fq "from app.pipeline.direct import run_direct_mode, run_pipeline" "$RUNTIME_ADAPTIVE"; then
+  echo "✓ bundled adaptive exporter uses the pipeline facade"
 else
-  echo "✗ FAIL: bundled adaptive exporter is missing millisecond naming code"
+  echo "✗ FAIL: bundled adaptive exporter is missing the pipeline facade"
+  exit 1
+fi
+if grep -Fq "from app.services.gif_naming import build_gif_filename" app/pipeline/direct.py app/pipeline/stages/gif_clip.py; then
+  echo "✓ millisecond GIF naming is in the pipeline source used for this build"
+else
+  echo "✗ FAIL: millisecond GIF naming missing from pipeline source"
   exit 1
 fi
 

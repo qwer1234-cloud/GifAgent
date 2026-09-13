@@ -16,6 +16,15 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.db import get_connection
+from app.services.candidate_identity import (
+    DuplicateReviewIndex,
+    best_row_for_keys,
+    build_clip_identity_index,
+    fetch_clip_identity_rows,
+    identity_keys_for_file,
+    inherited_status,
+    primary_identity_key,
+)
 from app.services.preference_events import PreferenceEventService
 from app.services.favorites import FavoriteService
 from app.services.gif_naming import parse_clip_filename
@@ -120,9 +129,49 @@ def _parse_clip_times(path: Path) -> tuple[float, float]:
     return parse_clip_filename(path)
 
 
-def _materialize_filesystem_candidates_for_folder(conn, folder: Path) -> int:
-    """Create candidate rows for GIFs in the exact selected folder only."""
+def _clip_identity_index(conn) -> dict:
+    return build_clip_identity_index(fetch_clip_identity_rows(conn))
+
+
+def _apply_shadow_folder_counts(folders: dict[Path, dict], duplicates: DuplicateReviewIndex) -> None:
+    for folder_path, info in folders.items():
+        shadow = duplicates.shadow_status(folder_path)
+        if not shadow:
+            continue
+        candidate_count = info["status_counts"].pop("candidate", 0)
+        if candidate_count:
+            info["status_counts"][shadow] = info["status_counts"].get(shadow, 0) + candidate_count
+        info["unmaterialized_count"] = 0
+        info["duplicate_of_rated"] = True
+
+
+def _row_status_payload(row, status: str, artifact_path: Path | None = None) -> dict:
+    payload = _row_payload(row)
+    payload["status"] = status
+    if artifact_path is not None:
+        display = _path_display(Path(artifact_path))
+        payload["artifact_path"] = display
+        payload["preview_path"] = display
+        payload["display_path"] = display
+    return payload
+
+
+def _materialize_filesystem_candidates_for_folder(
+    conn,
+    folder: Path,
+    identity_index: dict | None = None,
+) -> int:
+    """Create candidate rows for GIFs in the exact selected folder only.
+
+    Folder import only registers paths. It does not embed vectors: there is
+    no VLM caption yet. Vectors are written later by enrich_library_candidates
+    or CandidateService (pipeline materialize / adaptive import). Scoring
+    feedback also best-effort upserts when semantic text already exists.
+    Skip GIFs that are already in the library under another export path.
+    """
     existing_paths: set[Path] = set()
+    if identity_index is None:
+        identity_index = _clip_identity_index(conn)
     for row in _candidate_rows(conn, status="all", folder=folder):
         artifact_path = _resolve_artifact_path(row["artifact_path"])
         if artifact_path is not None and artifact_path.parent == folder:
@@ -132,6 +181,8 @@ def _materialize_filesystem_candidates_for_folder(conn, folder: Path) -> int:
     now = datetime.now(timezone.utc).isoformat()
     for gif_path in _iter_gif_files(folder, recursive=False):
         if gif_path in existing_paths:
+            continue
+        if best_row_for_keys(identity_index, identity_keys_for_file(gif_path)) is not None:
             continue
 
         artifact_path = _path_display(gif_path)
@@ -298,10 +349,14 @@ def list_candidate_folders(
     """List recursive subfolders under root that have candidate GIF rows or GIF files."""
     root_path = _resolve_user_folder(root)
     conn = get_connection()
+    identity_rows = fetch_clip_identity_rows(conn)
+    identity_index = build_clip_identity_index(identity_rows)
+    duplicates = DuplicateReviewIndex(identity_rows)
     rows = _candidate_rows(conn, status=status, folder=root_path)
 
     folders: dict[Path, dict] = {}
     known_artifact_paths: set[Path] = set()
+    counted: set[tuple[Path, str]] = set()
     known_rows = (
         rows if status == "all"
         else _candidate_rows(conn, status="all", folder=root_path)
@@ -314,7 +369,18 @@ def list_candidate_folders(
         folder = _folder_for_row(row, root_path)
         if folder is None:
             continue
-        row_status = row["status"]
+        ident = primary_identity_key(row["artifact_path"], row["start_sec"], row["end_sec"])
+        counted_key = (folder, ident)
+        if counted_key in counted:
+            continue
+        counted.add(counted_key)
+        row_status = inherited_status(
+            identity_index,
+            artifact_path=row["artifact_path"],
+            start_sec=row["start_sec"],
+            end_sec=row["end_sec"],
+            local_status=row["status"],
+        )
         artifact_path = _resolve_artifact_path(row["artifact_path"])
         _add_folder_count(
             folders,
@@ -328,6 +394,22 @@ def list_candidate_folders(
         for gif_path in _iter_gif_files(root_path, recursive=True):
             if gif_path in known_artifact_paths:
                 continue
+            ident = primary_identity_key(
+                str(gif_path), *_parse_clip_times(gif_path)
+            )
+            counted_key = (gif_path.parent, ident)
+            if counted_key in counted:
+                continue
+            counted.add(counted_key)
+            twin = best_row_for_keys(identity_index, identity_keys_for_file(gif_path))
+            if twin is not None:
+                _add_folder_count(
+                    folders,
+                    root_path,
+                    gif_path.parent,
+                    status=twin["status"],
+                )
+                continue
             _add_folder_count(
                 folders,
                 root_path,
@@ -335,6 +417,8 @@ def list_candidate_folders(
                 status="candidate",
                 unmaterialized=True,
             )
+
+    _apply_shadow_folder_counts(folders, duplicates)
 
     sorted_folders = sorted(
         folders.values(),
@@ -358,25 +442,32 @@ def list_candidates(
 
     if folder:
         folder_path = _resolve_user_folder(folder)
-        _materialize_filesystem_candidates_for_folder(conn, folder_path)
-        rows: list[tuple[object, Path, int]] = []
+        identity_rows = fetch_clip_identity_rows(conn)
+        identity_index = build_clip_identity_index(identity_rows)
+        created = _materialize_filesystem_candidates_for_folder(
+            conn, folder_path, identity_index=identity_index
+        )
+        if created:
+            identity_rows = fetch_clip_identity_rows(conn)
+            identity_index = build_clip_identity_index(identity_rows)
+        duplicates = DuplicateReviewIndex(identity_rows)
+        shadow_status = duplicates.shadow_status(folder_path)
+        rows: list[tuple[object, Path, int, str]] = []
         status_counts: dict[str, int] = {}
         moved_errors: list[dict] = []
-        for row in _candidate_rows(conn, status="all", folder=folder_path):
-            row_folder = _folder_for_row(row, folder_path)
-            if row_folder != folder_path:
-                continue
+        seen_identities: set[str] = set()
+        local_gifs = {
+            path.name.casefold(): path
+            for path in _iter_gif_files(folder_path, recursive=False)
+        }
 
-            artifact_path = _resolve_artifact_path(row["artifact_path"])
-            if artifact_path is None:
-                moved_errors.append(
-                    {
-                        "candidate_id": row["candidate_id"],
-                        "artifact_path": row["artifact_path"],
-                        "expected_folder": str(folder_path),
-                    }
-                )
-                continue
+        def _accept_row(row, artifact_path: Path, row_status: str) -> None:
+            ident = primary_identity_key(
+                row["artifact_path"], row["start_sec"], row["end_sec"]
+            )
+            if ident in seen_identities:
+                return
+            seen_identities.add(ident)
             try:
                 stat_result = artifact_path.stat()
             except (OSError, ValueError):
@@ -387,12 +478,52 @@ def list_candidates(
                         "expected_folder": str(folder_path),
                     }
                 )
-                continue
-
-            row_status = row["status"]
+                return
             status_counts[row_status] = status_counts.get(row_status, 0) + 1
             if status == "all" or row_status == status:
-                rows.append((row, artifact_path, stat_result.st_mtime_ns))
+                rows.append((row, artifact_path, stat_result.st_mtime_ns, row_status))
+
+        for row in _candidate_rows(conn, status="all", folder=folder_path):
+            row_folder = _folder_for_row(row, folder_path)
+            if row_folder != folder_path:
+                continue
+
+            artifact_path = _resolve_artifact_path(row["artifact_path"])
+            if artifact_path is None or not artifact_path.exists():
+                artifact_path = local_gifs.get(Path(row["artifact_path"] or "").name.casefold())
+            if artifact_path is None:
+                moved_errors.append(
+                    {
+                        "candidate_id": row["candidate_id"],
+                        "artifact_path": row["artifact_path"],
+                        "expected_folder": str(folder_path),
+                    }
+                )
+                continue
+            row_status = inherited_status(
+                identity_index,
+                artifact_path=row["artifact_path"],
+                start_sec=row["start_sec"],
+                end_sec=row["end_sec"],
+                local_status=row["status"],
+            )
+            if shadow_status and row_status == "candidate":
+                row_status = shadow_status
+            _accept_row(row, artifact_path, row_status)
+
+        for gif_path in _iter_gif_files(folder_path, recursive=False):
+            ident = primary_identity_key(
+                str(gif_path), *_parse_clip_times(gif_path)
+            )
+            if ident in seen_identities:
+                continue
+            twin = best_row_for_keys(identity_index, identity_keys_for_file(gif_path))
+            if twin is None:
+                continue
+            twin_status = twin["status"]
+            if shadow_status and twin_status == "candidate":
+                twin_status = shadow_status
+            _accept_row(twin, gif_path, twin_status)
 
         if moved_errors:
             raise HTTPException(
@@ -419,7 +550,7 @@ def list_candidates(
             )
         )
         total = len(rows)
-        page_rows = [item[0] for item in rows[offset : offset + limit]]
+        page_rows = rows[offset : offset + limit]
         return {
             "total": total,
             "limit": limit,
@@ -427,7 +558,9 @@ def list_candidates(
             "has_more": offset + len(page_rows) < total,
             "status_counts": status_counts,
             "folder": str(folder_path),
-            "candidates": [_row_payload(r) for r in page_rows],
+            "candidates": [
+                _row_status_payload(item[0], item[3], item[1]) for item in page_rows
+            ],
         }
 
     all_rows = _candidate_rows(conn, status="all")

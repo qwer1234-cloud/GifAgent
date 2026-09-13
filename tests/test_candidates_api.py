@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import subprocess
 
 import pytest
 from fastapi import HTTPException
@@ -476,7 +477,9 @@ def test_list_candidates_folder_tie_breaks_equal_mtimes_by_candidate_id(
         status="all", limit=10, offset=0, folder=str(folder)
     )
 
-    assert [c["candidate_id"] for c in payload["candidates"]] == ["cand-a", "cand-z"]
+    # Same GIF path with two candidate_ids is one review item.
+    assert payload["total"] == 1
+    assert [c["candidate_id"] for c in payload["candidates"]] == ["cand-a"]
 
 
 def test_list_candidates_folder_materialized_gifs_use_actual_mtimes(
@@ -586,3 +589,307 @@ def test_list_candidates_without_folder_keeps_created_at_order(monkeypatch, tmp_
         "cand-new-db",
         "cand-old-db",
     ]
+
+
+def _rated_relocated_trees(tmp_path):
+    gif_name = "Vid@@@001_1000ms-2000ms.gif"
+    repo = tmp_path / "data" / "exports" / "adaptive_test" / "Vid"
+    dist = tmp_path / "dist" / "GifAgentUI" / "data" / "exports" / "adaptive_test" / "Vid"
+    repo.mkdir(parents=True)
+    dist.mkdir(parents=True)
+    repo_gif = repo / gif_name
+    dist_gif = dist / gif_name
+    repo_gif.write_bytes(b"gif")
+    dist_gif.write_bytes(b"gif")
+    return repo_gif, dist_gif, dist.parent
+
+
+def test_list_candidate_folders_hides_relocated_already_rated_videos(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    repo_gif, dist_gif, dist_root = _rated_relocated_trees(tmp_path)
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand_fs_old",
+        status="liked",
+        artifact_path=str(repo_gif),
+        preview_path=str(repo_gif),
+    )
+    _insert_candidate(
+        conn,
+        "cand_pipe",
+        status="candidate",
+        artifact_path=str(dist_gif),
+        preview_path=str(dist_gif),
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(root=str(dist_root), status="all")
+    folders = {folder["relative_folder"]: folder for folder in payload["folders"]}
+
+    assert folders["Vid"]["unmaterialized_count"] == 0
+    assert folders["Vid"]["status_counts"].get("candidate", 0) == 0
+    assert folders["Vid"]["status_counts"]["liked"] == 1
+
+
+def test_list_candidate_folders_treats_disk_copy_as_already_rated(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    repo_gif, dist_gif, dist_root = _rated_relocated_trees(tmp_path)
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand_fs_old",
+        status="liked",
+        artifact_path=str(repo_gif),
+        preview_path=str(repo_gif),
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(root=str(dist_root), status="all")
+    folders = {folder["relative_folder"]: folder for folder in payload["folders"]}
+
+    assert folders["Vid"]["unmaterialized_count"] == 0
+    assert folders["Vid"]["status_counts"] == {"liked": 1}
+
+
+def test_list_candidates_does_not_reimport_relocated_rated_gif(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    repo_gif, dist_gif, _dist_root = _rated_relocated_trees(tmp_path)
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand_fs_old",
+        status="liked",
+        artifact_path=str(repo_gif),
+        preview_path=str(repo_gif),
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    unrated = candidates_router.list_candidates(
+        status="candidate",
+        limit=10,
+        offset=0,
+        folder=str(dist_gif.parent),
+    )
+    rated = candidates_router.list_candidates(
+        status="all",
+        limit=10,
+        offset=0,
+        folder=str(dist_gif.parent),
+    )
+
+    assert unrated["total"] == 0
+    assert unrated["status_counts"] == {"liked": 1}
+    assert rated["total"] == 1
+    assert rated["candidates"][0]["candidate_id"] == "cand_fs_old"
+    assert rated["candidates"][0]["status"] == "liked"
+    assert conn.execute("SELECT COUNT(*) FROM candidate_gifs").fetchone()[0] == 1
+
+
+def test_list_candidates_folder_overlays_pipeline_duplicate_as_rated(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    repo_gif, dist_gif, _dist_root = _rated_relocated_trees(tmp_path)
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand_fs_old",
+        status="liked",
+        artifact_path=str(repo_gif),
+        preview_path=str(repo_gif),
+    )
+    _insert_candidate(
+        conn,
+        "cand_pipe",
+        status="candidate",
+        artifact_path=str(dist_gif),
+        preview_path=str(dist_gif),
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="candidate",
+        limit=10,
+        offset=0,
+        folder=str(dist_gif.parent),
+    )
+
+    assert payload["total"] == 0
+    assert payload["status_counts"] == {"liked": 1}
+    assert conn.execute("SELECT COUNT(*) FROM candidate_gifs").fetchone()[0] == 2
+
+
+def test_list_candidate_folders_hides_rereported_collection_videos(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    collection = "P站顶流 Comatozze 更新至20260709大合集"
+    rated_dir = tmp_path / "library" / collection / "Old Title 1080P"
+    new_dir = tmp_path / "adaptive_test" / collection / "New Title Creampie 1080P"
+    rated_dir.mkdir(parents=True)
+    new_dir.mkdir(parents=True)
+    rated_gif = rated_dir / "Old Title 1080P@@@001_1000ms-2000ms.gif"
+    new_gif = new_dir / "New Title Creampie 1080P@@@001_9000ms-10000ms.gif"
+    rated_gif.write_bytes(b"gif")
+    new_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn,
+        "cand_old",
+        status="liked",
+        artifact_path=str(rated_gif),
+        preview_path=str(rated_gif),
+    )
+    _insert_candidate(
+        conn,
+        "cand_new",
+        status="candidate",
+        artifact_path=str(new_gif),
+        preview_path=str(new_gif),
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(
+        root=str(tmp_path / "adaptive_test"), status="all"
+    )
+    folders = {folder["relative_folder"]: folder for folder in payload["folders"]}
+    new_rel = f"{collection}/New Title Creampie 1080P"
+    assert folders[new_rel]["status_counts"].get("candidate", 0) == 0
+    assert folders[new_rel]["unmaterialized_count"] == 0
+    assert folders[new_rel]["duplicate_of_rated"] is True
+
+    original = candidates_router.list_candidate_folders(
+        root=str(tmp_path / "library" / collection), status="all"
+    )
+    orig_folders = {folder["relative_folder"]: folder for folder in original["folders"]}
+    assert orig_folders["Old Title 1080P"]["status_counts"]["liked"] == 1
+
+    leftover = rated_dir / "leftover@@@002_3000ms-4000ms.gif"
+    leftover.write_bytes(b"gif")
+    _insert_candidate(
+        conn,
+        "cand_leftover",
+        status="candidate",
+        artifact_path=str(leftover),
+        preview_path=str(leftover),
+    )
+    original_with_leftover = candidates_router.list_candidate_folders(
+        root=str(tmp_path / "library" / collection), status="all"
+    )
+    leftover_folders = {
+        folder["relative_folder"]: folder for folder in original_with_leftover["folders"]
+    }
+    assert leftover_folders["Old Title 1080P"]["status_counts"].get("candidate", 0) == 1
+
+    hidden = candidates_router.list_candidates(
+        status="candidate",
+        limit=10,
+        offset=0,
+        folder=str(new_dir),
+    )
+    assert hidden["total"] == 0
+    assert hidden["status_counts"].get("candidate", 0) == 0
+
+
+def test_generic_parent_folder_does_not_hide_unrelated_videos(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    rated_dir = tmp_path / "library" / "videos" / "Rated Movie 1080P"
+    new_dir = tmp_path / "adaptive_test" / "videos" / "Other Movie 1080P"
+    rated_dir.mkdir(parents=True)
+    new_dir.mkdir(parents=True)
+    rated_gif = rated_dir / "Rated Movie 1080P@@@001_1000ms-2000ms.gif"
+    new_gif = new_dir / "Other Movie 1080P@@@001_1000ms-2000ms.gif"
+    rated_gif.write_bytes(b"gif")
+    new_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn, "cand_old", status="liked", artifact_path=str(rated_gif), preview_path=str(rated_gif)
+    )
+    _insert_candidate(
+        conn, "cand_new", status="candidate", artifact_path=str(new_gif), preview_path=str(new_gif)
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(
+        root=str(tmp_path / "adaptive_test"), status="all"
+    )
+    folders = {folder["relative_folder"]: folder for folder in payload["folders"]}
+    assert folders["videos/Other Movie 1080P"]["status_counts"]["candidate"] == 1
+
+
+def test_list_candidate_folders_hides_same_video_title_in_another_tree(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    old_dir = tmp_path / "ddata" / "Vid Title 1080P"
+    new_dir = tmp_path / "adaptive_test" / "Vid Title 1080P"
+    old_dir.mkdir(parents=True)
+    new_dir.mkdir(parents=True)
+    old_gif = old_dir / "Vid Title 1080P@@@001_1000ms-2000ms.gif"
+    new_gif = new_dir / "Vid Title 1080P@@@009_9000ms-10000ms.gif"
+    old_gif.write_bytes(b"gif")
+    new_gif.write_bytes(b"gif")
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn, "cand_old", status="disliked", artifact_path=str(old_gif), preview_path=str(old_gif)
+    )
+    _insert_candidate(
+        conn, "cand_new", status="candidate", artifact_path=str(new_gif), preview_path=str(new_gif)
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidate_folders(
+        root=str(tmp_path / "adaptive_test"), status="all"
+    )
+    folders = {folder["relative_folder"]: folder for folder in payload["folders"]}
+    assert folders["Vid Title 1080P"]["status_counts"].get("candidate", 0) == 0
+    assert folders["Vid Title 1080P"]["status_counts"]["disliked"] >= 1
+
+
+def test_list_candidates_keeps_unrated_gifs_when_export_root_is_a_junction(monkeypatch, tmp_path):
+    from app.routers import candidates as candidates_router
+
+    real = tmp_path / "data" / "exports" / "adaptive_test" / "Vid Title 1080P"
+    real.mkdir(parents=True)
+    alias_exports = tmp_path / "dist" / "GifAgentUI" / "data" / "exports"
+    alias_exports.parent.mkdir(parents=True, exist_ok=True)
+    completed = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(alias_exports), str(tmp_path / "data" / "exports")],
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        pytest.skip(completed.stderr.strip() or completed.stdout.strip() or "junction failed")
+    alias = alias_exports / "adaptive_test" / "Vid Title 1080P"
+    paths = []
+    for index in range(3):
+        gif = alias / f"Vid Title 1080P@@@00{index + 1}_{index}000ms-{index + 1}000ms.gif"
+        gif.write_bytes(b"gif")
+        paths.append(gif)
+
+    conn = _setup_conn()
+    _insert_candidate(
+        conn, "cand_liked", status="liked", artifact_path=str(paths[0]), preview_path=str(paths[0])
+    )
+    _insert_candidate(
+        conn, "cand_a", status="candidate", artifact_path=str(paths[1]), preview_path=str(paths[1])
+    )
+    _insert_candidate(
+        conn, "cand_b", status="candidate", artifact_path=str(paths[2]), preview_path=str(paths[2])
+    )
+    monkeypatch.setattr(candidates_router, "get_connection", lambda: conn)
+
+    payload = candidates_router.list_candidates(
+        status="candidate",
+        limit=12,
+        offset=0,
+        folder=str(real),
+    )
+    assert payload["total"] == 2
+    assert payload["status_counts"].get("candidate", 0) == 2
+    assert payload["status_counts"].get("liked", 0) == 1

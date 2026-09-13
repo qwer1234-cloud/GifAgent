@@ -28,6 +28,7 @@ import sqlite3
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -58,12 +59,12 @@ def _backup(db_path: Path) -> Path:
 
 def identify_candidates(
     conn: sqlite3.Connection, *, holdout_sources: set[str]
-) -> tuple[list[dict[str, object]], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Return affected candidates and any post-undo remaining issues."""
 
     conn.row_factory = sqlite3.Row
     effective = load_latest_scoring_events(conn)
-    affected: list[dict[str, object]] = []
+    affected: list[dict[str, Any]] = []
     for key, event in sorted(effective.items()):
         if not key.startswith("candidate_gif:"):
             continue

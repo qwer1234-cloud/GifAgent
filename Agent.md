@@ -2,6 +2,95 @@
 
 > Quick-reference for AI agents working on this codebase. Read this first.
 
+## Current acceptance and working rules (2026-09-13)
+
+**A/C CODE_ACCEPTED_SHADOW_DISABLED**: new-video capture (A) and curve-learning
+code (C) passed the closure review through `d40ca4ef`. Do not interpret this as
+production activation, model qualification, or an EXE release. Continuity B
+(subject tracking, semantic-action hard gate, review/late-resume) is not
+implemented or deployed. Existing action-boundary/transition heuristics and
+pose features are not a strong continuity guarantee.
+
+### Closure modules and invariants
+
+| Concern | Entry points / contract |
+|---|---|
+| Capture identity and immutable evidence | `candidate_capture.py`: source SHA, microsecond window, anchor, full preexport key; content-addressed payloads, reject conflicting evidence |
+| Shared pipeline | `stages/rank_dedup.py`: mount source features before scoring, capture exact used scores/vector after scoring, truncate afterwards; direct/staged share this path |
+| Source features | `curve_source_features.py`, `curve_source_runtime.py`, external `scripts/extract_curve_source_features.py`; validate source/input/extractor hashes and model/backend identity |
+| Publication ledger | `library_ingest.py`: publication link + AVAILABLE features + frozen scoring vector in one transaction; invalid evidence rolls back and marks repair needed |
+| Shared scoring | `ranking.py`, `reranker.py`, `curve_online.py`; same baseline/nominal/effective formulas online and in qualification |
+| Training | `curve_training.py`: effective events, row-bound immutable manifests, source-isolated train/development/final holdout; standardization fits train only; DRAFT output |
+| Learning worker | `learning_jobs.py`, `scripts/run_learning_worker.py`; SNAPSHOT/TRAIN/QUALIFY/COMPLETE, stage retry budgets, unique claim tokens, resumable packages |
+| Qualification / deployment | `curve_preference_qualification.py`, `curve_preference.py`, `curve_online.py`; evidence replay, paired baseline gate, explicit promotion, deployment revision CAS and validated rollback |
+
+- `curve-v1` (historical GIF) and `curve-source-v1` (source video) are distinct
+  input domains. Never silently mix them or replace missing features with zero.
+- `candidate_vectors` contains two separate roles: mutable `clip` retrieval
+  vectors and immutable capture `preference` scoring vectors. Profile centroids
+  and `_consumed_vector_records` consume **only clip**, exactly once per candidate
+  and model. Curve training validates **preference** against the capture payload.
+- Record `scoring_input_committed` only after successful shared scoring. Capture
+  must use the actual vector bytes; do not make a second embedding request to
+  invent the evidence. Retrieval-vector refresh must leave scoring evidence intact.
+- Every learning claim has a new `lease_token`; owner names are audit labels, not
+  credentials. Saving may renew the same token if nobody has reclaimed the job.
+  A stale token returns `LEASE_LOST`, rolls back, and leaves the new holder untouched.
+- Deployment binds qualification profile version **and content**. Missing,
+  inconsistent duplicate, or changed profile evidence degrades to BASELINE or
+  refuses activation/rollback. Never bypass this with a same-version shortcut.
+- Capture/curve-learning default disabled; curve mode defaults to shadow.
+  `candidate_capture`, `curve_learning`, and
+  `continuity_gate.curve_preference` are separate config sections. Do not enable
+  B/enforce merely because configuration keys exist. Promotion stays manual.
+- The standalone learning worker is separate from the extraction task worker.
+  `--once` processes one stage, not an entire job. Run it only against an explicitly
+  configured test/library copy when validating; it can consume queued jobs.
+
+### Review / holdout integration
+
+Candidate folder review uses `candidate_identity.py` for equivalent-window
+identity and rated-duplicate shadowing. Preserve folder-local display paths,
+actual feedback target identity, server pagination, and stay-on-folder behavior
+after page-load errors. Tests cover copying/reviewing duplicate folders and
+refilling the shrinking candidate queue from page zero.
+
+Profile build and preview both accept `exclude_source_videos`; freeze the same
+normalized exclusion list into config/version and honor it in source-grouped
+evaluation. `scripts/preference_holdout_split.py` exports the list and holdout
+judgments; users must pass the list into build/preview, not just generate it.
+`scripts/evaluate_preference.py` accepts `--db` and `--grouped`.
+
+### Verification and repository hygiene
+
+The isolated `d40ca4ef` acceptance ran the 17 closure test files (236 passed) and
+`mypy app/services` (63 files, no issues). The full working-tree suite is a
+different evidence set; rerun and record its actual failures, never label an
+unverified count as clean-commit evidence. Tests use temporary data;
+`tests/conftest.py` disables pipeline ingest unless a test explicitly opts in.
+
+Repository-sync baseline (2026-09-13): 2654 passed / 2 failed / 2 skipped.
+Known failures: `test_active_review_api.py::TestProfilePreview::test_preview_does_not_publish`
+(direct invocation receives FastAPI `Body(None)`) and
+`token_sprint/test_snapshot_fts_rebuild.py::TestRebuildContract::test_rebuild_without_clear_skips_when_state_complete`
+(FTS rebuild/skip contract). This documentation sync does not fix either;
+repository publication is not a green full-suite release gate.
+
+Before release run `uv run pytest tests/ -q`, `uv run mypy app/services`, and
+`git diff --check`. True-media coverage, the final holdout qualification, complete
+PyInstaller smoke and security audit are separate gates, not implied by unit tests.
+Do not activate production switches or mutate historical labels while documenting.
+
+Keep code, tests and reviewed plans/reports in Git. Runtime `data/`, `app/data/`,
+`scratch/`, model environments, generated audit logs and build output stay local.
+Do not hide source/tests with ignore rules. Untracking generated files must preserve
+their local copies; ignored evidence/database files require separate backups.
+
+References: [README](README.md),
+[A/C remediation plan](docs/superpowers/plans/2026-09-11-new-video-learning-closure-remediation.md),
+[new-video plan](docs/superpowers/plans/2026-09-06-new-video-continuity-preference-learning.md),
+[delivery/review evidence](docs/reports/2026-09-new-video-learning-closure/README.md).
+
 ## What This Project Does
 
 Local movie-scene GIF auto-tagging and preference-mining agent. Scans GIFs/videos → VLM frame analysis → LLM synthesis → FAISS vector index → adaptive clip discovery (no live RAG injection) → candidate GIF export → human feedback → preference profile building.
@@ -148,8 +237,9 @@ removal stay enabled.
 Quality MoE is enabled in `configs/models.yaml` with `report_only: false`.
 Soft quality decisions can change the export set. Ranking uses
 `0.80 * adult + 0.20 * cinematic` so film mood cannot veto a readable sex clip.
-If `preference_memory.enabled` is true, caption-vs-liked-centroid ranking
-**replaces** the adult mix (it does not blend with pixels). Direct and staged
+If `preference_memory.enabled` is true, the shared scorer blends the base export
+score with caption preference using frozen base/preference weights, falling back
+to the base score when evidence is unavailable. Direct and staged
 both evaluate the full post-dedup candidate set **before** `output_ratio` /
 `max_output` truncation.
 
@@ -631,7 +721,7 @@ Direct writes manifests to `{frames_dir}_stage_work` (removed at the next run st
 
 ## Preference Memory Subsystem
 
-6 tables: `candidate_gifs`, `candidate_vectors`, `candidate_vector_exclusions`, `favorite_gifs`, `preference_events`, `preference_profile_builds`, `preference_profiles`, `preference_profile_current`, `preference_profile_publications`
+Core tables: `candidate_gifs`, `candidate_vectors`, `candidate_vector_exclusions`, `favorite_gifs`, `preference_events`, `preference_profile_builds`, `preference_profiles`, `preference_profile_current`, `preference_profile_publications`; additional capture/learning/deployment tables are managed by `preference_schema.py`.
 
 Flow: candidate materialize → human feedback (like/dislike/neutral/skip/quality_reject/favorite) → profile build (7 gates) → holdout evaluation → source-grouped evaluation → explicit publish → reranker (behind `preference_memory.enabled` flag, default false)
 
@@ -831,8 +921,8 @@ Verifies: candidate seeding, all 6 feedback ratings, profile build and publish, 
    rows are not `candidate`, so a fully-reviewed folder looked “broken”. Now
    the API is scoped to `root` and the UI lists rated folders for re-review.
 
-9. **Ranking order**: `preference_memory.enabled` caption rerank runs *instead
-   of* adult MoE mix. Adult mix is `0.8*(0.4*worthiness+0.6*sex_act)+0.2*cinematic`.
+9. **Ranking order**: `preference_memory.enabled` selects the shared base/preference
+   blend. Without it, adult mix is `0.8*(0.4*worthiness+0.6*sex_act)+0.2*cinematic`.
 
 10. **Refine explosion**: dense adult scores can request thousands of extra
     frames. `max_refine_frames` (default 120) caps `collect_refine_timestamps`.
@@ -890,7 +980,8 @@ Key ones (preference/candidate):
 ## Test Suite
 
 ```bash
-uv run pytest tests/ -v   # 1733 collected tests (2026-08-28)
+uv run pytest tests/ -v
+uv run pytest tests/ --collect-only -q   # Count this checkout; do not reuse historical totals
 ```
 
 Covers: JSON parsing, placeholder detection, FAISS manifest, reset safety, candidate materialization, feedback events, preference profiles, holdout evaluation, reranker, task engine repository, artifacts, legacy import, stage adapters, fault injection, worker, version manifest, smoke script, quality lab API, quality lab UI, metrics, calibration, blind A/B, promotion, pipeline facade, Direct/Staged parity, stage_io config restore, Direct synthesis lifecycle.
