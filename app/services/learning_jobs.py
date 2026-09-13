@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -404,23 +406,54 @@ def _load_stage_package(conn: sqlite3.Connection, job_id: str) -> dict[str, Any]
         return None
 
 
+class LearningLeaseLost(PermissionError):
+    """A stale worker tried to mutate a job it no longer owns."""
+
+
 def _save_stage_package(
     conn: sqlite3.Connection,
     job_id: str,
     package: dict[str, Any],
     work_dir: Path,
+    expected_owner: str,
 ) -> tuple[str, str]:
+    """Persist the stage package under a REAL lease CAS.
+
+    The DB row is updated only while ``expected_owner`` still holds the job
+    in RUNNING state; the official package file is replaced only after that
+    CAS succeeds. An expired worker whose lease was taken over therefore can
+    neither corrupt the row nor the file the new owner will read.
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
     package_path = work_dir / f"job-{job_id}.stages.json"
     raw = json.dumps(package, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    tmp = package_path.with_name(package_path.name + ".tmp")
-    tmp.write_bytes(raw)
-    tmp.replace(package_path)
+
+    updated = conn.execute(
+        "UPDATE learning_jobs SET result_package_sha256 = ? "
+        "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
+        (hashlib.sha256(raw).hexdigest(), job_id, expected_owner),
+    ).rowcount
+    if updated != 1:
+        raise LearningLeaseLost(
+            f"job {job_id} lease no longer held by {expected_owner!r}"
+        )
+
+    # Unique temp name: two writers must never share a scratch file.
+    tmp = package_path.with_name(
+        f".{package_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+    )
+    try:
+        tmp.write_bytes(raw)
+        tmp.replace(package_path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
     package_sha = hashlib.sha256(raw).hexdigest()
     conn.execute(
         "UPDATE learning_jobs SET result_package_path = ?, result_package_sha256 = ? "
-        "WHERE job_id = ? AND owner = (SELECT owner FROM learning_jobs WHERE job_id = ?)",
-        (str(package_path.resolve()), package_sha, job_id, job_id),
+        "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
+        (str(package_path.resolve()), package_sha, job_id, expected_owner),
     )
     return str(package_path.resolve()), package_sha
 
@@ -482,7 +515,7 @@ def _stage_retry(
     """
     stage_attempts = int((package.get("stage_attempts") or {}).get(job.stage, 0)) + 1
     package.setdefault("stage_attempts", {})[job.stage] = stage_attempts
-    _save_stage_package(conn, job.job_id, package, work_dir)
+    _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
     if stage_attempts >= int(policy["max_attempts"]):
         return LearningStageResult("NEEDS_ATTENTION", None, None, None, error_code)
     return LearningStageResult("RETRY", None, None, None, error_code)
@@ -540,7 +573,7 @@ def _execute_stage_with_budget(
             "development_row_count": snapshot.development_row_count,
             "final_holdout_row_count": snapshot.final_holdout_row_count,
         }
-        _save_stage_package(conn, job.job_id, package, work_dir)
+        _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
         return LearningStageResult(
             "ADVANCE", "TRAIN", artifact["path"], artifact["sha256"], None
         )
@@ -581,7 +614,7 @@ def _execute_stage_with_budget(
         }
         package["stages"]["TRAIN"] = artifact
         package["model_version"] = result["model_version"]
-        _save_stage_package(conn, job.job_id, package, work_dir)
+        _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
         return LearningStageResult(
             "ADVANCE", "QUALIFY", artifact["path"], artifact["sha256"], None
         )
@@ -627,7 +660,7 @@ def _execute_stage_with_budget(
             if summary.get("run_dir")
             else "",
         }
-        _save_stage_package(conn, job.job_id, package, work_dir)
+        _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
         # NOT_QUALIFIED is a scientific outcome, not an execution error.
         return LearningStageResult("ADVANCE", "COMPLETE", None, None, None)
 

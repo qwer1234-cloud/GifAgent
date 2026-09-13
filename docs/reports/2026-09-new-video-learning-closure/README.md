@@ -7,7 +7,8 @@
 
 - 基线:HEAD `d08049a2` + 2026-09-11 工作树(含用户未提交改动)
 - 完成日期:2026-09-12
-- **第二轮整改(2026-09-12)**:评审驳回 `A/C CODE_ACCEPTED` 后,修复全部 7 项 P1 与 2 项 P2(见 §9),并补充真实的"入库→反馈→无需人工预置特征→DRAFT"端到端测试。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`(复核项已全部闭合,等待重新评审)**。
+- **第二轮整改(2026-09-12)**:评审驳回 `A/C CODE_ACCEPTED` 后,修复全部 7 项 P1 与 2 项 P2(见 §9),并补充真实的"入库→反馈→无需人工预置特征→DRAFT"端到端测试。
+- **第三轮整改(2026-09-13)**:只读复核确认 5 项未完全闭合(1 项 P1 曲线特征晚于评分注入、2 项 P1 阶段包越权写入与回滚丢失画像绑定、3 项 P1 capture 内容哈希未校验,以及 2 项 P2),已全部修复(见 §10)。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`**。
 
 ## 1. 提交列表
 
@@ -104,6 +105,19 @@ mypy:`python -m mypy app/services` → **Success: no issues found in 63 source f
 
 第二轮验证:17 个测试文件 `234 passed`;`mypy app/services` 零错误(63 文件);真实模型 smoke 与完整协议握手(客户端期望身份 ↔ worker 自算身份)复验通过。
 `git diff --check` 现仅余基线文件 `tests/test_candidates_api.py:896` 的 EOF 空行;本轮新增文件的空行问题已修复。
+
+## 10. 第三轮整改:只读复核 P1/P2 修复(2026-09-13)
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| P1 | 特征在共享评分之后才注入,真实新视频无法参与曲线排序 | rank_dedup 拆分为 `mount_source_features`(排序前一次性批量提取并挂载 `source_features`/状态/版本到 clip)→ `_rank_pipeline_clips`(此时 `_curve_probability_from_clip` 才能读到本轮真实特征)→ `capture_rank_candidates`(只持久化评分已用的证据)→ 截断;新增真实 rank_dedup 路径断言:DRAFT shadow 下 `curve_route=SHADOW`、nominal≠baseline、final==baseline,且 capture payload 与之逐项一致 |
+| P1 | 过期 worker 可覆盖新持有者的 stage package(`owner=(SELECT owner…)` 恒真 + 固定 .tmp 路径) | `_save_stage_package` 增加 `expected_owner` 真实 CAS(`WHERE job_id=? AND owner=? AND status='RUNNING'`),CAS 失败抛 `LearningLeaseLost` 且不触碰正式文件;临时文件唯一化(pid+uuid);新增双连接过期写入被拒测试 |
+| P1 | rollback 丢失画像绑定;运行时对空 profile_version 跳过门禁 | rollback 重新校验 bundle 并把目标 revision 的 `profile_version`/内容指纹写入新 revision;运行时对缺失画像身份的 active revision 直接 fail closed(`profile_identity_missing`);激活时要求库内 current profile 与资格版本一致,并冻结库内画像内容指纹(`_profile_state_sha256`),运行时同版本内容重建(`profile_content_mismatch`)也回退 BASELINE |
+| P1 | capture 内容哈希被读取但未校验,篡改特征可入账 | `library_ingest._record_source_features` 解析前按原始字节验证 SHA-256,再执行十项严格特征校验(`validate_window_feature_values`)与身份完整性检查;任何失败抛出以回滚同一事务并标记 NEEDS_REPAIR;训练侧 `_load_capture_payload` 同样校验内容哈希;新增篡改检测测试(改 extension_peak → needs_repair=1、无 ledger 行、link 回滚) |
+| P2 | extractor 身份未绑定真实姿态后端代码 | `compute_extractor_identity` 新增 `pose_backend_code_sha256`(continuity_spike_backend_real.py 的源码哈希,客户端与 worker 双侧计算);后端缺失即 `inference_runtime_unavailable`;身份测试覆盖后端代码变更 |
+| P2 | capture 中的向量是第二次计算且无消费者 | ranking.score_clip 把当次评分实际使用的 float32 字节与 SHA 直接挂到 clip;capture 只消费该身份(删除第二次 embedding 调用)并做校验和解;训练样本冻结 `preference_text_sha256`/`preference_vector_sha256`/`capture_payload_sha256`,把训练行绑定到 baseline 实际使用的向量 |
+
+第三轮验证:17 个测试文件 `237 passed`;`mypy app/services` 零错误(63 文件);真实 ONNX smoke 与完整协议握手复验通过;全量套件 2646 passed(仅余两个已确认的基线遗留失败)。
 
 ## 8. 安全配置默认值(任一检查点失败时保持)
 

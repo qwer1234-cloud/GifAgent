@@ -82,13 +82,15 @@ def compute_extractor_identity(
     model_package_sha256: str,
     worker_code_sha256: str,
     backend_id: str = POSE_BACKEND_ID,
+    backend_code_sha256: str = "",
 ) -> str:
     """Content-addressed extractor identity.
 
     Binds the feature CONTRACT (version, names, decode profile) to the actual
-    ONNX model package, the worker/aggregation code, and the pose backend, so
-    a model or algorithm change can never silently reuse a previous feature
-    domain.
+    ONNX model package, the worker/aggregation code, the pose backend's REAL
+    implementation (its source hash -- preprocessing, keypoint thresholds and
+    NMS all live there), and its id, so a model or algorithm change can never
+    silently reuse a previous feature domain.
     """
     return hashlib.sha256(
         json.dumps(
@@ -99,6 +101,7 @@ def compute_extractor_identity(
                 "model_package_sha256": model_package_sha256,
                 "worker_code_sha256": worker_code_sha256,
                 "pose_backend_id": backend_id,
+                "pose_backend_code_sha256": backend_code_sha256,
             },
             sort_keys=True,
             separators=(",", ":"),

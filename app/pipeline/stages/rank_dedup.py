@@ -179,16 +179,47 @@ def _extract_features_for_clips(
     return by_key
 
 
+def mount_source_features(
+    context: RankCaptureContext,
+    clips: list[dict],
+) -> dict[str, "CurveFeatureResult"]:
+    """Extract source curve features once per video and mount them onto the
+    clips BEFORE the shared scoring runs, so curve probability (and therefore
+    nominal/effective) is computed from THIS run's features.
+
+    Returns the per-preexport-key results; mounting is a no-op when capture
+    is disabled.
+    """
+    if not context.enabled or not clips:
+        return {}
+    results = _extract_features_for_clips(context, clips)
+    for clip in clips:
+        key = clip.get("preexport_key")
+        if not key:
+            continue
+        feature = results.get(key)
+        if feature is None:
+            continue
+        clip["_source_feature_evidence"] = feature
+        clip["source_feature_status"] = feature.status
+        clip["source_feature_version"] = feature.feature_version
+        if feature.status == "AVAILABLE":
+            clip["source_features"] = dict(feature.features)
+    return results
+
+
 def capture_rank_candidates(
     context: RankCaptureContext,
     clips: list[dict],
     runtime_snapshot: dict | None = None,
 ) -> "CaptureBatchResult":
-    """Persist every post-dedup scorable candidate after the Quality MoE gate.
+    """Persist every post-dedup scorable candidate after the Quality MoE gate
+    AND after the shared ranking froze the exact three-way scores.
 
-    Called between the quality boundary and output truncation. Failures are
-    recorded as versioned failure payloads and returned in
-    ``failed_preexport_keys``; they never raise into the ranking path.
+    Feature extraction already happened in :func:`mount_source_features`
+    before ranking; this only persists. Failures are recorded as versioned
+    failure payloads and returned in ``failed_preexport_keys``; they never
+    raise into the ranking path.
     """
     from app.services.candidate_capture import (
         CaptureBatchResult,
@@ -217,13 +248,13 @@ def capture_rank_candidates(
                 print(f"  Candidate capture: source identity unavailable ({exc})")
                 return CaptureBatchResult(captures=(), failed_preexport_keys=())
 
-        feature_results = _extract_features_for_clips(context, clips)
-
         for clip in clips:
             key = clip.get("preexport_key")
             if not key:
                 continue
-            feature = feature_results.get(key)
+            # Feature evidence was mounted BEFORE the shared ranking
+            # (mount_source_features); capture only freezes what scoring used.
+            feature = clip.pop("_source_feature_evidence", None)
             payload = _capture_payload_for_clip(
                 context, clip, feature, runtime_snapshot
             )
@@ -232,10 +263,6 @@ def capture_rank_candidates(
                 captures.append(persisted)
                 clip["analysis_record_id"] = persisted.record_id
                 clip["capture_status"] = "CAPTURED"
-                if feature is not None:
-                    clip["source_feature_status"] = feature.status
-                    if feature.status == "AVAILABLE":
-                        clip["source_features"] = feature.features
             except Exception as exc:
                 failed_keys.append(str(key))
                 clip["capture_status"] = "FAILED"
@@ -252,46 +279,31 @@ def capture_rank_candidates(
 def _preference_identity_for_clip(clip: dict) -> dict:
     """Caption-gated preference identity frozen into the capture payload.
 
-    The candidate vector is only ever computed from
-    ``preference_embedding_text``; an empty caption yields no vector and no
-    legacy emotion/scene fallback embedding.
+    The vector recorded here is the EXACT float32 vector the shared scorer
+    consumed for this candidate (attached by the ranking stage) -- never a
+    second, independently computed embedding. When preference scoring did not
+    run, no vector identity is claimed.
     """
-    import base64 as b64mod
+    from app.services.reranker import clip_scenario_keys
 
-    import numpy as np
-
-    from app.services.reranker import clip_scenario_keys, preference_embedding_text
-
-    best = clip.get("best_frame") if isinstance(clip.get("best_frame"), dict) else {}
-    caption = str(best.get("caption") or clip.get("caption") or "").strip()
-    emotion = str(
-        best.get("emotional_core") or clip.get("emotional_core") or ""
-    ).strip()
-    scene = str(best.get("scene_type") or clip.get("scene_type") or "").strip()
-    text = preference_embedding_text(caption=caption, emotion=emotion, scene_type=scene)
     identity: dict = {
-        "embedding_text": text,
-        "embedding_text_sha256": (
-            hashlib.sha256(text.encode("utf-8")).hexdigest() if text else None
-        ),
+        "embedding_text_sha256": clip.get("preference_text_sha256"),
         "embedding_model": "nomic-embed-text:latest",
         "scenario_keys": clip_scenario_keys(clip),
-        "vector_float32_b64": None,
-        "vector_sha256": None,
+        "vector_float32_b64": clip.get("preference_vector_b64"),
+        "vector_sha256": clip.get("preference_vector_sha256"),
     }
-    if text:
-        try:
-            from app.services.embedding import compute_text_embedding
+    frozen_b64 = identity["vector_float32_b64"]
+    frozen_sha = identity["vector_sha256"]
+    if frozen_b64 and frozen_sha:
+        import base64 as b64mod
 
-            vector = np.asarray(compute_text_embedding(text), dtype=np.float32)
-            identity["vector_float32_b64"] = b64mod.b64encode(vector.tobytes()).decode(
-                "ascii"
-            )
-            identity["vector_sha256"] = hashlib.sha256(vector.tobytes()).hexdigest()
-        except Exception:
-            # Embedding service unavailable: the payload records the text
-            # identity but never a synthetic vector.
-            pass
+        decoded = b64mod.b64decode(frozen_b64, validate=True)
+        actual_sha = hashlib.sha256(decoded).hexdigest()
+        if actual_sha != frozen_sha:
+            # Corrupt or tampered vector identity: fail the capture rather
+            # than freeze an unverifiable binding.
+            raise ValueError("preference vector identity checksum mismatch")
     return identity
 
 
@@ -875,10 +887,17 @@ def _stage_rank_dedup(
     multi_frame_count = sum(
         1 for c in clean_clips if int(c.get("frame_count", 1)) > 1
     )
+
+    capture_context = _rank_capture_context(video_path, cfg)
+    if capture_context.enabled:
+        # Features are extracted and mounted BEFORE the shared ranking so the
+        # curve probability (nominal/effective) is computed from THIS run's
+        # source features, then capture freezes the exact scores afterwards.
+        mount_source_features(capture_context, deduped_clips)
+
     deduped_clips = _rank_pipeline_clips(deduped_clips, cfg)
     full_rank_input = list(deduped_clips)
 
-    capture_context = _rank_capture_context(video_path, cfg)
     capture_batch = capture_rank_candidates(capture_context, deduped_clips)
     if capture_context.enabled:
         print(

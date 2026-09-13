@@ -43,6 +43,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_WORKER_EXECUTABLE = str(REPO_ROOT / ".venv-spike" / "Scripts" / "python.exe")
 DEFAULT_WORKER_SCRIPT = str(REPO_ROOT / "scripts" / "extract_curve_source_features.py")
+DEFAULT_BACKEND_SCRIPT = str(REPO_ROOT / "scripts" / "continuity_spike_backend_real.py")
 DEFAULT_MODEL_DIR = str(REPO_ROOT / "data" / "continuity_spike_models")
 DEFAULT_LOCK_DIR = str(REPO_ROOT / "data" / "runtime_locks")
 
@@ -200,6 +201,7 @@ class CurveRuntimeConfig:
 
     worker_executable: str = DEFAULT_WORKER_EXECUTABLE
     worker_script: str = DEFAULT_WORKER_SCRIPT
+    backend_script: str = DEFAULT_BACKEND_SCRIPT
     model_dir: str = DEFAULT_MODEL_DIR
     lock_dir: str = DEFAULT_LOCK_DIR
     resource_key: str = "curve-source-inference"
@@ -281,9 +283,11 @@ class CurveSourceRuntime:
         # worker implementation; the response must echo exactly this.
         expected_extractor = self._expected_extractor_identity(model_hash)
 
-        worker_ready = Path(self.config.worker_executable).is_file() and Path(
-            self.config.worker_script
-        ).is_file()
+        worker_ready = (
+            Path(self.config.worker_executable).is_file()
+            and Path(self.config.worker_script).is_file()
+            and Path(self.config.backend_script).is_file()
+        )
         if not worker_ready:
             return self._all_unavailable(windows, ["inference_runtime_unavailable"], t0)
 
@@ -311,12 +315,18 @@ class CurveSourceRuntime:
             lock.release()
 
     def _expected_extractor_identity(self, model_hash: str) -> str:
-        """Compute the extractor identity the worker must echo: model package
-        plus the exact worker implementation plus the pose backend."""
+        """Compute the extractor identity the worker must echo: model package,
+        the exact worker implementation, and the pose backend's REAL source."""
         worker_code_sha = hashlib.sha256(
             Path(self.config.worker_script).read_bytes()
         ).hexdigest()
-        return compute_extractor_identity(model_hash, worker_code_sha)
+        backend_path = Path(self.config.backend_script)
+        if not backend_path.is_file():
+            return ""
+        backend_code_sha = hashlib.sha256(backend_path.read_bytes()).hexdigest()
+        return compute_extractor_identity(
+            model_hash, worker_code_sha, backend_code_sha256=backend_code_sha
+        )
 
     def _build_request(
         self,

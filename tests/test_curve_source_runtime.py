@@ -131,9 +131,12 @@ def runtime_env(tmp_path: Path) -> tuple[CurveSourceRuntime, Path]:
     model_dir = tmp_path / "models"
     model_dir.mkdir()
     (model_dir / "pose.onnx").write_bytes(b"fake-model-bytes")
+    backend_script = tmp_path / "pose_backend.py"
+    backend_script.write_text("# fake pose backend" + chr(10), encoding="utf-8")
     config = CurveRuntimeConfig(
         worker_executable=sys.executable,
         worker_script=str(worker_script),
+        backend_script=str(backend_script),
         model_dir=str(model_dir),
         lock_dir=str(tmp_path / "locks"),
         lock_wait_s=0.2,
@@ -345,6 +348,13 @@ def test_extractor_identity_binds_model_package_and_worker_code(runtime_env):
     worker_script = Path(runtime.config.worker_script)
     worker_script.write_text(
         worker_script.read_text(encoding="utf-8") + chr(10) + "# touched" + chr(10)
+    )
+    assert runtime._expected_extractor_identity(new_model_hash) != identity
+
+    # Pose backend implementation change -> different identity (review P2).
+    backend_script = Path(runtime.config.backend_script)
+    backend_script.write_text(
+        backend_script.read_text(encoding="utf-8") + chr(10) + "# thresholds tuned" + chr(10)
     )
     assert runtime._expected_extractor_identity(new_model_hash) != identity
 

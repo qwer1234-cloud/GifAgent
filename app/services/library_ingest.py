@@ -291,14 +291,34 @@ def _record_source_features(
     if row is None:
         return
     payload_path, payload_sha256, source_sha = row[0], row[1], row[2]
-    payload = _json.loads(_Path(payload_path).read_text(encoding="utf-8"))
+    payload_bytes = _Path(payload_path).read_bytes()
+    # The capture evidence is immutable: the bytes on disk must hash to the
+    # value recorded at capture time, otherwise the payload was tampered with
+    # and NOTHING from it may enter the training ledger.
+    actual_sha = hashlib.sha256(payload_bytes).hexdigest()
+    if actual_sha != payload_sha256:
+        raise ValueError(
+            f"capture payload hash mismatch for record {record_id}: "
+            f"expected {payload_sha256}, found {actual_sha}"
+        )
+    payload = _json.loads(payload_bytes.decode("utf-8"))
     feature = payload.get("source_feature") or {}
     if feature.get("status") != "AVAILABLE":
         return
     features = feature.get("features") or {}
-    if not features or not feature.get("extractor_sha256"):
-        return
     timestamps = feature.get("actual_timestamps") or []
+    from app.services.curve_source_features import validate_window_feature_values
+
+    strict_reasons = validate_window_feature_values(features, timestamps)
+    if strict_reasons:
+        raise ValueError(
+            f"capture feature evidence invalid for record {record_id}: "
+            f"{strict_reasons}"
+        )
+    if not feature.get("extractor_sha256") or not feature.get("feature_version"):
+        raise ValueError(
+            f"capture feature identity incomplete for record {record_id}"
+        )
     conn.execute(
         """
         INSERT OR REPLACE INTO curve_features (

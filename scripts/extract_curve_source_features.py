@@ -303,12 +303,23 @@ def _streaming_sha256(path: Path) -> str:
 
 def _worker_extractor_identity(model_hash: str | None) -> str:
     """This worker's own extractor identity: model package + this script's
-    code + the pose backend. Must match the client's expectation exactly."""
+    code + the pose backend's REAL source (continuity_spike_backend_real.py,
+    whose preprocessing/thresholds/NMS define the detections). Must match the
+    client's expectation exactly."""
     from app.services.curve_source_features import compute_extractor_identity
 
     code_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    backend_path = REPO / "scripts" / "continuity_spike_backend_real.py"
+    backend_sha = (
+        hashlib.sha256(backend_path.read_bytes()).hexdigest()
+        if backend_path.is_file()
+        else ""
+    )
     return compute_extractor_identity(
-        model_hash or "", code_sha, POSE_BACKEND_ID
+        model_hash or "",
+        code_sha,
+        POSE_BACKEND_ID,
+        backend_code_sha256=backend_sha,
     )
 
 

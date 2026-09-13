@@ -426,3 +426,53 @@ def test_retry_wait_job_is_not_claimable_before_next_retry(tmp_path):
     )
     assert idle["status"] == "IDLE"
     conn.close()
+
+
+def test_stale_worker_cannot_overwrite_stage_package(tmp_path):
+    """P1 remediation: after w1's lease is taken over by w2, w1's package
+    write must fail on the real owner CAS -- w2's package stays intact."""
+    from app.services.learning_jobs import _save_stage_package
+
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    services = _services(db_path, tmp_path)
+    maybe_enqueue_learning(conn, TINY_POLICY)
+
+    run_learning_once(conn, now_epoch=1_800_000_000, owner="w1", services=services)
+
+    # w1's lease expires; w2 takes over and advances.
+    run_learning_once(conn, now_epoch=1_800_001_801, owner="w2", services=services)
+
+    package_path = conn.execute(
+        "SELECT result_package_path, result_package_sha256 FROM learning_jobs "
+        "WHERE status = 'PENDING' OR status = 'RUNNING' LIMIT 1"
+    ).fetchone()
+    assert package_path is not None
+    official_sha = package_path[1]
+
+    # Stale w1 tries to write its (now outdated) package.
+    try:
+        _save_stage_package(
+            conn, _stale_job_id(conn), {"stages": {"SNAPSHOT": {}}},
+            Path(services["work_dir"]), "w1",
+        )
+        raised = False
+    except PermissionError:
+        raised = True
+    assert raised, "stale worker write must be refused by the owner CAS"
+
+    # The official package the new owner recorded is untouched.
+    row = conn.execute(
+        "SELECT result_package_sha256 FROM learning_jobs "
+        "WHERE result_package_path = ?",
+        (package_path[0],),
+    ).fetchone()
+    assert row[0] == official_sha
+    conn.close()
+
+
+def _stale_job_id(conn: sqlite3.Connection) -> str:
+    return conn.execute(
+        "SELECT job_id FROM learning_jobs ORDER BY created_at LIMIT 1"
+    ).fetchone()[0]

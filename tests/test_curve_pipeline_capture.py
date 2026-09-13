@@ -560,3 +560,211 @@ def test_disabled_run_is_field_identical_to_legacy_shape(tmp_path):
             "curve_route",
         ):
             assert forbidden not in clip
+
+
+def test_tampered_capture_payload_fails_closed_at_ingest(tmp_path):
+    """P1 remediation: a capture JSON modified on disk must not contribute
+    features to the training ledger -- the hash check rolls back the
+    publication link and marks the record NEEDS_REPAIR."""
+    import sqlite3 as _sqlite3
+
+    from app.services.candidate_capture import persist_capture
+    from app.services.library_ingest import ingest_published_clips
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+
+    conn = _sqlite3.connect(":memory:")
+    apply_preference_schema(conn)
+
+    gif_file = tmp_path / "formal.gif"
+    gif_file.write_bytes(b"GIF89a-tamper-test")
+    gif_sha = hashlib.sha256(gif_file.read_bytes()).hexdigest()
+
+    payload = {
+        "run_id": "run-tamper",
+        "preexport_key": "a" * 64,
+        "capture_version": "capture-v1",
+        "source_video_sha256": "b" * 64,
+        "start_us": 1_000_000,
+        "end_us": 4_000_000,
+        "anchor_us": 2_500_000,
+        "baseline_score": 0.8,
+        "capture_status": "CAPTURED",
+        "source_feature": {
+            "status": "AVAILABLE",
+            "feature_version": "curve-source-v1",
+            "extractor_sha256": "e" * 64,
+            "features": {n: 0.5 for n in CURVE_SOURCE_FEATURE_NAMES},
+            "actual_timestamps": [1.0, 2.0, 3.0],
+            "input_hash": "i" * 64,
+            "missing_reasons": [],
+            "wall_clock_ms": 1.0,
+        },
+    }
+    persisted = persist_capture(conn, payload, tmp_path / "evidence")
+
+    # Tamper with the payload on disk AFTER capture.
+    payload_file = Path(persisted.payload_path)
+    tampered = json.loads(payload_file.read_text(encoding="utf-8"))
+    tampered["source_feature"]["features"]["extension_peak"] = 99.0
+    payload_file.write_text(
+        json.dumps(tampered, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    clips = [
+        {
+            "clip_id": "clip_tamper",
+            "start_ts": 1.0,
+            "end_ts": 4.0,
+            "formal_path": str(gif_file),
+            "gif_worthiness": 0.8,
+            "sha256": gif_sha,
+            "analysis_record_id": persisted.record_id,
+        }
+    ]
+    result = ingest_published_clips(
+        conn, video_path=str(tmp_path / "v.mp4"), clips=clips, run_id="run-tamper"
+    )
+    assert result["needs_repair"] == 1
+
+    # Nothing from the tampered payload entered the ledger.
+    features = conn.execute("SELECT COUNT(*) FROM curve_features").fetchone()[0]
+    assert features == 0
+    links = conn.execute(
+        "SELECT COUNT(*) FROM candidate_analysis_publications WHERE record_id = ?",
+        (persisted.record_id,),
+    ).fetchone()[0]
+    assert links == 0
+    status = conn.execute(
+        "SELECT capture_status FROM candidate_analysis_records WHERE record_id = ?",
+        (persisted.record_id,),
+    ).fetchone()[0]
+    assert status == "NEEDS_REPAIR"
+
+
+def test_features_mounted_before_ranking_in_real_rank_dedup_path(tmp_path, monkeypatch):
+    """P1 remediation: in the REAL _stage_rank_dedup path the source features
+    are mounted BEFORE the shared scoring, so a DRAFT shadow model actually
+    produces non-baseline nominal/effective scores and the capture freezes
+    them -- not a hand-seeded fixture."""
+    import base64 as _b64
+
+    import numpy as _np
+
+    import numpy as _np
+
+    from app.pipeline import ranking as pipeline_ranking
+    from app.pipeline.stages import rank_dedup as rank_dedup_stage
+    from app.services.curve_preference import canonical_json_sha256
+    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+    from app.services.preference_schema import apply_preference_schema
+
+    root = tmp_path / "shadow-real"
+    root.mkdir()
+    video = _synthetic_video(root)
+
+    # A library DB with a published profile and a DRAFT source-domain model.
+    lib = sqlite3.connect(":memory:")
+    lib.row_factory = sqlite3.Row
+    apply_preference_schema(lib)
+    lib.execute(
+        "INSERT INTO preference_profile_current (slot, profile_version) "
+        "VALUES ('current', 'profile_v1')"
+    )
+    centroid = _np.asarray([1.0] + [0.0] * 767, dtype=_np.float32).tobytes()
+    lib.execute(
+        "INSERT INTO preference_profiles (profile_version, scope, scenario_key, "
+        "like_count, dislike_count, neutral_count, confidence, liked_centroid_blob) "
+        "VALUES ('profile_v1', 'global', NULL, 3, 1, 0, 0.9, ?)",
+        (centroid,),
+    )
+    manifest = {"feature_version": "curve-source-v1", "sources": [], "rows": []}
+    manifest_sha = canonical_json_sha256(manifest)
+    coefficients = {name: 0.1 for name in CURVE_SOURCE_FEATURE_NAMES}
+    lib.execute(
+        """
+        INSERT INTO curve_preference_models (
+            model_version, feature_version, extractor_sha256, status,
+            coefficients_json, intercept, feature_mean_json, feature_std_json,
+            feature_names_json, l2_lambda, training_event_watermark,
+            training_source_set_sha256, holdout_row_count, metrics_json
+        ) VALUES ('draft-real-1', 'curve-source-v1', ?, 'DRAFT', ?, 0.0, ?, ?, ?, 1.0,
+            'wm', 'ts', 40, '{}')
+        """,
+        (
+            "e" * 64,
+            json.dumps(coefficients),
+            json.dumps({name: 0.5 for name in CURVE_SOURCE_FEATURE_NAMES}),
+            json.dumps({name: 0.2 for name in CURVE_SOURCE_FEATURE_NAMES}),
+            json.dumps(list(CURVE_SOURCE_FEATURE_NAMES)),
+        ),
+    )
+    lib.execute(
+        "UPDATE curve_preference_models SET training_manifest_json = ?, "
+        "holdout_manifest_json = ?, training_manifest_sha256 = ?, "
+        "holdout_manifest_sha256 = ? WHERE model_version = 'draft-real-1'",
+        (
+            json.dumps(manifest, sort_keys=True),
+            json.dumps(manifest, sort_keys=True),
+            manifest_sha,
+            manifest_sha,
+        ),
+    )
+    lib.commit()
+
+    monkeypatch.setattr(pipeline_ranking, "get_connection", lambda: lib)
+    monkeypatch.setattr(
+        pipeline_ranking,
+        "compute_text_embedding",
+        lambda text: [1.0 if "dance" in text else 0.2] + [0.0] * 767,
+    )
+
+    runtime = FakeCurveRuntime()
+    cfg = _capture_cfg(
+        video, root, runtime,
+        preference_memory_enabled=True,
+        curve_shadow_model_version="draft-real-1",
+        max_output=2,
+    )
+    original_scorer = rank_dedup_stage._score_vlm_frame
+    rank_dedup_stage._score_vlm_frame = lambda **kwargs: (
+        {
+            "timestamp": kwargs.get("timestamp"),
+            "path": kwargs.get("frame_path"),
+            "caption": "kitchen dance",
+            "emotional_core": "joy",
+            "gif_worthiness": 0.9,
+            "aesthetic_notes": [],
+            "reason": "clean",
+        },
+        None,
+    )
+    try:
+        manifest_out, _work = _run_rank_stage(video, root, cfg)
+    finally:
+        rank_dedup_stage._score_vlm_frame = original_scorer
+
+    # The shadow route ran with real mounted features on the ranked clips.
+    shadow_clips = [c for c in manifest_out["clips"] if c.get("curve_route")]
+    assert shadow_clips, "no clip was curve-scored in the real rank path"
+    for clip in shadow_clips:
+        assert clip["curve_route"] == "SHADOW"
+        assert clip["source_feature_status"] == "AVAILABLE"
+        assert clip["curve_nominal_score"] != clip["curve_baseline_score"]
+        # Production final score stays at the baseline in shadow.
+        assert clip["final_score"] == clip["curve_baseline_score"]
+
+    # The frozen capture payload carries the same three-way numbers.
+    rows = _capture_rows(cfg["candidate_capture_db_path"])
+    assert rows
+    for row in rows:
+        payload = json.loads(Path(row["payload_path"]).read_text(encoding="utf-8"))
+        if payload.get("curve_route") == "SHADOW":
+            assert payload["nominal_score"] is not None
+            assert payload["nominal_score"] != payload["baseline_score"]
+            identity = payload["preference_identity"]
+            assert identity["vector_sha256"]
+            # The frozen vector is the exact scoring input (checksum holds).
+            decoded = _b64.b64decode(identity["vector_float32_b64"], validate=True)
+            assert hashlib.sha256(decoded).hexdigest() == identity["vector_sha256"]

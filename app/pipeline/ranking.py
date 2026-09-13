@@ -145,6 +145,18 @@ def _rank_clips_with_preference(clips: list[dict], cfg: dict) -> list[dict] | No
                 vector = None
         if not vector:
             return base_payload or None
+        # Freeze the EXACT vector bytes this scoring run used onto the clip so
+        # capture records the real scoring input instead of a second,
+        # independently computed embedding.
+        import base64 as _b64
+        import hashlib as _hashlib
+
+        import numpy as _np
+
+        _arr = _np.asarray(vector, dtype=_np.float32)
+        clip["preference_vector_b64"] = _b64.b64encode(_arr.tobytes()).decode("ascii")
+        clip["preference_vector_sha256"] = _hashlib.sha256(_arr.tobytes()).hexdigest()
+        clip["preference_text_sha256"] = _hashlib.sha256(text.encode("utf-8")).hexdigest()
         scenario = clip_scenario_keys(clip)
         result = score_preference_export_candidate(
             reranker=reranker,

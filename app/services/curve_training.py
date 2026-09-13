@@ -84,13 +84,35 @@ def _split_source(source: str, seed: int) -> str:
     return "train" if int(digest[:8], 16) % 100 < 80 else "development"
 
 
+def _load_capture_payload(record_row: Any) -> tuple[dict[str, Any] | None, str]:
+    """Read the immutable capture payload with content-hash verification.
+
+    The bytes on disk must hash to the value recorded at capture time; a
+    mismatch means the payload was tampered with and nothing from it may
+    become a training sample.
+    """
+    payload_path = record_row[5]
+    expected_sha = record_row[6]
+    try:
+        payload_bytes = Path(payload_path).read_bytes()
+    except OSError:
+        return None, "capture_payload_unreadable"
+    if expected_sha and hashlib.sha256(payload_bytes).hexdigest() != str(expected_sha):
+        return None, "capture_payload_hash_mismatch"
+    try:
+        payload = json.loads(payload_bytes.decode("utf-8"))
+    except ValueError:
+        return None, "capture_payload_unreadable"
+    if not isinstance(payload, dict):
+        return None, "capture_payload_unreadable"
+    return payload, ""
+
+
 def _load_baseline_from_capture(record_row: Any) -> tuple[float | None, str]:
     """Read the exact no-curve baseline out of the immutable capture payload."""
-    payload_path = record_row[5]
-    try:
-        payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None, "capture_payload_unreadable"
+    payload, error = _load_capture_payload(record_row)
+    if payload is None:
+        return None, error
     baseline = payload.get("baseline_score")
     if isinstance(baseline, bool) or not isinstance(baseline, (int, float)):
         return None, "baseline_missing"
@@ -166,10 +188,19 @@ def _collect_samples(
             exclude("capture_record_missing")
             continue
 
-        baseline, baseline_error = _load_baseline_from_capture(record)
-        if baseline is None:
-            exclude(baseline_error)
+        payload, payload_error = _load_capture_payload(record)
+        if payload is None:
+            exclude(payload_error)
             continue
+        baseline = payload.get("baseline_score")
+        if isinstance(baseline, bool) or not isinstance(baseline, (int, float)):
+            exclude("baseline_missing")
+            continue
+        if not math.isfinite(float(baseline)):
+            exclude("baseline_missing")
+            continue
+        baseline = float(baseline)
+        preference_identity = payload.get("preference_identity") or {}
 
         feature_row = conn.execute(
             "SELECT features_json, extractor_sha256, availability FROM curve_features "
@@ -224,6 +255,16 @@ def _collect_samples(
                 "vector_text_sha256": vector_row[1],
                 "embedding_model": str(vector_row[0] or ""),
                 "profile_version": str(profile_version),
+                # The exact scoring-time vector identity frozen by capture --
+                # binds the training row to the vector the baseline was
+                # computed with, not just the library ledger entry.
+                "preference_text_sha256": preference_identity.get(
+                    "embedding_text_sha256"
+                ),
+                "preference_vector_sha256": preference_identity.get(
+                    "vector_sha256"
+                ),
+                "capture_payload_sha256": str(record[6] or ""),
             }
         )
 
