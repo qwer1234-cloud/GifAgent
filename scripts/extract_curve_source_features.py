@@ -350,10 +350,16 @@ def process_request(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict
             metadata,
         )
 
-    # The claimed source identity must match the bytes on disk: a stale or
-    # wrong source_sha256 is a hard UNAVAILABLE, never silently scored.
+    # The claimed source identity is REQUIRED and must match the bytes on
+    # disk: a missing, stale, or wrong source_sha256 is a hard UNAVAILABLE,
+    # never silently scored.
+    if not source_sha256:
+        return (
+            [_unavailable_entry(w, ["source_sha256_missing"], t0) for w in windows],
+            metadata,
+        )
     actual_sha = _streaming_sha256(source_path)
-    if source_sha256 and actual_sha != source_sha256:
+    if actual_sha != source_sha256:
         return (
             [
                 _unavailable_entry(w, ["source_sha256_mismatch"], t0)

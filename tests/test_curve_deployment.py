@@ -27,7 +27,12 @@ from tests.test_curve_preference_qualification import (  # noqa: F401
 
 
 def _promoted_fixture(tmp_path: Path) -> tuple[sqlite3.Connection, Path, str]:
-    """A PUBLISHED model plus its verified qualification bundle directory."""
+    """A PUBLISHED model plus its verified qualification bundle directory.
+
+    The qualification-time profile (from the bundle's frozen work.db) is
+    published into the source database, because activation requires the live
+    profile identity to match the qualified one.
+    """
     from app.services.curve_preference import promote_model
     from app.services.curve_preference_qualification import execute_qualification_run
 
@@ -41,7 +46,36 @@ def _promoted_fixture(tmp_path: Path) -> tuple[sqlite3.Connection, Path, str]:
     assert result["status"] == "QUALIFIED"
     run_dir = Path(result["run_dir"])
 
+    profile_snapshot = json.loads(
+        (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+    )
+    profile_version = profile_snapshot["profile_version"]
+
+    work_conn = sqlite3.connect(f"file:{run_dir / 'work.db'}?mode=ro", uri=True)
+    work_conn.row_factory = sqlite3.Row
     conn = sqlite3.connect(str(db_path))
+    profile_rows = work_conn.execute(
+        "SELECT profile_version, scope, scenario_key, like_count, dislike_count, "
+        "neutral_count, confidence, liked_centroid_blob, disliked_centroid_blob, "
+        "tag_weights_json FROM preference_profiles WHERE profile_version = ?",
+        (profile_version,),
+    ).fetchall()
+    for row in profile_rows:
+        conn.execute(
+            "INSERT OR REPLACE INTO preference_profiles "
+            "(profile_version, scope, scenario_key, like_count, dislike_count, "
+            "neutral_count, confidence, liked_centroid_blob, disliked_centroid_blob, "
+            "tag_weights_json) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            tuple(row),
+        )
+    work_conn.close()
+    conn.execute(
+        "INSERT OR REPLACE INTO preference_profile_current (slot, profile_version) "
+        "VALUES ('current', ?)",
+        (profile_version,),
+    )
+    conn.commit()
+
     promoted = promote_model(conn, model_version="m-qual", run_dir=run_dir)
     assert promoted["status"] == "PROMOTED"
     return conn, run_dir, "m-qual"
@@ -363,14 +397,14 @@ def test_profile_drift_degrades_active_to_baseline(tmp_path):
     assert result.status == "ACTIVATED"
 
     def snapshot_for(profile_version):
+        conn.execute("DELETE FROM preference_profile_current")
         if profile_version is not None:
-            conn.execute("DELETE FROM preference_profile_current")
             conn.execute(
                 "INSERT INTO preference_profile_current (slot, profile_version) "
                 "VALUES ('current', ?)",
                 (profile_version,),
             )
-            conn.commit()
+        conn.commit()
         return load_curve_runtime_snapshot(
             conn,
             {"curve_preference_enabled": True, "curve_preference_mode": "active"},
@@ -389,4 +423,69 @@ def test_profile_drift_degrades_active_to_baseline(tmp_path):
     qualified = snapshot_for(bundle_profile_version)
     assert "profile_version_mismatch" not in qualified.inactive_reasons
     assert qualified.model_version == model_version
+    conn.close()
+
+
+def test_same_version_profile_content_tamper_refuses_activation(tmp_path):
+    """P1 remediation: keeping profile_version but modifying ANY content
+    field (here a row confidence) must REFUSE activation -- the live profile
+    is compared field-by-field against the qualification snapshot."""
+    conn, run_dir, model_version = _promoted_fixture(tmp_path)
+    config = _runtime_config(conn, run_dir, model_version)
+    profile_version = json.loads(
+        (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+    )["profile_version"]
+
+    # Tamper one content field under the SAME version.
+    row = conn.execute(
+        "SELECT rowid, confidence FROM preference_profiles WHERE profile_version = ?",
+        (profile_version,),
+    ).fetchone()
+    conn.execute(
+        "UPDATE preference_profiles SET confidence = ? WHERE rowid = ?",
+        (float(row[1]) + 0.111, row[0]),
+    )
+    conn.commit()
+
+    result = activate_deployment(
+        conn,
+        qualification_dir=run_dir,
+        expected_revision=0,
+        operator="admin",
+        runtime_config=config,
+    )
+    assert result.status == "REFUSED"
+    assert "profile_content_mismatch" in result.reasons
+    conn.close()
+
+
+def test_runtime_fails_closed_without_profile_fingerprint(tmp_path):
+    """A deployment revision missing the profile content fingerprint is not
+    verifiably bound: BASELINE, never ACTIVE."""
+    conn, run_dir, model_version = _promoted_fixture(tmp_path)
+    config = _runtime_config(conn, run_dir, model_version)
+    profile_version = json.loads(
+        (run_dir / "profile_snapshot.json").read_text(encoding="utf-8")
+    )["profile_version"]
+
+    result = activate_deployment(
+        conn,
+        qualification_dir=run_dir,
+        expected_revision=0,
+        operator="admin",
+        runtime_config=config,
+    )
+    assert result.status == "ACTIVATED"
+
+    # Strip the fingerprint the way a legacy row would look.
+    conn.execute(
+        "UPDATE curve_model_deployments SET profile_snapshot_sha256 = NULL "
+        "WHERE is_active = 1"
+    )
+    conn.commit()
+    snapshot = load_curve_runtime_snapshot(
+        conn,
+        {"curve_preference_enabled": True, "curve_preference_mode": "active"},
+    )
+    assert "profile_identity_missing" in snapshot.inactive_reasons
     conn.close()

@@ -8,7 +8,8 @@
 - 基线:HEAD `d08049a2` + 2026-09-11 工作树(含用户未提交改动)
 - 完成日期:2026-09-12
 - **第二轮整改(2026-09-12)**:评审驳回 `A/C CODE_ACCEPTED` 后,修复全部 7 项 P1 与 2 项 P2(见 §9),并补充真实的"入库→反馈→无需人工预置特征→DRAFT"端到端测试。
-- **第三轮整改(2026-09-13)**:只读复核确认 5 项未完全闭合(1 项 P1 曲线特征晚于评分注入、2 项 P1 阶段包越权写入与回滚丢失画像绑定、3 项 P1 capture 内容哈希未校验,以及 2 项 P2),已全部修复(见 §10)。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`**。
+- **第三轮整改(2026-09-13)**:只读复核确认 5 项未完全闭合(1 项 P1 曲线特征晚于评分注入、2 项 P1 阶段包越权写入与回滚丢失画像绑定、3 项 P1 capture 内容哈希未校验,以及 2 项 P2),已全部修复(见 §10)。
+- **第四轮整改(2026-09-13)**:复核确认 3 项 P1(特征提取未绑定真实源哈希、同版本画像内容篡改可激活、同名 worker 租约凭证缺失)与 1 项 P2(训练向量身份未参与门禁),已全部修复(见 §11)。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`**。
 
 ## 1. 提交列表
 
@@ -118,6 +119,18 @@ mypy:`python -m mypy app/services` → **Success: no issues found in 63 source f
 | P2 | capture 中的向量是第二次计算且无消费者 | ranking.score_clip 把当次评分实际使用的 float32 字节与 SHA 直接挂到 clip;capture 只消费该身份(删除第二次 embedding 调用)并做校验和解;训练样本冻结 `preference_text_sha256`/`preference_vector_sha256`/`capture_payload_sha256`,把训练行绑定到 baseline 实际使用的向量 |
 
 第三轮验证:17 个测试文件 `237 passed`;`mypy app/services` 零错误(63 文件);真实 ONNX smoke 与完整协议握手复验通过;全量套件 2646 passed(仅余两个已确认的基线遗留失败)。
+
+## 11. 第四轮整改:只读复核 P1/P2 修复(2026-09-13)
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| P1 | 特征提取发生在源哈希解析之前;runtime 收到空哈希,worker 跳过校验,input_hash 不绑定真实视频 | `_resolve_capture_source_sha` 在 mount 前解析:优先采用身份阶段已冻结到 clip 的 `source_video_sha256`(全部一致才可用),否则流式计算文件哈希;解析失败即不产出特征。worker 端 source_sha256 改为必需(缺失 → `source_sha256_missing`)。入账时二次核验:重算 `window_input_hash(真实源哈希, 窗口, extractor)` 与 feature 记录比对,不一致抛出回滚。新增断言:runtime 收到的 SHA == 视频文件真实 SHA |
+| P1 | 激活只比较 profile_version,冻结的是 live 哈希;同版本内容篡改后仍可 ACTIVATED;运行时空指纹跳过内容门禁 | 激活现在按资格快照 `manifest.profile_rows` 的规范化指纹与 live 行(`_profile_rows` 同一表示)逐字段比较,任一内容漂移 → `profile_content_mismatch` REFUSED;冻结的正是**资格画像**指纹。运行时 version 与 content 指纹任一缺失 → `profile_identity_missing` 回退 BASELINE。rollback 同样拒绝缺身份的目标并重验 live 内容。新增测试:同版本改 confidence → REFUSED;空指纹 → BASELINE |
+| P1 | CAS 只匹配 owner+RUNNING,同名 worker/过期未接管仍可写入 | 每次 claim 生成不可复用 `lease_token`(schema 新列),写入 `LearningJob.lease_token`;`_save_stage_package` 与 ADVANCE/RETRY/COMPLETE/NEEDS_ATTENTION 全部以 `job_id + lease_token + RUNNING` 做 CAS,保存还要求租约未过期。owner 仅作审计。新增测试:同名 worker 重领后,旧 token 的包写入被拒 |
+| P2 | 训练清单只记录向量身份未验证绑定;capture 向量在 scorer 成功前挂载;身份缺失仍可训练 | `ranking.score_clip` 改为共享 scorer 成功返回后才挂载向量身份并标记 `scoring_input_committed=True`;capture 记录原始 embedding 文本。训练门禁(全部硬失败):身份存在且 committed、embedding model 匹配、冻结文本自洽且 == `candidate_vectors.source_text_hash`、冻结向量按生产规则 L2 归一化后与 `candidate_vectors.vector_blob` 逐字节相等。publication 时正式 ledger 向量直接采用冻结字节(同一向量域,无二次 embedding)。`semantic_embedding_text` 去重相同字段(summary=caption、emotion=emotional_core),使 ledger 文本与 preference 文本对齐。新增测试:缺失/不一致排除、一致则训练 |
+
+第四轮验证:17 个测试文件 `241 passed`;`mypy app/services` 零错误;全量套件 2650 passed(仅余两个已确认的基线遗留失败);`git diff --check` 对本轮提交干净(基线文件 `tests/test_candidates_api.py:896` 的 EOF 空行除外,仍不触碰)。
+上一轮遗留的未提交测试修改(`test_curve_online.py`、`test_curve_deployment.py` 夹具/断言)已随本轮提交入库,`241 passed` 可在提交状态下纯净复现。
 
 ## 8. 安全配置默认值(任一检查点失败时保持)
 

@@ -200,7 +200,6 @@ def _collect_samples(
             exclude("baseline_missing")
             continue
         baseline = float(baseline)
-        preference_identity = payload.get("preference_identity") or {}
 
         feature_row = conn.execute(
             "SELECT features_json, extractor_sha256, availability FROM curve_features "
@@ -220,12 +219,68 @@ def _collect_samples(
             continue
 
         vector_row = conn.execute(
-            "SELECT embedding_model, source_text_hash FROM candidate_vectors "
+            "SELECT embedding_model, source_text_hash, vector_blob, embedding_dim "
+            "FROM candidate_vectors "
             "WHERE candidate_id = ? AND vector_type = 'clip' LIMIT 1",
             (target_id,),
         ).fetchone()
         if vector_row is None:
             exclude("vector_identity_missing")
+            continue
+
+        # The frozen preference identity is a REQUIRED training gate: the
+        # sample's baseline must be traceable to the exact vector it was
+        # computed with, cross-checked byte-for-byte against the formal
+        # ledger vector.
+        preference_identity = payload.get("preference_identity") or {}
+        pref_text_sha = preference_identity.get("embedding_text_sha256")
+        pref_vec_b64 = preference_identity.get("vector_float32_b64")
+        pref_vec_sha = preference_identity.get("vector_sha256")
+        if (
+            not pref_text_sha
+            or not pref_vec_b64
+            or not pref_vec_sha
+            or not preference_identity.get("scoring_input_committed")
+        ):
+            exclude("preference_identity_missing")
+            continue
+        if str(vector_row[0] or "") != "nomic-embed-text:latest":
+            exclude("embedding_model_mismatch")
+            continue
+
+        # Text binding: the frozen raw text must hash to the recorded value,
+        # and the ledger row's canonical text hash must EQUAL it -- the
+        # ledger embedding text is aligned with the preference text for
+        # captured candidates, so any divergence (summary edited after
+        # capture, legacy duplicated summaries) fails closed.
+        frozen_text = str(preference_identity.get("embedding_text") or "")
+        if (
+            not frozen_text
+            or hashlib.sha256(frozen_text.encode("utf-8")).hexdigest()
+            != str(pref_text_sha)
+            or str(vector_row[1] or "") != str(pref_text_sha)
+        ):
+            exclude("preference_text_hash_mismatch")
+            continue
+
+        # Byte binding: the frozen vector, normalized by the production rule,
+        # must equal the formal ledger blob exactly.
+        import base64 as b64mod
+
+        from app.services.vector_math import vector_to_blob
+
+        try:
+            frozen_vector = np.frombuffer(
+                b64mod.b64decode(pref_vec_b64, validate=True), dtype=np.float32
+            )
+            frozen_blob = vector_to_blob(
+                frozen_vector, embedding_dim=int(vector_row[3])
+            )
+        except (ValueError, TypeError):
+            exclude("preference_vector_mismatch")
+            continue
+        if frozen_blob != bytes(vector_row[2]):
+            exclude("preference_vector_mismatch")
             continue
 
         if profile_version is None:
@@ -258,12 +313,8 @@ def _collect_samples(
                 # The exact scoring-time vector identity frozen by capture --
                 # binds the training row to the vector the baseline was
                 # computed with, not just the library ledger entry.
-                "preference_text_sha256": preference_identity.get(
-                    "embedding_text_sha256"
-                ),
-                "preference_vector_sha256": preference_identity.get(
-                    "vector_sha256"
-                ),
+                "preference_text_sha256": pref_text_sha,
+                "preference_vector_sha256": pref_vec_sha,
                 "capture_payload_sha256": str(record[6] or ""),
             }
         )

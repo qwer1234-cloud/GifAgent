@@ -265,6 +265,7 @@ def apply_preference_schema(conn: sqlite3.Connection) -> None:
             stage TEXT NOT NULL CHECK(stage IN ('SNAPSHOT', 'TRAIN', 'QUALIFY', 'COMPLETE')),
             status TEXT NOT NULL CHECK(status IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'NEEDS_ATTENTION', 'SUCCEEDED', 'CANCELLED')),
             owner TEXT,
+            lease_token TEXT,
             lease_expires_at TEXT,
             lease_expires_epoch INTEGER,
             attempts INTEGER NOT NULL DEFAULT 0,
@@ -543,6 +544,7 @@ def _migrate_learning_job_columns(conn: sqlite3.Connection) -> None:
         (
             ("lease_expires_epoch", "INTEGER"),
             ("next_retry_epoch", "INTEGER"),
+            ("lease_token", "TEXT"),
         ),
     )
     _ensure_columns(

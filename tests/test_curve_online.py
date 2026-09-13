@@ -300,3 +300,110 @@ def test_validate_deployment():
     assert "model_not_qualified" in validate_deployment("PUBLISHED", False, True)
     assert "config_mismatch" in validate_deployment("PUBLISHED", True, False)
     assert validate_deployment("PUBLISHED", True, True) == []
+
+
+def _draft_model_db(model_version: str = "draft-shadow-1"):
+    """A library DB with a published profile and a DRAFT source-domain model."""
+    import json as _json
+
+    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    apply_preference_schema(conn)
+    conn.execute(
+        "INSERT INTO preference_profile_current (slot, profile_version) "
+        "VALUES ('current', 'profile_v1')"
+    )
+    conn.execute(
+        "INSERT INTO preference_profiles (profile_version, scope, scenario_key, "
+        "like_count, dislike_count, neutral_count, confidence, liked_centroid_blob) "
+        "VALUES ('profile_v1', 'global', NULL, 3, 1, 0, 0.9, ?)",
+        (bytes(range(128)),),
+    )
+    from app.services.curve_preference import canonical_json_sha256
+
+    manifest = {"feature_version": "curve-source-v1", "sources": [], "rows": []}
+    manifest_sha = canonical_json_sha256(manifest)
+    coefficients = {name: 0.1 for name in CURVE_SOURCE_FEATURE_NAMES}
+    conn.execute(
+        """
+        INSERT INTO curve_preference_models (
+            model_version, feature_version, extractor_sha256, status,
+            coefficients_json, intercept, feature_mean_json, feature_std_json,
+            feature_names_json, l2_lambda, training_event_watermark,
+            training_source_set_sha256, holdout_row_count, metrics_json
+        ) VALUES (?, 'curve-source-v1', ?, 'DRAFT', ?, 0.0, ?, ?, ?, 1.0,
+            'wm', 'ts', 40, '{}')
+        """,
+        (
+            model_version,
+            "e" * 64,
+            _json.dumps(coefficients),
+            _json.dumps({name: 0.5 for name in CURVE_SOURCE_FEATURE_NAMES}),
+            _json.dumps({name: 0.2 for name in CURVE_SOURCE_FEATURE_NAMES}),
+            _json.dumps(list(CURVE_SOURCE_FEATURE_NAMES)),
+        ),
+    )
+    conn.execute(
+        "UPDATE curve_preference_models SET training_manifest_json = ?, "
+        "holdout_manifest_json = ?, training_manifest_sha256 = ?, "
+        "holdout_manifest_sha256 = ? WHERE model_version = ?",
+        (
+            _json.dumps(manifest, sort_keys=True),
+            _json.dumps(manifest, sort_keys=True),
+            manifest_sha,
+            manifest_sha,
+            model_version,
+        ),
+    )
+    conn.commit()
+    return conn
+
+
+def test_draft_shadow_model_reaches_scoring_snapshot(tmp_path):
+    """P1 remediation: with no deployment, a configured DRAFT shadow model
+    must appear in the runtime snapshot so the shared scorer accepts the
+    curve inputs instead of marking them partial."""
+    import numpy as np
+
+    from app.pipeline.ranking import _curve_video_context
+    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+
+    conn = _draft_model_db()
+    cfg = {
+        "curve_preference_enabled": True,
+        "curve_preference_mode": "shadow",
+        "curve_shadow_model_version": "draft-shadow-1",
+    }
+    ctx = _curve_video_context(conn, cfg)
+    assert ctx is not None
+    loaded = ctx["model"]
+    assert loaded is not None
+    snapshot = ctx["snapshot"]
+    assert snapshot.model_version == "draft-shadow-1"
+    assert snapshot.mode == "shadow"
+
+    features = {name: 0.8 for name in CURVE_SOURCE_FEATURE_NAMES}
+    from app.pipeline.ranking import _curve_probability_from_clip
+
+    probability = _curve_probability_from_clip(ctx, {"source_features": features})
+    assert probability is not None
+
+    result = score_curve_candidate(
+        conn,
+        snapshot,
+        {
+            "base_score": 0.60,
+            "gif_worthiness": 0.60,
+            "candidate_vector": np.asarray([1.0, 0.0], dtype=np.float32),
+            "scenario_keys": ["tag:test"],
+            "curve_probability": probability,
+        },
+    )
+    assert result["route"] == "SHADOW"
+    # The curve inputs were accepted (not partial): nominal differs from baseline.
+    assert result["nominal_score"] is not None
+    assert result["nominal_score"] != result["baseline_score"]
+    assert result["final_score"] == result["baseline_score"]
+    conn.close()

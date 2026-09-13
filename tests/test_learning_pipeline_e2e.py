@@ -32,10 +32,23 @@ def _seed_learning_db(db_path: Path) -> None:
     in one transaction) -> preference events on the materialized candidates.
     """
     import hashlib
+    import base64 as _b64
+
+    import numpy as _np
 
     from app.services.candidate_capture import persist_capture
-    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+    from app.services.curve_source_features import (
+        CURVE_SOURCE_FEATURE_NAMES,
+        CurveWindow,
+    )
     from app.services.library_ingest import ingest_published_clips
+    from app.services.reranker import preference_embedding_text
+    from app.services.vector_math import vector_to_blob
+
+    def deterministic_embed(text: str) -> list[float]:
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        vec = _np.frombuffer(digest * 24, dtype=_np.uint8)[:768].astype(_np.float32)
+        return (vec / 255.0).tolist()
 
     conn = sqlite3.connect(db_path)
     apply_preference_schema(conn)
@@ -43,6 +56,8 @@ def _seed_learning_db(db_path: Path) -> None:
     sources = ["a" * 64, "b" * 64, "c" * 64]
     gif_dir = db_path.parent / "gifs"
     gif_dir.mkdir(parents=True, exist_ok=True)
+
+    from app.services.curve_source_features import window_input_hash
 
     clips = []
     for i in range(36):
@@ -53,6 +68,19 @@ def _seed_learning_db(db_path: Path) -> None:
             name: 0.3 + ((i + index) % 6) / 12.0
             for index, name in enumerate(CURVE_SOURCE_FEATURE_NAMES)
         }
+        feature_input_hash = window_input_hash(
+            source,
+            CurveWindow(
+                preexport_key=f"{i:064x}",
+                start_us=1_000_000 + i,
+                end_us=4_000_000 + i,
+            ),
+            extractor_sha256="e" * 64,
+        )
+        pref_text = preference_embedding_text(
+            caption=f"synthetic clip {i}", emotion="joy", scene_type=""
+        )
+        pref_vec = _np.asarray(deterministic_embed(pref_text), dtype=_np.float32)
         payload = {
             "run_id": "run-e2e",
             "preexport_key": f"{i:064x}",
@@ -64,13 +92,26 @@ def _seed_learning_db(db_path: Path) -> None:
             "baseline_score": 0.5 + i / 100.0,
             "capture_status": "CAPTURED",
             "candidate_id": f"clip-{i:02d}",
+            "preference_identity": {
+                "embedding_text": pref_text,
+                "embedding_text_sha256": hashlib.sha256(
+                    pref_text.encode("utf-8")
+                ).hexdigest(),
+                "embedding_model": "nomic-embed-text:latest",
+                "scenario_keys": [],
+                "vector_float32_b64": _b64.b64encode(pref_vec.tobytes()).decode(
+                    "ascii"
+                ),
+                "vector_sha256": hashlib.sha256(pref_vec.tobytes()).hexdigest(),
+                "scoring_input_committed": True,
+            },
             "source_feature": {
                 "status": "AVAILABLE",
                 "feature_version": "curve-source-v1",
                 "extractor_sha256": "e" * 64,
                 "features": features,
                 "actual_timestamps": [1.0, 2.0, 3.0],
-                "input_hash": "i" * 64,
+                "input_hash": feature_input_hash,
                 "missing_reasons": [],
                 "wall_clock_ms": 1.0,
             },
@@ -476,3 +517,52 @@ def _stale_job_id(conn: sqlite3.Connection) -> str:
     return conn.execute(
         "SELECT job_id FROM learning_jobs ORDER BY created_at LIMIT 1"
     ).fetchone()[0]
+
+
+def test_same_owner_reclaim_invalidates_old_token(tmp_path):
+    """P1 remediation: the owner string is not a credential. After a
+    same-named worker re-claims an expired lease, the OLD claim token can no
+    longer mutate the job or its stage package."""
+    from app.services.learning_jobs import (
+        _save_stage_package,
+        claim_learning_job,
+    )
+
+    db_path = tmp_path / "library.db"
+    _seed_learning_db(db_path)
+    conn = sqlite3.connect(db_path)
+    apply_preference_schema(conn)
+
+    from app.services.learning_jobs import enqueue_learning
+
+    enqueue_learning(conn, "f" * 64, "e" * 64)
+
+    # w1 claims with the default owner name.
+    first = claim_learning_job(
+        conn, owner="standalone_worker", now_epoch=1_800_000_000, lease_seconds=60
+    )
+    assert first is not None
+    old_token = first.lease_token
+
+    # The lease expires; a NEW process with the SAME owner name re-claims.
+    second = claim_learning_job(
+        conn, owner="standalone_worker", now_epoch=1_800_000_061, lease_seconds=60
+    )
+    assert second is not None
+    assert second.lease_token != old_token
+
+    # The stale token's package write must be refused (expired + token CAS).
+    try:
+        _save_stage_package(
+            conn,
+            first.job_id,
+            {"stages": {"SNAPSHOT": {"tampered": True}}},
+            Path(db_path.parent / "runs"),
+            "standalone_worker",
+            old_token,
+        )
+        raised = False
+    except PermissionError:
+        raised = True
+    assert raised, "stale token write must be refused"
+    conn.close()

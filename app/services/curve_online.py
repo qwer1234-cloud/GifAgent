@@ -112,33 +112,20 @@ def _snap_get(snapshot: Any, key: str, default: Any = None) -> Any:
     return getattr(snapshot, key, default)
 
 
-def _profile_state_sha256(conn: Any, profile_version: str) -> str:
-    """Content fingerprint of one profile version's rows.
-
-    Covers every centroid, confidence, and tag weight so a same-version
-    rebuild with different content is detected at runtime.
-    """
-    rows = conn.execute(
-        """
-        SELECT scope, scenario_key, confidence,
-               liked_centroid_blob, disliked_centroid_blob, tag_weights_json
-        FROM preference_profiles
-        WHERE profile_version = ?
-        ORDER BY scope, scenario_key
-        """,
-        (profile_version,),
-    ).fetchall()
-    entries = []
-    for row in rows:
-        liked = row[3] if row[3] is None else bytes(row[3]).hex()
-        disliked = row[4] if row[4] is None else bytes(row[4]).hex()
-        entries.append(
-            [str(row[0]), str(row[1]), repr(float(row[2] or 0.0)), liked, disliked,
-             str(row[5] or "")]
-        )
+def _profile_rows_sha256(profile_rows: Any) -> str:
+    """Content fingerprint over normalized profile rows (the exact
+    representation the qualification snapshot freezes)."""
     return hashlib.sha256(
-        json.dumps(entries, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(profile_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _live_profile_rows(conn: Any, profile_version: str) -> list[Any]:
+    """The live profile rows in the qualification snapshot's normalized
+    representation, so qualification and live content compare byte-for-byte."""
+    from app.services.preference_profile_snapshot import _profile_rows
+
+    return _profile_rows(conn, profile_version=profile_version)
 
 
 def load_curve_runtime_snapshot(
@@ -244,14 +231,18 @@ def load_curve_runtime_snapshot(
         # qualification froze. A missing identity, a newer published profile,
         # or a same-version content rebuild all fail closed to BASELINE until
         # re-qualification.
-        if not deployment_profile_version:
+        if not deployment_profile_version or not deployment_profile_state_sha:
+            # Profile identity = version AND content fingerprint; either
+            # missing means the deployment is not verifiably bound.
             compatible = False
             inactive.append("profile_identity_missing")
         elif str(profile_version or "") != str(deployment_profile_version):
             compatible = False
             inactive.append("profile_version_mismatch")
-        elif deployment_profile_state_sha:
-            live_state = _profile_state_sha256(conn, str(profile_version))
+        else:
+            live_state = _profile_rows_sha256(
+                _live_profile_rows(conn, str(profile_version))
+            )
             if live_state != str(deployment_profile_state_sha):
                 compatible = False
                 inactive.append("profile_content_mismatch")
@@ -767,9 +758,15 @@ def activate_deployment(
     bundle.input_manifest.setdefault("bundle_profile_version", bundle_profile_version)
 
     reasons: list[str] = []
+    qualified_rows_sha = ""
     if not bundle_profile_version:
         reasons.append("profile_identity_missing")
     else:
+        manifest_rows = (profile_snapshot.get("manifest") or {}).get("profile_rows")
+        if not isinstance(manifest_rows, list) or not manifest_rows:
+            reasons.append("profile_identity_missing")
+        else:
+            qualified_rows_sha = _profile_rows_sha256(manifest_rows)
         live_profile_row = conn.execute(
             "SELECT profile_version FROM preference_profile_current WHERE slot='current'"
         ).fetchone()
@@ -778,6 +775,15 @@ def activate_deployment(
             # Deploying onto any profile other than the qualified one (or no
             # published profile at all) is refused: re-qualify first.
             reasons.append("profile_version_mismatch")
+        elif qualified_rows_sha:
+            live_rows_sha = _profile_rows_sha256(
+                _live_profile_rows(conn, bundle_profile_version)
+            )
+            if live_rows_sha != qualified_rows_sha:
+                # Same version but ANY content field (centroid, confidence,
+                # tag weights) drifted from the qualification snapshot: the
+                # live profile was never qualified. Refuse activation.
+                reasons.append("profile_content_mismatch")
     evidence = validate_qualification_evidence(
         conn,
         model_version=model_version,
@@ -811,7 +817,7 @@ def activate_deployment(
                     f"current {current_rev}",
                 ),
             )
-        frozen_profile_state = _profile_state_sha256(conn, bundle_profile_version)
+        frozen_profile_state = qualified_rows_sha
         conn.execute("UPDATE curve_model_deployments SET is_active = 0")
         conn.execute(
             """
@@ -951,12 +957,16 @@ def rollback_deployment(
         bundle_profile_version = str(profile_snapshot.get("profile_version") or "")
     except (OSError, ValueError):
         reasons.append("profile_identity_missing")
-    if not target_profile_version or bundle_profile_version != str(
-        target_profile_version
-    ):
+    if not target_profile_version or not target_profile_state_sha:
+        # A rollback target without a verifiable profile identity cannot be
+        # restored: only an explicit baseline rollback remains.
+        reasons.append("profile_identity_missing")
+    elif bundle_profile_version != str(target_profile_version):
         reasons.append("profile_version_mismatch")
-    if target_profile_state_sha:
-        live_state = _profile_state_sha256(conn, str(target_profile_version))
+    else:
+        live_state = _profile_rows_sha256(
+            _live_profile_rows(conn, str(target_profile_version))
+        )
         if live_state != str(target_profile_state_sha):
             reasons.append("profile_content_mismatch")
     if not reasons:

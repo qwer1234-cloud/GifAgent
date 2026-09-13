@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from app.services.embedding import EmbeddingServiceUnavailable
 from app.services.preference_events import load_latest_scoring_events
@@ -40,17 +43,29 @@ def embedding_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def build_candidate_embedding_text(row: sqlite3.Row) -> str:
-    """Build content-first text for candidate vector embedding.
+def semantic_embedding_text(row: Any) -> str:
+    """Content-first embedding text, empty when caption/tags/scenarios are absent.
 
-    Filenames and clip timestamps are omitted: they pull same-source clips
-    together without adding semantic signal.
+    Online ingest must not embed filename-only or id-only rows. Batch backfill
+    still falls back to ``candidate_id`` via ``build_candidate_embedding_text``.
     """
-    vlm_summary = _loads_json(row["vlm_summary_json"], {})
-    tags = _loads_json(row["tags_json"], [])
-    scenario_keys = _loads_json(row["scenario_keys_json"], [])
+    if isinstance(row, dict) or hasattr(row, "keys"):
+        vlm_summary = _loads_json(row["vlm_summary_json"], {})
+        tags = _loads_json(row["tags_json"], [])
+        scenario_keys = _loads_json(row["scenario_keys_json"], [])
+    elif isinstance(row, (tuple, list)) and len(row) >= 9:
+        vlm_summary = _loads_json(row[6], {})
+        tags = _loads_json(row[7], [])
+        scenario_keys = _loads_json(row[8], [])
+    else:
+        return ""
 
     parts: list[str] = []
+    # Duplicate summary fields (summary mirrors caption, emotion mirrors
+    # emotional_core) must not inflate the text: dedupe identical strings so
+    # the ledger embedding text stays aligned with the preference embedding
+    # text used by online scoring and capture.
+    seen_values: set[str] = set()
     if isinstance(vlm_summary, dict):
         for key in (
             "caption",
@@ -62,14 +77,26 @@ def build_candidate_embedding_text(row: sqlite3.Row) -> str:
         ):
             value = vlm_summary.get(key)
             if value:
-                parts.append(str(value))
+                text_value = str(value).strip()
+                if not text_value or text_value in seen_values:
+                    continue
+                seen_values.add(text_value)
+                parts.append(text_value)
     if isinstance(tags, list):
         parts.extend(str(tag) for tag in tags if tag)
     if isinstance(scenario_keys, list):
         parts.extend(str(key) for key in scenario_keys if key)
 
-    text = " ".join(part.strip() for part in parts if str(part).strip())
-    return text or str(row["candidate_id"])
+    return " ".join(part.strip() for part in parts if str(part).strip())
+
+
+def build_candidate_embedding_text(row: sqlite3.Row) -> str:
+    """Build content-first text for candidate vector embedding.
+
+    Filenames and clip timestamps are omitted: they pull same-source clips
+    together without adding semantic signal.
+    """
+    return semantic_embedding_text(row) or str(row["candidate_id"])
 
 
 def _vector_blob(vector: list[float] | Any, *, embedding_dim: int) -> bytes:
@@ -237,6 +264,96 @@ def _clear_exclusion(
            WHERE candidate_id=? AND embedding_model=?""",
         (candidate_id, embedding_model),
     )
+
+
+def upsert_candidate_vector(
+    conn: sqlite3.Connection,
+    *,
+    candidate_id: str,
+    embed_fn: EmbeddingFn | None = None,
+    embedding_model: str = REQUIRED_EMBEDDING_MODEL,
+    embedding_dim: int = REQUIRED_EMBEDDING_DIM,
+) -> bool:
+    """Compute and upsert candidate vector for a single candidate row.
+
+    Loads the candidate row from candidate_gifs, builds the content-first
+    embedding text, computes the embedding using embed_fn (defaults to
+    compute_text_embedding), and writes into candidate_vectors.
+    Returns True if a vector was written or was already current, False otherwise.
+    """
+    row = conn.execute(
+        """SELECT candidate_id, source_video_path, start_sec, end_sec,
+                  artifact_path, preview_path, vlm_summary_json,
+                  tags_json, scenario_keys_json
+           FROM candidate_gifs
+           WHERE candidate_id=?""",
+        (candidate_id,),
+    ).fetchone()
+    if row is None:
+        return False
+
+    text = semantic_embedding_text(row)
+    if not text.strip():
+        return False
+
+    text_hash = embedding_text_hash(text)
+
+    current = conn.execute(
+        """SELECT vector_blob, source_text_hash, text_schema_version
+           FROM candidate_vectors
+           WHERE candidate_id=? AND vector_type='clip'
+             AND embedding_model=? AND embedding_dim=?""",
+        (candidate_id, embedding_model, embedding_dim),
+    ).fetchone()
+
+    if current is not None:
+        c_ver = (
+            current["text_schema_version"]
+            if (isinstance(current, dict) or hasattr(current, "keys"))
+            else current[2]
+        )
+        c_hash = (
+            current["source_text_hash"]
+            if (isinstance(current, dict) or hasattr(current, "keys"))
+            else current[1]
+        )
+        if c_ver == EMBEDDING_TEXT_SCHEMA_VERSION and c_hash == text_hash:
+            return True
+
+    if embed_fn is None:
+        from app.services.embedding import compute_text_embedding
+
+        embed_fn = compute_text_embedding
+
+    try:
+        vector = embed_fn(text)
+        blob = _vector_blob(vector, embedding_dim=embedding_dim)
+        _upsert_vector(
+            conn,
+            candidate_id=candidate_id,
+            embedding_model=embedding_model,
+            embedding_dim=embedding_dim,
+            blob=blob,
+            text_hash=text_hash,
+        )
+        _clear_exclusion(
+            conn, candidate_id=candidate_id, embedding_model=embedding_model
+        )
+        conn.commit()
+        return True
+    except Exception as exc:
+        _record_exclusion(
+            conn,
+            candidate_id=candidate_id,
+            embedding_model=embedding_model,
+            reason=f"ingest_embed_failed: {exc}",
+            error_class=_error_class(exc),
+        )
+        conn.commit()
+        logger.warning(
+            "Failed to embed vector for candidate %s: %s", candidate_id, exc
+        )
+        return False
 
 
 def _empty_result(

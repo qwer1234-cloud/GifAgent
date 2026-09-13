@@ -319,6 +319,61 @@ def _record_source_features(
         raise ValueError(
             f"capture feature identity incomplete for record {record_id}"
         )
+    # Second verification of the extraction input binding: the recorded
+    # input hash must reproduce from the REAL source sha, the frozen window,
+    # and the extractor identity -- otherwise the features were not computed
+    # from the video bytes this record claims.
+    from app.services.curve_source_features import (
+        CurveWindow as _CurveWindow,
+        window_input_hash as _window_input_hash,
+    )
+
+    recomputed_input = _window_input_hash(
+        str(payload.get("source_video_sha256") or ""),
+        _CurveWindow(
+            preexport_key=str(payload.get("preexport_key") or ""),
+            start_us=int(payload.get("start_us") or 0),
+            end_us=int(payload.get("end_us") or 0),
+        ),
+        feature_version=str(feature.get("feature_version")),
+        extractor_sha256=str(feature["extractor_sha256"]),
+    )
+    if str(feature.get("input_hash") or "") != recomputed_input:
+        raise ValueError(
+            f"capture feature input hash mismatch for record {record_id}"
+        )
+    # The formal ledger vector IS the frozen scoring vector: byte-for-byte,
+    # normalized by the production rule, with the preference text hash as the
+    # ledger identity. Scoring, capture, and the preference profile therefore
+    # share one vector domain -- no second embedding computation.
+    identity = payload.get("preference_identity") or {}
+    if identity.get("scoring_input_committed") and identity.get(
+        "vector_float32_b64"
+    ):
+        import base64 as b64mod
+
+        import numpy as np
+
+        from app.services.vector_math import vector_to_blob
+
+        frozen = np.frombuffer(
+            b64mod.b64decode(identity["vector_float32_b64"], validate=True),
+            dtype=np.float32,
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO candidate_vectors (
+                candidate_id, vector_type, embedding_model, embedding_dim,
+                vector_blob, normalized, source_text_hash, text_schema_version
+            ) VALUES (?, 'clip', ?, 768, ?, 1, ?, 1)
+            """,
+            (
+                candidate_id,
+                str(identity.get("embedding_model") or "nomic-embed-text:latest"),
+                vector_to_blob(frozen, embedding_dim=768),
+                str(identity.get("embedding_text_sha256") or ""),
+            ),
+        )
     conn.execute(
         """
         INSERT OR REPLACE INTO curve_features (

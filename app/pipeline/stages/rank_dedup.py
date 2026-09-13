@@ -179,18 +179,52 @@ def _extract_features_for_clips(
     return by_key
 
 
+def _resolve_capture_source_sha(
+    context: RankCaptureContext,
+    clips: list[dict],
+) -> str:
+    """Resolve the REAL source video SHA-256 before any feature extraction.
+
+    Prefers the identity already frozen onto the clips by
+    ``assign_candidate_capture_identities`` (every clip carries the same
+    hash); falls back to hashing the file. Feature extraction without a
+    verified source identity is refused.
+    """
+    if context.source_sha256:
+        return context.source_sha256
+    clip_shas = {
+        str(clip["source_video_sha256"])
+        for clip in clips
+        if clip.get("source_video_sha256")
+    }
+    if len(clip_shas) == 1:
+        context.source_sha256 = next(iter(clip_shas))
+        return context.source_sha256
+    from app.services.candidate_capture import compute_source_sha256
+
+    context.source_sha256 = compute_source_sha256(context.video_path)
+    return context.source_sha256
+
+
 def mount_source_features(
     context: RankCaptureContext,
     clips: list[dict],
 ) -> dict[str, "CurveFeatureResult"]:
     """Extract source curve features once per video and mount them onto the
     clips BEFORE the shared scoring runs, so curve probability (and therefore
-    nominal/effective) is computed from THIS run's features.
+    nominal/effective) is computed from THIS run's features bound to the
+    real source hash.
 
     Returns the per-preexport-key results; mounting is a no-op when capture
-    is disabled.
+    is disabled, and yields no features when the source identity cannot be
+    verified.
     """
     if not context.enabled or not clips:
+        return {}
+    try:
+        _resolve_capture_source_sha(context, clips)
+    except Exception as exc:
+        print(f"  Candidate capture: source identity unavailable ({exc})")
         return {}
     results = _extract_features_for_clips(context, clips)
     for clip in clips:
@@ -282,16 +316,30 @@ def _preference_identity_for_clip(clip: dict) -> dict:
     The vector recorded here is the EXACT float32 vector the shared scorer
     consumed for this candidate (attached by the ranking stage) -- never a
     second, independently computed embedding. When preference scoring did not
-    run, no vector identity is claimed.
+    run, no vector identity is claimed. The raw embedding text is frozen too
+    so the identity is self-verifiable against the formal ledger row.
     """
-    from app.services.reranker import clip_scenario_keys
+    from app.services.reranker import (
+        clip_scenario_keys,
+        preference_embedding_text,
+    )
 
+    best = clip.get("best_frame") if isinstance(clip.get("best_frame"), dict) else {}
+    caption = str(best.get("caption") or clip.get("caption") or "").strip()
+    emotion = str(
+        best.get("emotional_core") or clip.get("emotional_core") or ""
+    ).strip()
+    scene = str(best.get("scene_type") or clip.get("scene_type") or "").strip()
     identity: dict = {
+        "embedding_text": preference_embedding_text(
+            caption=caption, emotion=emotion, scene_type=scene
+        ),
         "embedding_text_sha256": clip.get("preference_text_sha256"),
         "embedding_model": "nomic-embed-text:latest",
         "scenario_keys": clip_scenario_keys(clip),
         "vector_float32_b64": clip.get("preference_vector_b64"),
         "vector_sha256": clip.get("preference_vector_sha256"),
+        "scoring_input_committed": bool(clip.get("scoring_input_committed", False)),
     }
     frozen_b64 = identity["vector_float32_b64"]
     frozen_sha = identity["vector_sha256"]

@@ -60,6 +60,7 @@ class LearningJob:
     owner: str
     input_snapshot_sha256: str
     policy_sha256: str
+    lease_token: str = ""
 
 
 @dataclass(frozen=True)
@@ -315,7 +316,7 @@ def claim_learning_job(
         row = conn.execute(
             """
             SELECT job_id, stage, status, owner, input_snapshot_sha256,
-                   policy_sha256, lease_expires_epoch
+                   policy_sha256, lease_expires_epoch, lease_token
             FROM learning_jobs
             WHERE status = 'PENDING'
                OR (status = 'RETRY_WAIT' AND (next_retry_epoch IS NULL OR next_retry_epoch <= ?))
@@ -331,22 +332,30 @@ def claim_learning_job(
 
         job_id, stage, status, previous_owner = row[0], row[1], row[2], row[3]
         original_lease = row[6]
+        previous_token = row[7]
+        # A fresh, unguessable claim token: the owner string alone is NOT a
+        # credential (two workers may share a default owner name), so every
+        # later mutation must present THIS token.
+        lease_token = uuid.uuid4().hex
         updated = conn.execute(
             """
             UPDATE learning_jobs
-            SET status = 'RUNNING', owner = ?, lease_expires_epoch = ?,
+            SET status = 'RUNNING', owner = ?, lease_token = ?,
+                lease_expires_epoch = ?,
                 attempts = attempts + 1, updated_at = ?
-            WHERE job_id = ? AND status = ? AND owner IS ? AND (
+            WHERE job_id = ? AND status = ? AND owner IS ? AND lease_token IS ? AND (
                 lease_expires_epoch IS ? OR lease_expires_epoch = ?
             )
             """,
             (
                 owner,
+                lease_token,
                 int(now_epoch + lease_seconds),
                 _now_iso(),
                 job_id,
                 status,
                 previous_owner,
+                previous_token,
                 original_lease,
                 original_lease,
             ),
@@ -367,6 +376,7 @@ def claim_learning_job(
             owner=owner,
             input_snapshot_sha256=str(final[1]),
             policy_sha256=str(final[2]),
+            lease_token=lease_token,
         )
     except BaseException:
         conn.rollback()
@@ -416,22 +426,33 @@ def _save_stage_package(
     package: dict[str, Any],
     work_dir: Path,
     expected_owner: str,
+    expected_token: str = "",
 ) -> tuple[str, str]:
     """Persist the stage package under a REAL lease CAS.
 
-    The DB row is updated only while ``expected_owner`` still holds the job
-    in RUNNING state; the official package file is replaced only after that
-    CAS succeeds. An expired worker whose lease was taken over therefore can
-    neither corrupt the row nor the file the new owner will read.
+    The DB row is updated only while the caller's ``lease_token`` is still
+    the credential of a RUNNING, unexpired lease; the official package file
+    is replaced only after that CAS succeeds. An expired worker -- or a
+    same-named worker whose lease was re-claimed -- can neither corrupt the
+    row nor the file the new owner will read.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     package_path = work_dir / f"job-{job_id}.stages.json"
     raw = json.dumps(package, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
+    now_epoch = int(time.time())
     updated = conn.execute(
         "UPDATE learning_jobs SET result_package_sha256 = ? "
-        "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-        (hashlib.sha256(raw).hexdigest(), job_id, expected_owner),
+        "WHERE job_id = ? AND owner = ? AND lease_token = ? "
+        "AND status = 'RUNNING' "
+        "AND lease_expires_epoch IS NOT NULL AND lease_expires_epoch > ?",
+        (
+            hashlib.sha256(raw).hexdigest(),
+            job_id,
+            expected_owner,
+            expected_token,
+            now_epoch,
+        ),
     ).rowcount
     if updated != 1:
         raise LearningLeaseLost(
@@ -452,8 +473,14 @@ def _save_stage_package(
     package_sha = hashlib.sha256(raw).hexdigest()
     conn.execute(
         "UPDATE learning_jobs SET result_package_path = ?, result_package_sha256 = ? "
-        "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-        (str(package_path.resolve()), package_sha, job_id, expected_owner),
+        "WHERE job_id = ? AND owner = ? AND lease_token = ? AND status = 'RUNNING'",
+        (
+            str(package_path.resolve()),
+            package_sha,
+            job_id,
+            expected_owner,
+            expected_token,
+        ),
     )
     return str(package_path.resolve()), package_sha
 
@@ -515,7 +542,7 @@ def _stage_retry(
     """
     stage_attempts = int((package.get("stage_attempts") or {}).get(job.stage, 0)) + 1
     package.setdefault("stage_attempts", {})[job.stage] = stage_attempts
-    _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
+    _save_stage_package(conn, job.job_id, package, work_dir, job.owner, job.lease_token)
     if stage_attempts >= int(policy["max_attempts"]):
         return LearningStageResult("NEEDS_ATTENTION", None, None, None, error_code)
     return LearningStageResult("RETRY", None, None, None, error_code)
@@ -573,7 +600,7 @@ def _execute_stage_with_budget(
             "development_row_count": snapshot.development_row_count,
             "final_holdout_row_count": snapshot.final_holdout_row_count,
         }
-        _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
+        _save_stage_package(conn, job.job_id, package, work_dir, job.owner, job.lease_token)
         return LearningStageResult(
             "ADVANCE", "TRAIN", artifact["path"], artifact["sha256"], None
         )
@@ -614,7 +641,7 @@ def _execute_stage_with_budget(
         }
         package["stages"]["TRAIN"] = artifact
         package["model_version"] = result["model_version"]
-        _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
+        _save_stage_package(conn, job.job_id, package, work_dir, job.owner, job.lease_token)
         return LearningStageResult(
             "ADVANCE", "QUALIFY", artifact["path"], artifact["sha256"], None
         )
@@ -660,7 +687,7 @@ def _execute_stage_with_budget(
             if summary.get("run_dir")
             else "",
         }
-        _save_stage_package(conn, job.job_id, package, work_dir, job.owner)
+        _save_stage_package(conn, job.job_id, package, work_dir, job.owner, job.lease_token)
         # NOT_QUALIFIED is a scientific outcome, not an execution error.
         return LearningStageResult("ADVANCE", "COMPLETE", None, None, None)
 
@@ -676,15 +703,17 @@ def _apply_stage_result(
     result: LearningStageResult,
     now_epoch: float,
 ) -> dict[str, Any]:
+    lease_cas = "job_id = ? AND lease_token = ? AND status = 'RUNNING'"
+    lease_params = (job.job_id, job.lease_token)
     if result.outcome == "ADVANCE" and result.next_stage:
         # Advance the stage AND release the lease in one statement: the next
         # poll (this worker or another) claims the job immediately instead of
         # waiting out the full lease on a job that is not executing anything.
         updated = conn.execute(
             "UPDATE learning_jobs SET stage = ?, status = 'PENDING', "
-            "owner = NULL, lease_expires_epoch = NULL, updated_at = ? "
-            "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-            (result.next_stage, _now_iso(), job.job_id, job.owner),
+            "owner = NULL, lease_token = NULL, lease_expires_epoch = NULL, "
+            "updated_at = ? WHERE " + lease_cas,
+            (result.next_stage, _now_iso(), *lease_params),
         ).rowcount
         if updated != 1:
             return {"status": "NEEDS_ATTENTION", "stage": job.stage, "error_code": "lease_lost"}
@@ -693,8 +722,8 @@ def _apply_stage_result(
     if result.outcome == "COMPLETE":
         conn.execute(
             "UPDATE learning_jobs SET status = 'SUCCEEDED', updated_at = ? "
-            "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-            (_now_iso(), job.job_id, job.owner),
+            "WHERE " + lease_cas,
+            (_now_iso(), *lease_params),
         )
         return {"status": "SUCCEEDED", "stage": "COMPLETE", "error_code": None}
 
@@ -707,9 +736,9 @@ def _apply_stage_result(
         delay = _retry_delay(attempts)
         conn.execute(
             "UPDATE learning_jobs SET status = 'RETRY_WAIT', next_retry_epoch = ?, "
-            "lease_expires_epoch = NULL, owner = NULL, error_code = ?, updated_at = ? "
-            "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-            (int(now_epoch + delay), result.error_code, _now_iso(), job.job_id, job.owner),
+            "lease_expires_epoch = NULL, owner = NULL, lease_token = NULL, "
+            "error_code = ?, updated_at = ? WHERE " + lease_cas,
+            (int(now_epoch + delay), result.error_code, _now_iso(), *lease_params),
         )
         return {
             "status": "RETRY_WAIT",
@@ -719,9 +748,9 @@ def _apply_stage_result(
 
     conn.execute(
         "UPDATE learning_jobs SET status = 'NEEDS_ATTENTION', error_code = ?, "
-        "lease_expires_epoch = NULL, updated_at = ? "
-        "WHERE job_id = ? AND owner = ? AND status = 'RUNNING'",
-        (result.error_code, _now_iso(), job.job_id, job.owner),
+        "lease_expires_epoch = NULL, lease_token = NULL, updated_at = ? "
+        "WHERE " + lease_cas,
+        (result.error_code, _now_iso(), *lease_params),
     )
     return {
         "status": "NEEDS_ATTENTION",

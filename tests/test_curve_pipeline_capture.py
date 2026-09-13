@@ -571,7 +571,11 @@ def test_tampered_capture_payload_fails_closed_at_ingest(tmp_path):
     from app.services.candidate_capture import persist_capture
     from app.services.library_ingest import ingest_published_clips
     from app.services.preference_schema import apply_preference_schema
-    from app.services.curve_source_features import CURVE_SOURCE_FEATURE_NAMES
+    from app.services.curve_source_features import (
+        CURVE_SOURCE_FEATURE_NAMES,
+        CurveWindow,
+        window_input_hash,
+    )
 
     conn = _sqlite3.connect(":memory:")
     apply_preference_schema(conn)
@@ -596,7 +600,15 @@ def test_tampered_capture_payload_fails_closed_at_ingest(tmp_path):
             "extractor_sha256": "e" * 64,
             "features": {n: 0.5 for n in CURVE_SOURCE_FEATURE_NAMES},
             "actual_timestamps": [1.0, 2.0, 3.0],
-            "input_hash": "i" * 64,
+            "input_hash": window_input_hash(
+                "b" * 64,
+                CurveWindow(
+                    preexport_key="a" * 64,
+                    start_us=1_000_000,
+                    end_us=4_000_000,
+                ),
+                extractor_sha256="e" * 64,
+            ),
             "missing_reasons": [],
             "wall_clock_ms": 1.0,
         },
@@ -744,6 +756,15 @@ def test_features_mounted_before_ranking_in_real_rank_dedup_path(tmp_path, monke
         manifest_out, _work = _run_rank_stage(video, root, cfg)
     finally:
         rank_dedup_stage._score_vlm_frame = original_scorer
+
+    # The runtime must have received the REAL source file hash (review P1:
+    # feature extraction bound to the actual video bytes).
+    real_sha = hashlib.sha256(video.read_bytes()).hexdigest()
+    assert runtime.calls
+    for call_source_path, call_sha, _keys in runtime.calls:
+        assert call_sha == real_sha
+    for clip in manifest_out["clips"]:
+        assert clip.get("source_video_sha256") == real_sha
 
     # The shadow route ran with real mounted features on the ranked clips.
     shadow_clips = [c for c in manifest_out["clips"] if c.get("curve_route")]

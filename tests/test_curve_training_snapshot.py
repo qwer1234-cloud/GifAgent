@@ -1,6 +1,7 @@
 """Tests for curve training manifests, immutable snapshots, and L2 logistic regression."""
 from __future__ import annotations
 
+import hashlib as _hashlib
 import json as _json
 import json
 from pathlib import Path
@@ -230,6 +231,13 @@ def test_build_training_snapshot_from_row_facts(tmp_path: Path):
     apply_preference_schema(conn)
 
     def add_sample(i: int, rating: str, source: str) -> None:
+        import base64 as _b64
+
+        import numpy as _np
+
+        from app.services.reranker import preference_embedding_text
+        from app.services.vector_math import vector_to_blob
+
         cid = f"cand-{i:02d}"
         conn.execute(
             "INSERT INTO candidate_gifs (candidate_id, source_run_id, "
@@ -243,6 +251,12 @@ def test_build_training_snapshot_from_row_facts(tmp_path: Path):
             "VALUES (?, 'candidate_gif', ?, ?, ?, '[]', ?, 'feedback')",
             (f"ev-{i:02d}", cid, rating, source, f"2026-09-01T00:{i % 60:02d}:00Z"),
         )
+        pref_text = preference_embedding_text(
+            caption=f"synthetic clip {i}", emotion="joy", scene_type=""
+        )
+        pref_vec = _np.asarray(
+            [(i % 7) / 7.0] + [0.0] * 767, dtype=_np.float32
+        )
         payload = {
             "run_id": "run-snap",
             "preexport_key": f"{i:064x}",
@@ -253,6 +267,19 @@ def test_build_training_snapshot_from_row_facts(tmp_path: Path):
             "anchor_us": 2_500_000,
             "baseline_score": 0.5 + i / 100.0,
             "capture_status": "CAPTURED",
+            "preference_identity": {
+                "embedding_text": pref_text,
+                "embedding_text_sha256": _hashlib.sha256(
+                    pref_text.encode("utf-8")
+                ).hexdigest(),
+                "embedding_model": "nomic-embed-text:latest",
+                "scenario_keys": [],
+                "vector_float32_b64": _b64.b64encode(pref_vec.tobytes()).decode(
+                    "ascii"
+                ),
+                "vector_sha256": _hashlib.sha256(pref_vec.tobytes()).hexdigest(),
+                "scoring_input_committed": True,
+            },
         }
         persisted = persist_capture(conn, payload, tmp_path / "evidence")
         conn.execute(
@@ -271,7 +298,11 @@ def test_build_training_snapshot_from_row_facts(tmp_path: Path):
             "INSERT INTO candidate_vectors (candidate_id, vector_type, "
             "embedding_model, embedding_dim, vector_blob, normalized, source_text_hash) "
             "VALUES (?, 'clip', 'nomic-embed-text:latest', 768, ?, 1, ?)",
-            (cid, b"" * 8, f"texthash-{i}"),
+            (
+                cid,
+                vector_to_blob(pref_vec, embedding_dim=768),
+                _hashlib.sha256(pref_text.encode("utf-8")).hexdigest(),
+            ),
         )
 
     train_source = "a" * 64
@@ -415,3 +446,164 @@ def test_mixed_extractor_identities_hard_fail_training(tmp_path: Path):
     result = train_draft(snapshot_dir, tmp_path / "out")
     assert result["status"] == "NEEDS_ATTENTION"
     assert result["error_code"] == "invalid_manifest"
+
+
+def test_capture_vector_identity_is_a_training_gate(tmp_path: Path):
+    """P2 remediation: a sample without a committed capture vector identity
+    is excluded; an identity inconsistent with the formal ledger vector is
+    excluded; a consistent identity trains."""
+    import base64 as _b64
+
+    import numpy as _np
+    import sqlite3 as _sqlite3
+
+    from app.services.candidate_capture import persist_capture
+    from app.services.curve_training import build_training_snapshot
+    from app.services.curve_source_features import (
+        CURVE_SOURCE_FEATURE_NAMES,
+        CurveWindow,
+        window_input_hash,
+    )
+    from app.services.preference_schema import apply_preference_schema
+    from app.services.reranker import preference_embedding_text
+    from app.services.vector_math import vector_to_blob
+
+    def build_db(
+        capture_offset: int, ledger_offset: int, *, with_identity: bool
+    ) -> _sqlite3.Connection:
+        conn = _sqlite3.connect(":memory:")
+        apply_preference_schema(conn)
+        cid = "cand-gate-0"
+        source = "a" * 64
+        conn.execute(
+            "INSERT INTO candidate_gifs (candidate_id, source_run_id, "
+            "source_run_candidate_id, source_video_sha256, source_video_path, "
+            "start_sec, end_sec, status) VALUES (?, 'run', 'rc', ?, '/v.mp4', 0.0, 5.0, 'candidate')",
+            (cid, source),
+        )
+        conn.execute(
+            "INSERT INTO preference_events (event_id, target_type, target_id, "
+            "rating, source_video_sha256, scenario_keys_json, created_at, event_kind) "
+            "VALUES ('ev-gate', 'candidate_gif', ?, 'like', ?, '[]', "
+            "'2026-09-01T00:00:00Z', 'feedback')",
+            (cid, source),
+        )
+        pref_text = preference_embedding_text(
+            caption="synthetic clip", emotion="joy", scene_type=""
+        )
+        pref_vec = _np.asarray(
+            [(capture_offset % 7) / 7.0] + [0.0] * 767, dtype=_np.float32
+        )
+        payload = {
+            "run_id": "run-gate",
+            "preexport_key": "a" * 64,
+            "capture_version": "capture-v1",
+            "source_video_sha256": source,
+            "start_us": 1_000_000,
+            "end_us": 4_000_000,
+            "anchor_us": 2_500_000,
+            "baseline_score": 0.8,
+            "capture_status": "CAPTURED",
+        }
+        if with_identity:
+            payload["preference_identity"] = {
+                "embedding_text": pref_text,
+                "embedding_text_sha256": _hashlib.sha256(
+                    pref_text.encode("utf-8")
+                ).hexdigest(),
+                "embedding_model": "nomic-embed-text:latest",
+                "scenario_keys": [],
+                "vector_float32_b64": _b64.b64encode(pref_vec.tobytes()).decode(
+                    "ascii"
+                ),
+                "vector_sha256": _hashlib.sha256(pref_vec.tobytes()).hexdigest(),
+                "scoring_input_committed": True,
+            }
+            payload["source_feature"] = {
+                "status": "AVAILABLE",
+                "feature_version": "curve-source-v1",
+                "extractor_sha256": "e" * 64,
+                "features": {n: 0.5 for n in CURVE_SOURCE_FEATURE_NAMES},
+                "actual_timestamps": [1.0, 2.0, 3.0],
+                "input_hash": window_input_hash(
+                    source,
+                    CurveWindow(
+                        preexport_key="a" * 64,
+                        start_us=1_000_000,
+                        end_us=4_000_000,
+                    ),
+                    extractor_sha256="e" * 64,
+                ),
+                "missing_reasons": [],
+                "wall_clock_ms": 1.0,
+            }
+        persisted = persist_capture(conn, payload, tmp_path / "evidence")
+        conn.execute(
+            "INSERT INTO candidate_analysis_publications "
+            "(publication_id, record_id, candidate_id, gif_sha256) "
+            "VALUES ('pub-gate', ?, ?, ?)",
+            (persisted.record_id, cid, "f" * 64),
+        )
+        features = {n: 0.5 for n in CURVE_SOURCE_FEATURE_NAMES}
+        conn.execute(
+            "INSERT INTO curve_features (candidate_id, feature_version, "
+            "availability, features_json, extractor_sha256, artifact_sha256, wall_clock_ms) "
+            "VALUES (?, 'curve-source-v1', 'AVAILABLE', ?, ?, ?, 1.0)",
+            (cid, _json.dumps(features), "e" * 64, "f" * 64),
+        )
+        ledger_vec = _np.asarray(
+            [(ledger_offset % 7) / 7.0] + [0.0] * 767, dtype=_np.float32
+        )
+        conn.execute(
+            "INSERT INTO candidate_vectors (candidate_id, vector_type, "
+            "embedding_model, embedding_dim, vector_blob, normalized, source_text_hash) "
+            "VALUES (?, 'clip', 'nomic-embed-text:latest', 768, ?, 1, ?)",
+            (
+                cid,
+                vector_to_blob(ledger_vec, embedding_dim=768),
+                _hashlib.sha256(pref_text.encode("utf-8")).hexdigest(),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO preference_profile_current (slot, profile_version) "
+            "VALUES ('current', 'profile-v1')"
+        )
+        conn.commit()
+        return conn
+
+    # Missing identity -> excluded.
+    conn = build_db(0, 0, with_identity=False)
+    snapshot = build_training_snapshot(conn, {"split_seed": 1}, tmp_path / "s1")
+    manifest = _json.loads(
+        (Path(snapshot.snapshot_dir) / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        e["reason"] == "preference_identity_missing" for e in manifest["exclusions"]
+    )
+    total = sum(
+        len(manifest[k])
+        for k in ("train_rows", "development_rows", "holdout_rows", "reference_rows")
+    )
+    assert total == 0
+
+    # Consistent identity -> sample trains.
+    conn_ok = build_db(0, 0, with_identity=True)
+    snapshot_ok = build_training_snapshot(conn_ok, {"split_seed": 1}, tmp_path / "s2")
+    manifest_ok = _json.loads(
+        (Path(snapshot_ok.snapshot_dir) / "manifest.json").read_text(encoding="utf-8")
+    )
+    total_ok = sum(
+        len(manifest_ok[k])
+        for k in ("train_rows", "development_rows", "holdout_rows", "reference_rows")
+    )
+    assert total_ok == 1
+
+    # Ledger vector inconsistent with the frozen capture vector -> excluded.
+    conn_bad = build_db(0, 3, with_identity=True)
+    snapshot_bad = build_training_snapshot(conn_bad, {"split_seed": 1}, tmp_path / "s3")
+    manifest_bad = _json.loads(
+        (Path(snapshot_bad.snapshot_dir) / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        e["reason"] == "preference_vector_mismatch" for e in manifest_bad["exclusions"]
+    )
