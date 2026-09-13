@@ -9,7 +9,8 @@
 - 完成日期:2026-09-12
 - **第二轮整改(2026-09-12)**:评审驳回 `A/C CODE_ACCEPTED` 后,修复全部 7 项 P1 与 2 项 P2(见 §9),并补充真实的"入库→反馈→无需人工预置特征→DRAFT"端到端测试。
 - **第三轮整改(2026-09-13)**:只读复核确认 5 项未完全闭合(1 项 P1 曲线特征晚于评分注入、2 项 P1 阶段包越权写入与回滚丢失画像绑定、3 项 P1 capture 内容哈希未校验,以及 2 项 P2),已全部修复(见 §10)。
-- **第四轮整改(2026-09-13)**:复核确认 3 项 P1(特征提取未绑定真实源哈希、同版本画像内容篡改可激活、同名 worker 租约凭证缺失)与 1 项 P2(训练向量身份未参与门禁),已全部修复(见 §11)。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`**。
+- **第四轮整改(2026-09-13)**:复核确认 3 项 P1(特征提取未绑定真实源哈希、同版本画像内容篡改可激活、同名 worker 租约凭证缺失)与 1 项 P2(训练向量身份未参与门禁),已全部修复(见 §11)。
+- **第五轮整改(2026-09-13)**:复核确认 2 项 P1(纯提交无法复现测试、常规向量刷新覆盖冻结向量)与 2 项 P2(租约失效终止常驻 worker、画像重复行抛异常),已全部修复(见 §12)。复核通过前状态记为 **`A/C CHANGES_REQUIRED_SHADOW_DISABLED`**。
 
 ## 1. 提交列表
 
@@ -77,7 +78,8 @@ mypy:`python -m mypy app/services` → **Success: no issues found in 63 source f
 4. **Task 1/2 期间 Mimosa 安全钩子拦截了两次合法写入**(路径穿越启发式误报;代码实际包含字符集净化 + resolve + 目录包含校验)。改用等价安全实现后经 Write/Edit 正常提交;最终代码包含完整的路径包含防护(`_safe_path_component`/`_verified_inside`/`_contained_evidence_path`)。
 5. **Task 6 的 "correction/undo 导致 lineage stale 时创建 NEEDS_ATTENTION 审计事件"** 以结构化 warning 日志实现(`_best_effort_enqueue_learning` 排队失败/ ineligible 时记录),未新增审计表;审计事件表可作为后续增强。
 6. **Task 5 的模型行 manifest 采用旧式行形状(rating/source)** 以兼容既有资格与晋升机制(`verify_model_for_qualification`/`validate_promotion`);v2 逐行事实 manifest 完整嵌入其中(`snapshot_manifest`),任一事实篡改仍会改变模型行哈希。
-7. **Task 8 提交带入基线改动**:`app/services/candidates.py`、`app/services/reranker.py`、`app/services/curve_preference_qualification.py` 本就带有用户未提交的基线改动,而 mypy 全绿要求修复其类型错误,故这些文件连同其基线改动一起进入 `18a5f53c`(与计划"工作树即基线"的前提一致);`app/services/candidate_identity.py` 为首次纳管。
+7. **Task 8 提交带入基线改动**:`app/services/candidates.py`、`app/services/reranker.py`、`app/services/curve_preference_qualification.py` 本就带有用户未提交的基线改动,而 mypy 全绿要求修复其类型错误,故这些文件连同其基线改动一起进入第四轮前的提交(与计划"工作树即基线"的前提一致);`app/services/candidate_identity.py` 为首次纳管。
+8. **第五轮的最小依赖提交(`1bc70bfd`)**:按评审要求从原作者待提交改动中单独整理并提交了 `evaluate_profile_gates`/`_config_to_dict`/`build_profile` 的 `exclude_source_videos` 支持(已提交的画像快照代码的必要依赖);原作者的 preview 功能 hunks 仍保留在其待提交状态,未混入。
 
 ## 7. 未执行项与遗留
 
@@ -131,6 +133,18 @@ mypy:`python -m mypy app/services` → **Success: no issues found in 63 source f
 
 第四轮验证:17 个测试文件 `241 passed`;`mypy app/services` 零错误;全量套件 2650 passed(仅余两个已确认的基线遗留失败);`git diff --check` 对本轮提交干净(基线文件 `tests/test_candidates_api.py:896` 的 EOF 空行除外,仍不触碰)。
 上一轮遗留的未提交测试修改(`test_curve_online.py`、`test_curve_deployment.py` 夹具/断言)已随本轮提交入库,`241 passed` 可在提交状态下纯净复现。
+
+## 12. 第五轮整改:提交纯净性、向量刷新契约与恢复路径(2026-09-13)
+
+| 编号 | 问题 | 修复 |
+|---|---|---|
+| P1 | 纯提交无法复现"241 passed":已提交的 `preference_profile_snapshot.py` 调用 `evaluate_profile_gates`/`build_profile` 的 `exclude_source_videos` 签名,而该签名只在未提交的 `preference_memory.py` 中 | 从待提交工作树中**单独整理并提交最小依赖**(`1bc70bfd`:仅 evaluate_profile_gates/_config_to_dict/build_profile 三个 hunk;preview 功能 hunk 留在原作者待提交状态)。以隔离 worktree 在纯提交上验证:依赖提交 `1bc70bfd` → 232 passed;含本轮修复的 `56323bc9` → **235 passed**,纯净复现成立 |
+| P1 | 常规 `upsert_candidate_vector()` 刷新覆盖冻结向量(text_schema_version=1、semantic 文本含 tags/scenario 追加),训练样本随之失效 | 冻结评分向量改存于独立 `vector_type='preference'` 行(`text_schema_version=2`,preference 文本哈希为行身份),可刷新的检索向量仍为 `'clip'`——常规刷新不再触碰冻结证据;训练门禁改读 `'preference'` 行。新增"入库 → 常规刷新 → 训练快照"回归:刷新后同样 36 个样本可训练 |
+| P2 | `_save_stage_package` 抛出的 `LearningLeaseLost` 未被捕获,常驻 worker 直接退出 | `run_learning_once` 捕获 `LearningLeaseLost` → 结构化 `LEASE_LOST` 结果并 rollback,不触碰新持有者的任务状态,轮询继续;`_save_stage_package` 的 token CAS 同时**续租**(合法长阶段不再因自身过期丢失);新增 LEASE_LOST 回归 |
+| P2 | 同版本重复 global 画像行使 `_profile_rows` 抛 `ValueError`,违反"画像异常回退 BASELINE" | 运行时捕获 → `profile_evidence_invalid` → BASELINE;激活与 rollback 捕获 → REFUSED。新增测试:插入内容不同的第二行后,激活 REFUSED 且强制 active revision 降级 BASELINE |
+
+第五轮验证:17 个测试文件(工作树)**248 passed**;`mypy app/services` 零错误;全量套件 2653 passed(仅余两个已确认基线遗留失败);纯净提交复现 `56323bc9` → **235 passed**(较工作树少的 13 个测试属于待提交的 preview 功能与其测试,见 §6.8)。
+`app/services/preference_memory.py` 的工作树仍保留原作者未提交的 preview 功能 hunks,未混入本轮提交。
 
 ## 8. 安全配置默认值(任一检查点失败时保持)
 
