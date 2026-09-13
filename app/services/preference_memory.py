@@ -73,9 +73,17 @@ def evaluate_profile_gates(
     *,
     embedding_model: str = REQUIRED_EMBEDDING_MODEL,
     embedding_dim: int = REQUIRED_EMBEDDING_DIM,
+    exclude_source_videos: frozenset[str] | set[str] | list[str] | None = None,
 ) -> ProfileGateSnapshot:
     """Evaluate build gates against the latest scoring event per target."""
     effective = load_latest_scoring_events(conn)
+    if exclude_source_videos:
+        exclude_set = set(exclude_source_videos)
+        effective = {
+            k: v
+            for k, v in effective.items()
+            if str(v.get("source_video_sha256", "")) not in exclude_set
+        }
     effective_list = list(effective.values())
     like_events = [
         event for event in effective_list if event["rating"] in ("like", "favorite")
@@ -246,9 +254,10 @@ def _config_to_dict(
     config: ProfileBuildConfig,
     embedding_model: str,
     embedding_dim: int,
+    exclude_source_videos: list[str] | None = None,
 ) -> dict[str, object]:
     """Serialize a ``ProfileBuildConfig`` into a deterministic dict."""
-    return {
+    res: dict[str, object] = {
         "embedding_model": embedding_model,
         "embedding_dim": embedding_dim,
         "recency_enabled": config.recency_enabled,
@@ -259,6 +268,9 @@ def _config_to_dict(
         "scenario_min_feedback": config.scenario_min_feedback,
         "multi_centroid_k": int(config.multi_centroid_k),
     }
+    if exclude_source_videos:
+        res["exclude_source_videos"] = sorted(exclude_source_videos)
+    return res
 
 
 def _compute_per_candidate_weights(
@@ -372,6 +384,7 @@ class PreferenceMemoryService:
         config: ProfileBuildConfig | None = None,
         embedding_model: str = REQUIRED_EMBEDDING_MODEL,
         embedding_dim: int = REQUIRED_EMBEDDING_DIM,
+        exclude_source_videos: frozenset[str] | set[str] | list[str] | None = None,
     ) -> ProfileBuildResult:
         """Run all gates and, when they pass, compute global + scenario profiles.
 
@@ -390,6 +403,7 @@ class PreferenceMemoryService:
             self.conn,
             embedding_model=embedding_model,
             embedding_dim=embedding_dim,
+            exclude_source_videos=exclude_source_videos,
         )
         effective = snapshot.effective
         like_events = snapshot.like_events
@@ -402,7 +416,10 @@ class PreferenceMemoryService:
         event_watermark = snapshot.event_watermark
         effective_target_ids = snapshot.effective_target_ids
 
-        config_obj = _config_to_dict(config, embedding_model, embedding_dim)
+        exclude_list = sorted(list(set(exclude_source_videos))) if exclude_source_videos else None
+        config_obj = _config_to_dict(
+            config, embedding_model, embedding_dim, exclude_source_videos=exclude_list
+        )
         config_json = _json_dumps(config_obj)
 
         profile_version = _compute_profile_version(
