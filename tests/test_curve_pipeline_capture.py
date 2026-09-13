@@ -789,3 +789,64 @@ def test_features_mounted_before_ranking_in_real_rank_dedup_path(tmp_path, monke
             # The frozen vector is the exact scoring input (checksum holds).
             decoded = _b64.b64decode(identity["vector_float32_b64"], validate=True)
             assert hashlib.sha256(decoded).hexdigest() == identity["vector_sha256"]
+
+
+def test_profile_centroid_consumes_retrieval_vector_only_once(tmp_path):
+    """P1 remediation: a candidate carrying BOTH the frozen preference
+    vector and the retrieval clip vector contributes exactly ONE vector to
+    profile centroids (the 'clip' row) -- the frozen scoring evidence is
+    never double-counted into the preference profile."""
+    import hashlib as _hashlib
+    import numpy as _np
+    import sqlite3 as _sqlite3
+
+    from app.services.preference_memory import PreferenceMemoryService
+    from app.services.preference_profile_snapshot import _consumed_vector_records
+    from app.services.preference_schema import apply_preference_schema
+
+    conn = _sqlite3.connect(":memory:")
+    conn.row_factory = _sqlite3.Row
+    apply_preference_schema(conn)
+
+    cid = "cand-dual"
+    clip_blob = _np.asarray([1.0] + [0.0] * 767, dtype=_np.float32).tobytes()
+    preference_blob = _np.asarray([0.6, 0.8] + [0.0] * 766, dtype=_np.float32).tobytes()
+    for vector_type, blob in (("clip", clip_blob), ("preference", preference_blob)):
+        conn.execute(
+            "INSERT INTO candidate_vectors (candidate_id, vector_type, "
+            "embedding_model, embedding_dim, vector_blob, normalized, source_text_hash) "
+            "VALUES (?, ?, 'nomic-embed-text:latest', 768, ?, 1, ?)",
+            (cid, vector_type, blob, f"hash-{vector_type}"),
+        )
+    conn.commit()
+
+    service = PreferenceMemoryService(conn)
+    dual_centroid = service._compute_centroid(
+        [cid],
+        embedding_model="nomic-embed-text:latest",
+        embedding_dim=768,
+    )
+
+    # Reference: the centroid with ONLY the retrieval vector present.
+    conn.execute(
+        "DELETE FROM candidate_vectors WHERE candidate_id = ? AND vector_type = 'preference'",
+        (cid,),
+    )
+    conn.commit()
+    clip_only_centroid = service._compute_centroid(
+        [cid],
+        embedding_model="nomic-embed-text:latest",
+        embedding_dim=768,
+    )
+    assert dual_centroid == clip_only_centroid
+
+    # The qualification snapshot freezes exactly one consumed vector record
+    # for the dual-vector candidate.
+    records = _consumed_vector_records(
+        conn,
+        target_ids=[cid],
+        embedding_model="nomic-embed-text:latest",
+        embedding_dim=768,
+    )
+    assert len(records) == 1
+    assert records[0]["vector_blob_sha256"] == _hashlib.sha256(clip_blob).hexdigest()

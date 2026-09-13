@@ -596,13 +596,42 @@ def test_regular_vector_refresh_does_not_invalidate_training(tmp_path):
         False,
     )
 
-    # Rebuild the snapshot: the same 36 samples remain trainable.
-    run_learning_once(conn, now_epoch=1_800_000_001, owner="w1", services=services)
+    # Force a SNAPSHOT rebuild: a new feedback event changes the effective
+    # watermark, so a fresh job snapshots the post-refresh ledger.
+    conn.execute(
+        "INSERT INTO preference_events (event_id, target_type, target_id, "
+        "rating, source_video_sha256, scenario_keys_json, created_at, event_kind) "
+        "VALUES ('ev-refresh', 'candidate_gif', (SELECT candidate_id FROM "
+        "candidate_gifs LIMIT 1), 'like', (SELECT source_video_sha256 FROM "
+        "candidate_gifs LIMIT 1), '[]', '2026-09-03T00:00:00Z', 'feedback')"
+    )
+    conn.commit()
+    enqueue2 = maybe_enqueue_learning(conn, TINY_POLICY)
+    assert enqueue2.status == "ENQUEUED"
+
+    # The queue first finishes the ORIGINAL job (TRAIN -> QUALIFY ->
+    # COMPLETE); keep polling until the NEW job's SNAPSHOT has rebuilt from
+    # the post-refresh ledger.
+    for step in range(2, 8):
+        package_path_row = conn.execute(
+            "SELECT result_package_path FROM learning_jobs WHERE job_id = ?",
+            (enqueue2.job_id,),
+        ).fetchone()
+        if package_path_row and package_path_row[0]:
+            break
+        run_learning_once(
+            conn, now_epoch=1_800_000_000 + step, owner="w1", services=services
+        )
+    package_path_row = conn.execute(
+        "SELECT result_package_path FROM learning_jobs WHERE job_id = ?",
+        (enqueue2.job_id,),
+    ).fetchone()
+    assert package_path_row and package_path_row[0]
     package = json.loads(
         Path(
             conn.execute(
-                "SELECT result_package_path FROM learning_jobs WHERE status != 'SUCCEEDED' "
-                "ORDER BY created_at LIMIT 1"
+                "SELECT result_package_path FROM learning_jobs WHERE job_id = ?",
+                (enqueue2.job_id,),
             ).fetchone()[0]
         ).read_text(encoding="utf-8")
     )

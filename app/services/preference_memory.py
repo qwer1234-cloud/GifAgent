@@ -215,6 +215,7 @@ def preview_profile(
     *,
     embedding_model: str = REQUIRED_EMBEDDING_MODEL,
     embedding_dim: int = REQUIRED_EMBEDDING_DIM,
+    exclude_source_videos: frozenset[str] | set[str] | list[str] | None = None,
 ) -> ProfilePreview:
     """Preview whether a build with *config* would pass all gates.
 
@@ -223,9 +224,15 @@ def preview_profile(
     *Nothing is written to the database.*
     """
     snapshot = evaluate_profile_gates(
-        conn, embedding_model=embedding_model, embedding_dim=embedding_dim
+        conn,
+        embedding_model=embedding_model,
+        embedding_dim=embedding_dim,
+        exclude_source_videos=exclude_source_videos,
     )
-    config_obj = _config_to_dict(config, embedding_model, embedding_dim)
+    exclude_list = sorted(list(set(exclude_source_videos))) if exclude_source_videos else None
+    config_obj = _config_to_dict(
+        config, embedding_model, embedding_dim, exclude_source_videos=exclude_list
+    )
     config_json = _json_dumps(config_obj)
     profile_version = _compute_profile_version(
         embedding_model=embedding_model,
@@ -703,6 +710,7 @@ class PreferenceMemoryService:
             f"""SELECT cv.candidate_id, cv.vector_blob
                  FROM candidate_vectors cv
                  WHERE cv.candidate_id IN ({placeholders})
+                   AND cv.vector_type = 'clip'
                    AND cv.embedding_model = ?
                    AND cv.embedding_dim = ?""",
             (*candidate_ids, embedding_model, embedding_dim),
