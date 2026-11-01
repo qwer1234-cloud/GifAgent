@@ -8,6 +8,7 @@ import gradio as gr
 import httpx
 import yaml
 from PIL import Image
+from app.ui.preview_paths import preview_path as safe_preview_path
 
 from app.db import get_connection
 from app.services.batch_logging import read_batch_log
@@ -690,13 +691,15 @@ def _candidate_display_path(candidate: dict) -> str:
 
     for path in (preview_path, artifact_path):
         if path and Path(path).suffix.lower() in STATIC_IMAGE_EXTS and os.path.exists(path):
-            return path
+            return safe_preview_path(path)
 
     thumb_path = _ensure_candidate_thumbnail(
         candidate.get("candidate_id", ""),
         artifact_path,
     )
-    return thumb_path or candidate.get("display_path") or preview_path or artifact_path
+    return thumb_path or safe_preview_path(
+        candidate.get("display_path") or preview_path or artifact_path
+    )
 
 
 def _format_api_error(resp: httpx.Response) -> str:
@@ -856,7 +859,7 @@ def selection_values(item: dict):
     cid = item.get("candidate_id", "")
     src = item.get("source_run_candidate_id", "?")
     artifact_path = item.get("artifact_path") or ""
-    preview = artifact_path or item.get("display_path") or item.get("preview_path")
+    preview = safe_preview_path(artifact_path or item.get("display_path") or item.get("preview_path"))
     return cid, f"Selected: {src[:40]}", preview, artifact_path
 
 
@@ -982,7 +985,7 @@ def rate_and_advance(
     if not result.startswith("Rated:"):
         return (
             result, gr.update(), gr.update(), gr.update(), gr.update(),
-            candidate_id, "Rating failed; selection kept", expected_artifact_path or None,
+            candidate_id, "Rating failed; selection kept", safe_preview_path(expected_artifact_path) or None,
             expected_artifact_path, gr.update(), previous_folders,
         )
 

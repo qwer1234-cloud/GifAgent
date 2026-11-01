@@ -170,15 +170,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # Package boundary (2026-09-11 remediation Task 8): heavy vision
-    # inference stays out of the frozen app; curve source features run in the
-    # external .venv-spike worker via the JSON protocol client.
+    # Heavy model inference stays in the external .venv-spike worker.
+    # OpenCV remains required by the regular export/transition pipeline
+    # (boundary_snap -> temporal_evidence), including stage-script startup.
     excludes=[
         "onnxruntime",
         "onnxruntime_directml",
         "torch",
         "torchvision",
-        "cv2",
         "scripts.continuity_spike_backend_real",
         "scripts.continuity_spike_runtime",
     ],
